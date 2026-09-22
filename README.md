@@ -11,6 +11,33 @@ Pavia is a real-time RPC and messaging protocol between browsers or apps and ser
 
 The wire format is binary CBOR framed so that routers and backplanes can read envelopes without decoding payloads, which lets a broadcast be encoded once per codec.
 
+## Features
+
+Checked items are implemented and covered by the conformance suite; the rest is planned, in roadmap order.
+
+Protocol
+
+- [ ] Session over WebSocket: handshake, capabilities, heartbeat, close codes, rate limits
+- [ ] Unary calls and notifications in both directions, deadlines, cancellation, structured errors
+- [ ] Typed contracts: manifest export, fingerprint, `cbor` and `json` codecs, compatibility checker
+- [ ] Streaming calls: server stream, client stream, bidirectional, with flow control on WebSocket
+- [ ] Targeting: sessions, users, groups, lifecycle hooks, slow-consumer handling
+- [ ] WebTransport over HTTP/3 with automatic WebSocket fallback
+- [ ] Datagrams and notification lanes
+- [ ] Session resumption across transport loss
+- [ ] Authentication lifecycle, per-method and per-channel authorization, interceptors
+- [ ] Channels with history, gapless recovery and snapshots
+- [ ] Presence
+
+Implementations
+
+- [ ] Rust server with an axum adapter
+- [ ] TypeScript client generated from the manifest, tested in Chromium, Firefox and WebKit
+- [ ] Rust client
+- [ ] Multi-node deployment over NATS with JetStream
+- [ ] Metrics, tracing and OpenTelemetry
+- [ ] Public conformance suite for third-party implementations
+
 ## Non-goals
 
 - Compatibility with the wire formats of other real-time or RPC frameworks.
