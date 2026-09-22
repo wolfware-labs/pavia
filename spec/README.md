@@ -48,3 +48,4 @@ Why not the GitHub wiki: wiki pages are outside pull requests and CI, cannot be 
 | [draft-0.4](versions/draft-0.4/pavia-protocol.md) | 2026-09-21 | Working draft | Integer keys in `limits` and `client` maps. |
 | [draft-0.5](versions/draft-0.5/pavia-protocol.md) | 2026-09-21 | Working draft | Replay buffer eviction order and per-lane gap reporting (`lost`). |
 | [draft-0.6](versions/draft-0.6/pavia-protocol.md) | 2026-09-21 | Working draft | Resume routing hint; multi-node ownership, takeover and backplane outage (13.8). |
+| [draft-0.7](versions/draft-0.7/pavia-protocol.md) | 2026-09-21 | Working draft | Editorial: framework comparisons removed. |
