@@ -524,10 +524,10 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 - [ ] **C15.1 Distributed broker** implementing the M6 boundary over a message system (choose NATS or Redis; record why). Every target type works across nodes, delivered once.
 - [ ] **C15.2 Remote group operations:** adding a session that lives on another node to a group is forwarded to its node and acknowledged.
 - [ ] **C15.3 Session directory:** which node owns which session, for targeting and server-initiated calls across nodes.
-- [ ] **C15.4 Resumption across nodes:** a resuming client may land on a different node. Choose and document: (a) route resumes to the owning node (load-balancer affinity by resume token or QUIC connection ID), or (b) migrate detached session state through the shared store. This is the hardest multi-node decision; write it into the spec.
+- [ ] **C15.4 Resumption across nodes** (§7.8, §13.8, decision #203): clients append `?session=<id>` on resume so balancers can route to the owner; a resume landing elsewhere triggers a takeover request to the owner over the broker (state handed over once, old owner forwards late arrivals); an unreachable owner means RESUME_FAILED. Deployment guide documents the balancer rule.
 - [ ] **C15.5 Shared history store** (e.g. Redis streams, NATS JetStream) implementing the M12 abstraction; epochs survive node restarts.
 - [ ] **C15.6 Distributed presence** with eventual consistency and guaranteed leave on node death (heartbeated node leases).
-- [ ] **C15.7 Failure behavior:** broker outage policy (fail sends vs buffer) documented and tested.
+- [ ] **C15.7 Backplane outage** (§13.8, decision #206): local sessions keep working; cross-node sends, history publishes and remote calls fail fast; on reconnect every local history-channel subscriber gets UNSUBSCRIBED code 2 and presence is re-announced. Tested by cutting the broker mid-run.
 - [ ] **C15.8 Deployment guide:** load balancing for WebSocket and QUIC (QUIC connection-ID-aware balancing for migration), affinity requirements, sizing.
 - [ ] **C15.9 Sequencer ownership:** how a channel's single sequencer is chosen and moved across nodes (store-assigned offsets vs channel ownership with lease), and how an epoch change is triggered on failover.
 - [ ] **C15.10 Distributed idempotency store** for `pavia-idempotency-key` (§8.7).
