@@ -323,7 +323,9 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 **Spec:** §4.2, §4.4, §4.5, §5.3, §6.3 (QUIC stream mapping), §6.5.
 
 ### Capabilities
-- [ ] **C8.1 HTTP/3 server** on the same host and path, accepting WebTransport sessions (extended CONNECT). Choose the QUIC/WebTransport library; record why.
+- [ ] **C8.1 HTTP/3 and WebTransport layer on quinn** (decision #120): a `pavia-webtransport` crate owning the HTTP/3 subset and the WebTransport session layer, so the same port can also answer ordinary HTTP/3 requests. Split into C8.1a and C8.1b.
+- [ ] **C8.1a Minimal HTTP/3 on quinn:** control streams and SETTINGS (including the WebTransport settings), QPACK with the static table only, extended CONNECT parsing and response, `405` with `Allow: CONNECT` for any other request on the endpoint path, the well-known contract endpoint (§12.6) over HTTP/3, HTTP/3 GOAWAY on drain, 0-RTT never accepted.
+- [ ] **C8.1b WebTransport session layer:** session establishment on the CONNECT stream, tagging of bidi and uni streams and datagrams with the session ID, CLOSE_WEBTRANSPORT_SESSION and DRAIN_WEBTRANSPORT_SESSION capsules, draft version negotiation (C8.2), per-session stream and datagram routing into the Pavia driver.
 - [ ] **C8.2 Draft compatibility** `[verify]`: accept the WebTransport draft versions used by current Chromium, Firefox and Safari. Build a small compatibility table in the docs and keep it current.
 - [ ] **C8.3 Control stream** = first client bidi stream; HELLO first; streams opened before WELCOME are reset.
 - [ ] **C8.4 Call streams** = one QUIC bidi stream per call, both directions; FIN after terminal frames; RESET_STREAM ↔ CANCEL/UNAVAILABLE mapping (§6.3); STOP_SENDING on early callee termination.
@@ -343,6 +345,7 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 
 ### Tests
 - **Binding matrix:** the entire layer-3/4 suite runs on WebTransport; differences allowed only where spec §4.5 lists them.
+- **HTTP/3 layer:** `curl --http3` against the endpoint path gets `405`; the well-known endpoint answers over HTTP/3 with the fingerprint `ETag`; malformed SETTINGS, QPACK and CONNECT inputs are fuzzed; browsers complete the WebTransport handshake in the three engines.
 - **Head-of-line test:** on WebTransport with injected packet loss, a stalled large stream does not delay an unrelated unary call (measure); on WebSocket it may (documented).
 - **UDP blocked:** blackhole UDP → the client falls back to WebSocket within the head-start budget; the failure cache skips WebTransport next time; a later WELCOME over WebSocket listing `webtransport` shortens the cache.
 - **Network switch:** change the client's source address mid-session (netns or `tc` tricks); record the observed behavior per browser and pin it in the docs.
@@ -352,7 +355,7 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 ### Exit criteria
 - Conformance levels Core, Streaming, Server calls pass on **both** bindings; fallback proven under UDP blocking.
 
-**Rust focus:** `quinn`-based stacks, mapping QUIC stream lifecycles onto your stream abstraction, running HTTP/1.1, HTTP/2 and HTTP/3 listeners together.
+**Rust focus:** `quinn` directly, a small HTTP/3 implementation (control streams, SETTINGS, static QPACK, extended CONNECT), mapping QUIC stream lifecycles onto your stream abstraction, running HTTP/1.1, HTTP/2 and HTTP/3 listeners together.
 
 ---
 
