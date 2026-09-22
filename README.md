@@ -1,6 +1,6 @@
 # Pavia
 
-Pavia is a real-time RPC and messaging protocol between browsers or apps and servers, with a Rust server implementation and generated clients. It keeps the SignalR connection model, one persistent session where either side can call the other and the server can target sessions, users and groups, and adds:
+Pavia is a real-time RPC and messaging protocol between browsers or apps and servers, with a Rust server implementation and generated clients. One persistent session carries calls in both directions and lets the server target sessions, users and groups. On top of that:
 
 - Typed contracts in both directions, described by a machine-readable manifest that client generators consume.
 - Multiplexed calls in four shapes (unary, server stream, client stream, bidirectional) with cancellation, deadlines, metadata and structured errors.
