@@ -13,7 +13,7 @@ The wire format is binary CBOR framed so that routers and backplanes can read en
 
 ## Non-goals
 
-- Compatibility with the SignalR, Socket.IO, gRPC or MQTT wire formats.
+- Compatibility with the wire formats of other real-time or RPC frameworks.
 - SSE or long-polling transports.
 - Client-to-client messaging without a server hop.
 - Media delivery.

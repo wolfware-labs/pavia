@@ -259,7 +259,7 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 
 ## M6: Targeting: sessions, users, groups
 
-**Goal:** the SignalR-class core: the server can reach any set of sessions, from anywhere in the application.
+**Goal:** the targeting core: the server can reach any set of sessions, from anywhere in the application.
 
 **Spec:** §13.1-13.6.
 
@@ -549,7 +549,7 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 - [ ] **C16.3 Limits review:** every limit in spec §16 configurable, enforced and covered by a test.
 - [ ] **C16.4 Security review** against spec §14: token handling, Origin checks, DoS surfaces (handshake flooding, varint and CBOR bombs, stream and lane exhaustion, datagram floods, presence enumeration).
 - [ ] **C16.5 Continuous fuzzing** in CI for all decoders; the abuse suite runs against every limit with the limit set to its default.
-- [ ] **C16.6 Benchmarks** with published methodology: memory per idle session, broadcast latency at 10k/50k sessions, unary call throughput, stream throughput, on both bindings, compared with ASP.NET Core SignalR, socketioxide and Centrifugo on the same hardware.
+- [ ] **C16.6 Benchmarks** with published methodology: memory per idle session, broadcast latency at 10k/50k sessions, unary call throughput, stream throughput, on both bindings, compared with established real-time servers on the same hardware.
 
 ---
 
@@ -560,7 +560,7 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 - [ ] **C17.2 Typed server-side client proxies:** calling a client method or sending a notification is a typed Rust call, not a string.
 - [ ] **C17.3 Typed channel and datagram handles** on the server side.
 - [ ] **C17.4 Error ergonomics:** `?`-friendly mapping from user error types to status codes and typed details.
-- [ ] **C17.5 Documentation site:** guides for each feature, a migration guide for SignalR users (concept mapping table), deployment guide, spec rendered alongside.
+- [ ] **C17.5 Documentation site:** guides for each feature, a migration guide from other real-time frameworks (concept mapping table), deployment guide, spec rendered alongside.
 
 ---
 
