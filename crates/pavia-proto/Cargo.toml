@@ -1,0 +1,11 @@
+[package]
+name = "pavia-proto"
+description = "Sans-IO core of the Pavia protocol: framing, streams, session state, sequencing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]

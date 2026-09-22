@@ -1,0 +1,11 @@
+[package]
+name = "pavia-webtransport"
+description = "HTTP/3 subset and WebTransport session layer on quinn"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]

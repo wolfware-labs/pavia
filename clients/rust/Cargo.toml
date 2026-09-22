@@ -1,0 +1,11 @@
+[package]
+name = "pavia-client"
+description = "Rust client for the Pavia protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]

@@ -1,0 +1,21 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "clients/rust"]
+
+[workspace.package]
+version = "0.1.0-alpha.0"
+edition = "2024"
+rust-version = "1.95"
+repository = "https://github.com/wolfware-labs/pavia"
+homepage = "https://github.com/wolfware-labs/pavia"
+authors = ["Mariano Santoro"]
+
+[workspace.dependencies]
+pavia-proto = { path = "crates/pavia-proto", version = "0.1.0-alpha.0" }
+pavia-contract = { path = "crates/pavia-contract", version = "0.1.0-alpha.0" }
+pavia-contract-derive = { path = "crates/pavia-contract-derive", version = "0.1.0-alpha.0" }
+pavia-server = { path = "crates/pavia-server", version = "0.1.0-alpha.0" }
+pavia-axum = { path = "crates/pavia-axum", version = "0.1.0-alpha.0" }
+pavia-webtransport = { path = "crates/pavia-webtransport", version = "0.1.0-alpha.0" }
+pavia-codegen = { path = "crates/pavia-codegen", version = "0.1.0-alpha.0" }
+pavia-client = { path = "clients/rust", version = "0.1.0-alpha.0" }

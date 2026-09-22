@@ -1,3 +1,4 @@
 target/
 node_modules/
 dist/
+clients/typescript/**/dist/

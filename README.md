@@ -28,6 +28,30 @@ The wire format is binary CBOR framed so that routers and backplanes can read en
 
 The specification defines conformance levels (Core, Streaming, Server calls, WebTransport, Datagrams, Resumption, Channels, History, Presence) and a public suite of test vectors and scripts (spec section 17). An implementation states which levels it supports; the rest is negotiated per session through capabilities. The conformance matrix in the roadmap tracks which levels pass on which binding, codec and client.
 
+## Repository layout
+
+```
+spec/                 the specification: editor's draft and every frozen version
+vectors/              test vectors and conformance scripts shared by all implementations
+docs/design/          decision records that shape more than one issue
+crates/               Rust workspace members
+  pavia-proto/          sans-IO core: framing, streams, session state, sequencing
+  pavia-contract/       type system, manifest, fingerprint, typed codecs
+  pavia-contract-derive/ derive macros for contract types
+  pavia-server/         tokio runtime: session tasks, registry, targeting, hooks
+  pavia-axum/           axum adapter
+  pavia-webtransport/   HTTP/3 subset and WebTransport session layer on quinn
+  pavia-codegen/        client code generation from a manifest
+  pavia-cli/            the `pavia` binary
+clients/              one directory per client platform, each with its own tooling
+  rust/                 the `pavia-client` crate (a workspace member)
+  typescript/           pnpm workspace with `@pavia/client`
+examples/             runnable example applications
+scripts/              repository checks used by CI
+```
+
+The Rust workspace is defined at the root and includes `crates/*` and `clients/rust`. Crate boundaries and the rules each crate must keep are in `docs/design/sans-io.md` and in every crate's README; `scripts/check-deps.sh` verifies them.
+
 ## Working on the spec
 
 Any edit to `spec/pavia-protocol.md` is a new spec version and lands together with the matching test vectors. See [spec/README.md](spec/README.md) before opening a PR; CI enforces the rules.

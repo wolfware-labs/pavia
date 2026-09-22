@@ -1,0 +1,11 @@
+[package]
+name = "pavia-contract"
+description = "Pavia contract layer: type system, manifest, fingerprint, typed codecs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
