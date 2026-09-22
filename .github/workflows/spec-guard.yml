@@ -5,6 +5,9 @@ on:
     paths:
       - "spec/**"
 
+permissions:
+  contents: read
+
 jobs:
   guard:
     runs-on: ubuntu-latest
