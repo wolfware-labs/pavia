@@ -402,7 +402,7 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 - [ ] **C10.1 Capability `resume`**; resume token issuance and rotation on every WELCOME.
 - [ ] **C10.2 Sequenced frames** (§7.8): every control-stream and lane frame except the exempt list carries `seq`; counters are **per lane, per direction**; client control requests (SUBSCRIBE, AUTH_REFRESH, DGRAM_BIND...) are sequenced too.
 - [ ] **C10.3 Acknowledgment** via `ack` maps, as ACK frames and piggybacked on sequenced frames; cadence 1 s / 64 frames; replay-buffer trimming per lane, both sides.
-- [ ] **C10.4 Replay buffer bounds** with backpressure or loss of resumability when full (documented choice).
+- [ ] **C10.4 Replay buffer bounds** (§7.8, decision #152): recoverable-first eviction (history publications, then presence, then the rest), one UNSUBSCRIBED code 2 per evicted channel, per-lane gap recording, `lost` in the resuming WELCOME and in the client's `resume` map, receiver re-anchoring; the sender never blocks.
 - [ ] **C10.5 Detached state:** transport loss without CLOSE detaches the session; targeted sends buffer; groups and subscriptions persist; `resume_window` expiry ends the session (on-disconnect runs, groups cleared).
 - [ ] **C10.6 Resume handshake:** HELLO `resume` → WELCOME `resumed: true` + `ack`; retransmission from the peer's position; duplicate discard.
 - [ ] **C10.7 Principal binding:** different principal or expired token → REJECT RESUME_FAILED; different codec or version → RESUME_FAILED; authorization re-evaluated after resume (§7.5).
@@ -410,11 +410,12 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 - [ ] **C10.7b Server calls to detached sessions** fail immediately with UNAVAILABLE `nx: true`.
 - [ ] **C10.8 Calls at transport loss** complete locally with UNAVAILABLE; handlers cancelled; TS client retries calls marked `idempotent`.
 - [ ] **C10.9 Cross-binding resume:** start on WebTransport, resume on WebSocket, and the reverse.
-- [ ] **C10.10 TS runtime:** transparent resumption with state events (`reconnecting`, `resumed`, `new-session`).
+- [ ] **C10.10 TS runtime:** transparent resumption with state events (`reconnecting`, `resumed`, `new-session`) and a `gap` event per lane listed in `lost`; its own replay buffer applies the same eviction order and reports `lost` in `resume`.
 
 ### Tests
 - **Fault injection:** kill the transport during a notification burst at random points, 1,000 iterations; zero loss, zero duplicates, order preserved per lane.
 - **Expiry:** resume after `resume_window` → RESUME_FAILED → new session → on-disconnect ran exactly once for the old one.
+- **Buffer pressure while detached:** flood a detached session past the replay bound with history publications and notifications; on resume the history channels get UNSUBSCRIBED code 2 and re-sync with `since`, WELCOME `lost` names exactly the lanes whose notifications were evicted, the client emits one `gap` per lane, and server memory for the session never exceeded the bound.
 - **Security:** replaying an old resume token fails; resuming from a different user fails; opening 9 tabs and dropping them all keeps at most 8 detached sessions.
 - **Lanes under resumption (WebTransport):** drop the transport while three lanes carry traffic at different rates; each lane replays exactly its gap; LANE_OPEN is replayed first.
 - **Lost control request:** drop the transport right after the client sends SUBSCRIBE; after resume the SUBSCRIBE is replayed and SUBSCRIBED arrives exactly once.

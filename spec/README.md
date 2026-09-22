@@ -46,3 +46,4 @@ Why not the GitHub wiki: wiki pages are outside pull requests and CI, cannot be 
 | [draft-0.2](versions/draft-0.2/pavia-protocol.md) | 2026-09-21 | Working draft | First version tracked in this repository. |
 | [draft-0.3](versions/draft-0.3/pavia-protocol.md) | 2026-09-21 | Working draft | Consistency pass from the C0.1 spec review (#229 to #248). |
 | [draft-0.4](versions/draft-0.4/pavia-protocol.md) | 2026-09-21 | Working draft | Integer keys in `limits` and `client` maps. |
+| [draft-0.5](versions/draft-0.5/pavia-protocol.md) | 2026-09-21 | Working draft | Replay buffer eviction order and per-lane gap reporting (`lost`). |
