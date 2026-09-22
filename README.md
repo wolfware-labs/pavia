@@ -55,3 +55,7 @@ The Rust workspace is defined at the root and includes `crates/*` and `clients/r
 ## Working on the spec
 
 Any edit to `spec/pavia-protocol.md` is a new spec version and lands together with the matching test vectors. See [spec/README.md](spec/README.md) before opening a PR; CI enforces the rules.
+
+## License
+
+Licensed under either of the Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE)) or the MIT license ([LICENSE-MIT](LICENSE-MIT)), at your option. Contributions are accepted under the same terms.

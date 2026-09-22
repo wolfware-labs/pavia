@@ -9,6 +9,7 @@ rust-version = "1.95"
 repository = "https://github.com/wolfware-labs/pavia"
 homepage = "https://github.com/wolfware-labs/pavia"
 authors = ["Mariano Santoro"]
+license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 pavia-proto = { path = "crates/pavia-proto", version = "0.1.0-alpha.0" }
