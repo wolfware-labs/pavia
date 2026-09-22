@@ -19,8 +19,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "echo \"lint: configured in C0.3\"",
-    "test": "echo \"test: configured in C0.3\""
+    "test": "vitest run --passWithNoTests"
   },
   "repository": {
     "type": "git",
