@@ -1,0 +1,45 @@
+name: Bug
+description: Behavior that disagrees with the specification or with the documentation.
+title: "Bug: "
+labels: ["bug"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: "pavia-server 0.1.0-alpha.0, @pavia/client 0.1.0-alpha.0, spec draft 0.7"
+    validations:
+      required: true
+  - type: dropdown
+    id: binding
+    attributes:
+      label: Binding and codec
+      options:
+        - WebSocket, cbor
+        - WebSocket, json
+        - WebTransport, cbor
+        - WebTransport, json
+        - Not transport related
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: A conformance script or a minimal program is best.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+      description: Cite the spec section.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual
+      description: Frames observed (`pavia decode` output), logs, close code.
+    validations:
+      required: true

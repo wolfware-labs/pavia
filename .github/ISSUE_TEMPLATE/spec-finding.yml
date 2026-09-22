@@ -1,0 +1,34 @@
+name: Spec finding
+description: A contradiction, gap or ambiguity in the specification, or a decision it must record.
+title: "Spec: "
+labels: ["kind/spec"]
+body:
+  - type: input
+    id: sections
+    attributes:
+      label: Spec sections
+      placeholder: "6.4, 16"
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Quote the sentences that disagree or the case the text does not cover.
+    validations:
+      required: true
+  - type: textarea
+    id: options
+    attributes:
+      label: Options
+      value: |
+        -
+  - type: textarea
+    id: recommendation
+    attributes:
+      label: Recommendation
+  - type: textarea
+    id: affects
+    attributes:
+      label: Affects
+      description: Capability issues and milestones that change with the decision.

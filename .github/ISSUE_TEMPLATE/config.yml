@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Specification
+    url: https://github.com/wolfware-labs/pavia/blob/main/spec/pavia-protocol.md
+    about: Read the current draft before filing a spec finding.
+  - name: Roadmap
+    url: https://github.com/wolfware-labs/pavia/blob/main/ROADMAP.md
+    about: Milestones and capability IDs.
