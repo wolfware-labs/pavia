@@ -149,7 +149,7 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 ### Capabilities
 - [ ] **C3.1 Method registry** keyed by `"service/method"`, case-sensitive, separate namespaces for server and client methods (§8.1). Hand-written registration is fine; macros come in M17.
 - [ ] **C3.2 Unary calls** (client → server): CALL → handler → RESULT; argument array decoding into handler parameters.
-- [ ] **C3.3 Callee validation order** (§8.2): UNIMPLEMENTED, INVALID_ARGUMENT (shape), INVALID_ARGUMENT (args), then authorization (hook placeholder), RESOURCE_EXHAUSTED.
+- [ ] **C3.3 Callee validation order** (§8.2): RESOURCE_EXHAUSTED (concurrency, first), UNIMPLEMENTED, INVALID_ARGUMENT (shape), INVALID_ARGUMENT (args), then authorization (hook placeholder).
 - [ ] **C3.4 Structured errors** (§8.4): status code + message + optional typed detail; unexpected failures and panics → INTERNAL with a generic message unless development mode is on.
 - [ ] **C3.5 Panic isolation:** a panicking handler produces ERROR INTERNAL; session and server survive.
 - [ ] **C3.6 Concurrency:** calls on different streams run concurrently; `max_calls` enforced (§6.5) with RESOURCE_EXHAUSTED.
@@ -401,7 +401,7 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 - [ ] **C10.3 Acknowledgment** via `ack` maps, as ACK frames and piggybacked on sequenced frames; cadence 1 s / 64 frames; replay-buffer trimming per lane, both sides.
 - [ ] **C10.4 Replay buffer bounds** with backpressure or loss of resumability when full (documented choice).
 - [ ] **C10.5 Detached state:** transport loss without CLOSE detaches the session; targeted sends buffer; groups and subscriptions persist; `resume_window` expiry ends the session (on-disconnect runs, groups cleared).
-- [ ] **C10.6 Resume handshake:** HELLO `resume` → WELCOME `resumed: true` + `seq`; retransmission from the peer's position; duplicate discard.
+- [ ] **C10.6 Resume handshake:** HELLO `resume` → WELCOME `resumed: true` + `ack`; retransmission from the peer's position; duplicate discard.
 - [ ] **C10.7 Principal binding:** different principal or expired token → REJECT RESUME_FAILED; different codec or version → RESUME_FAILED; authorization re-evaluated after resume (§7.5).
 - [ ] **C10.7a Detached limits:** per-principal and total caps on detached sessions; resume-attempt rate limit per address.
 - [ ] **C10.7b Server calls to detached sessions** fail immediately with UNAVAILABLE `nx: true`.
