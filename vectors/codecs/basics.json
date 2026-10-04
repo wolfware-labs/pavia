@@ -246,6 +246,18 @@
       "value": "3.4028234663852886e+38",
       "cbor": "fa 7f 7f ff ff",
       "json": "3.4028234663852886e+38"
+    },
+    {
+      "id": "string-rfc8785-escapes",
+      "spec": [
+        "12.3"
+      ],
+      "note": "json strings follow RFC 8785 3.2.2: quote, backslash and newline use their short escapes, other control characters use lowercase \\u00xx, and non-ASCII characters (an accented letter and an emoji) stay as raw UTF-8. cbor carries the same text unchanged.",
+      "type": "string",
+      "direction": "both",
+      "value": "\"a\\\"b\\\\c\\nd\\u0001é😀\"",
+      "cbor": "6e 61 22 62 5c 63 0a 64 01 c3 a9 f0 9f 98 80",
+      "json": "\"a\\\"b\\\\c\\nd\\u0001é😀\""
     }
   ]
 }
