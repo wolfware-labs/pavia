@@ -81,7 +81,7 @@ jobs:
 
             Return `findings`: the number of inline comments you posted in this run (0 when the pull request is clean), and `summary`: one sentence.
           claude_args: |
-            --max-turns 40
+            --max-turns 80
             --setting-sources user
             --json-schema '{"type":"object","properties":{"findings":{"type":"integer","minimum":0},"summary":{"type":"string"}},"required":["findings","summary"]}'
             --allowedTools "Read,Grep,Glob,mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(git diff:*),Bash(git log:*)"
@@ -169,6 +169,6 @@ jobs:
 
             Post findings as inline comments with `mcp__github_inline_comment__create_inline_comment` (with `confirmed: true`) at the lines they concern. Post one top-level comment with `gh pr comment` only to say whether you found anything blocking; if there are no findings, say so in one sentence.
           claude_args: |
-            --max-turns 40
+            --max-turns 80
             --setting-sources user
             --allowedTools "Read,Grep,Glob,mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(git diff:*),Bash(git log:*)"
