@@ -209,6 +209,43 @@
       "direction": "decode",
       "value": "{\"a\": 1, \"b\": 2, \"aa\": 3}",
       "cbor": "a3 62 61 61 03 61 62 02 61 61 01"
+    },
+    {
+      "id": "struct-message-fields-out-of-order",
+      "spec": [
+        "12.3"
+      ],
+      "note": "The struct-message value with its fields in a different order (author, text, sent_at, id): decoders accept it, encoders never produce it.",
+      "type": {
+        "ref": "Message"
+      },
+      "direction": "decode",
+      "value": "{\"id\": 37(h'7d4448409dc011d1b2455ffdce74fad2'), \"author\": \"ana\", \"text\": \"hi\", \"sent_at\": 1(1758499200)}",
+      "cbor": "a4 66 61 75 74 68 6f 72 63 61 6e 61 64 74 65 78 74 62 68 69 67 73 65 6e 74 5f 61 74 c1 1a 68 d0 91 80 62 69 64 d8 25 50 7d 44 48 40 9d c0 11 d1 b2 45 5f fd ce 74 fa d2"
+    },
+    {
+      "id": "f32-half-width",
+      "spec": [
+        "12.3"
+      ],
+      "note": "An f32 value exact in half precision is emitted in the 2-byte form, like f64.",
+      "type": "f32",
+      "direction": "both",
+      "value": "0.5",
+      "cbor": "f9 38 00",
+      "json": "0.5"
+    },
+    {
+      "id": "f32-single-width",
+      "spec": [
+        "12.3"
+      ],
+      "note": "The largest finite f32: outside the half-precision range, exact in single precision. An f32 never needs the double width. The json number follows RFC 8785.",
+      "type": "f32",
+      "direction": "both",
+      "value": "3.4028234663852886e+38",
+      "cbor": "fa 7f 7f ff ff",
+      "json": "3.4028234663852886e+38"
     }
   ]
 }
