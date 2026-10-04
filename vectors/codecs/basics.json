@@ -146,6 +146,69 @@
       "value": "{\"id\": 37(h'7d4448409dc011d1b2455ffdce74fad2'), \"author\": \"ana\", \"text\": \"hi\", \"sent_at\": 1(1758499200)}",
       "cbor": "a4 62 69 64 d8 25 50 7d 44 48 40 9d c0 11 d1 b2 45 5f fd ce 74 fa d2 66 61 75 74 68 6f 72 63 61 6e 61 64 74 65 78 74 62 68 69 67 73 65 6e 74 5f 61 74 c1 1a 68 d0 91 80",
       "json": "{\"id\":\"7d444840-9dc0-11d1-b245-5ffdce74fad2\",\"author\":\"ana\",\"text\":\"hi\",\"sent_at\":\"2025-09-22T00:00:00.000Z\"}"
+    },
+    {
+      "id": "f64-half-width",
+      "spec": [
+        "12.3"
+      ],
+      "note": "1.5 is exact in half precision, so the encoder emits the 2-byte form (draft 0.9: shortest width that represents the value exactly).",
+      "type": "f64",
+      "direction": "both",
+      "value": "1.5",
+      "cbor": "f9 3e 00",
+      "json": "1.5"
+    },
+    {
+      "id": "f64-single-width",
+      "spec": [
+        "12.3"
+      ],
+      "note": "100000.0 exceeds the half-precision range but is exact in single precision.",
+      "type": "f64",
+      "direction": "both",
+      "value": "100000.0",
+      "cbor": "fa 47 c3 50 00",
+      "json": "100000"
+    },
+    {
+      "id": "f64-double-width",
+      "spec": [
+        "12.3"
+      ],
+      "note": "0.1 is exact only in double precision. The json number follows RFC 8785.",
+      "type": "f64",
+      "direction": "both",
+      "value": "0.1",
+      "cbor": "fb 3f b9 99 99 99 99 99 9a",
+      "json": "0.1"
+    },
+    {
+      "id": "map-sorted-keys",
+      "spec": [
+        "12.3"
+      ],
+      "note": "map keys sorted per codec: cbor by the bytewise order of the encoded keys (shorter text sorts first, so \"b\" precedes \"aa\"), json by the bytewise order of the UTF-8 keys (\"aa\" precedes \"b\").",
+      "type": {
+        "map": "u32"
+      },
+      "direction": "both",
+      "value": "{\"a\": 1, \"b\": 2, \"aa\": 3}",
+      "cbor": "a3 61 61 01 61 62 02 62 61 61 03",
+      "json": "{\"a\":1,\"aa\":3,\"b\":2}"
+    },
+    {
+      "id": "map-unsorted-input",
+      "spec": [
+        "12.3"
+      ],
+      "note": "The same map with keys out of order: decoders accept it, encoders never produce it.",
+      "type": {
+        "map": "u32"
+      },
+      "direction": "decode",
+      "value": "{\"a\": 1, \"b\": 2, \"aa\": 3}",
+      "cbor": "a3 62 61 61 03 61 62 02 61 61 01"
     }
   ]
 }
