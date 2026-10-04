@@ -15,8 +15,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Automatic review, only for pull requests opened by trusted authors.
+  # Automatic review, only for pull requests opened by trusted authors. Required check "review":
+  # it fails when the review posts any finding, so the pull request cannot merge until the finding
+  # is fixed and a new push gets a clean review.
   auto:
+    name: review
     if: >-
       github.event_name == 'pull_request' &&
       github.event.pull_request.draft == false &&
@@ -34,6 +37,7 @@ jobs:
       # Review context prepared outside the model: the rules, read from the base branch, and the
       # review comments already on the pull request. The review then needs no git or API tools.
       - name: Prepare review context
+        id: context
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -51,7 +55,13 @@ jobs:
           done
           gh api --paginate "repos/$REPO/pulls/$PR/comments" \
             --jq '.[] | "\(.path):\(.line // .original_line) [\(.user.login)] \(.body)\n---"' > "$ctx/existing-comments.txt"
-      - uses: anthropics/claude-code-action@cfc3eb22bfed5c26ef66e3223c982af27e4524de # v1.0.231
+          # The Claude GitHub App refuses to run when this workflow differs from the base branch,
+          # so a pull request that edits it cannot be reviewed by the app.
+          if git diff --name-only "origin/$BASE_REF...HEAD" | grep -qx '.github/workflows/review.yml'; then
+            echo "workflow_changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - id: review
+        uses: anthropics/claude-code-action@cfc3eb22bfed5c26ef66e3223c982af27e4524de # v1.0.231
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           use_sticky_comment: true
@@ -67,14 +77,48 @@ jobs:
 
             Then review the diff (`gh pr diff`) against them. Report only findings that would change the code, the spec text or the vectors: contradictions with the spec, broken invariants, missing vectors for new MUSTs, crate boundary violations, unbounded input handling, secrets in logs, and defects. Cite the spec section or design record for each finding. Do not comment on style, naming or formatting, and do not summarize the change.
 
-            Post findings as inline comments with `mcp__github_inline_comment__create_inline_comment` (with `confirmed: true`) at the lines they concern. Post one top-level comment with `gh pr comment` only to say whether you found anything blocking; if there are no findings, say so in one sentence.
+            Post findings as inline comments with `mcp__github_inline_comment__create_inline_comment` (with `confirmed: true`) at the lines they concern. Every finding blocks the merge until it is fixed, so post only real ones. Post one top-level comment with `gh pr comment` saying how many findings you posted in this run; if there are none, say so in one sentence.
+
+            Return `findings`: the number of inline comments you posted in this run (0 when the pull request is clean), and `summary`: one sentence.
           claude_args: |
             --max-turns 40
             --setting-sources user
+            --json-schema '{"type":"object","properties":{"findings":{"type":"integer","minimum":0},"summary":{"type":"string"}},"required":["findings","summary"]}'
             --allowedTools "Read,Grep,Glob,mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(git diff:*),Bash(git log:*)"
 
   # Review requested by a maintainer with a "@claude review" comment on any pull request,
   # including those from first-time and outside contributors.
+      # Fail closed: no structured result, or any finding, fails the required check.
+      - name: Gate on findings
+        if: always()
+        env:
+          RESULT: ${{ steps.review.outputs.structured_output }}
+          WORKFLOW_CHANGED: ${{ steps.context.outputs.workflow_changed }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "${WORKFLOW_CHANGED:-}" = "true" ] && [ -z "${RESULT:-}" ]; then
+            permission=$(gh api "repos/$REPO/collaborators/$AUTHOR/permission" --jq .permission)
+            if [ "$permission" = "admin" ]; then
+              echo "::warning::This pull request edits review.yml, which the Claude GitHub App cannot review. Passing because the author is a repository admin; review the workflow change by hand."
+              exit 0
+            fi
+            echo "::error::This pull request edits review.yml, which the Claude GitHub App cannot review; only a repository admin can merge such a change."
+            exit 1
+          fi
+          if [ -z "${RESULT:-}" ]; then
+            echo "::error::The review produced no result; re-run the job."
+            exit 1
+          fi
+          findings=$(jq -r '.findings' <<<"$RESULT")
+          jq -r '.summary' <<<"$RESULT"
+          if [ "$findings" != "0" ]; then
+            echo "::error::The review posted $findings finding(s). Fix them, resolve the threads and push."
+            exit 1
+          fi
+
   requested:
     if: >-
       github.event_name == 'issue_comment' &&
