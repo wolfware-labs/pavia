@@ -1,0 +1,20 @@
+{
+  "$schema": "../schema/scripts.schema.json",
+  "group": "abuse",
+  "note": "Limits from spec 16 driven past their bound; each case asserts the close code and a time bound.",
+  "cases": [
+    {
+      "id": "ping-flood",
+      "spec": ["7.4", "14", "16"],
+      "note": "11 PINGs with no other traffic exceed the PING token bucket (capacity 10). Spec 7.4 says SHOULD close with LIMIT_EXCEEDED; this suite expects it.",
+      "binding": "any",
+      "codec": "cbor",
+      "steps": [
+        {"send": {"stream": 0, "type": 1, "name": "HELLO", "header": "{14: [1], 16: [\"cbor\"]}", "data": null}},
+        {"expect": {"stream": 0, "type": 2, "name": "WELCOME", "header": "{15: 1, 17: \"cbor\", ...}", "data": null}},
+        {"send": {"stream": 0, "type": 4, "name": "PING", "header": null, "data": null, "repeat": 11}},
+        {"expect_close": {"code": "LIMIT_EXCEEDED", "within_ms": 1000}}
+      ]
+    }
+  ]
+}

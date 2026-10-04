@@ -1,0 +1,44 @@
+{
+  "$schema": "../schema/frames.schema.json",
+  "group": "invalid",
+  "note": "Inputs a receiver MUST reject, with the close code it uses.",
+  "cases": [
+    {
+      "id": "hello-truncated-wt",
+      "spec": ["5.3"],
+      "note": "hello-minimal-wt without its last byte, then FIN: the stream ended in the middle of a frame.",
+      "binding": "wt",
+      "direction": "decode",
+      "hex": "01 00 14 13 a3 0e 81 01 10 81 64 63 62 6f 72 12 81 65 63 61 6c 6c",
+      "fin": true,
+      "error": {"code": "PROTOCOL_ERROR", "reason": "stream ended mid-frame"}
+    },
+    {
+      "id": "message-trailing-byte-ws",
+      "spec": ["5.4"],
+      "note": "A WebSocket message holding hello-minimal-ws followed by one stray byte that does not form a complete WsFrame.",
+      "binding": "ws",
+      "direction": "decode",
+      "hex": "00 01 00 14 13 a3 0e 81 01 10 81 64 63 62 6f 72 12 81 65 63 61 6c 6c 73 00",
+      "error": {"code": "PROTOCOL_ERROR", "reason": "partial trailing WsFrame"}
+    },
+    {
+      "id": "header-indefinite-map-wt",
+      "spec": ["5.4.1"],
+      "note": "Header encoded as an indefinite-length map (0xbf ... 0xff). Receivers MUST reject indefinite-length items in headers.",
+      "binding": "wt",
+      "direction": "decode",
+      "hex": "01 00 06 05 bf 0e 81 01 ff",
+      "error": {"code": "PROTOCOL_ERROR", "reason": "indefinite-length item in header"}
+    },
+    {
+      "id": "hello-max-frame-below-floor-wt",
+      "spec": ["4.1", "7.1", "16"],
+      "note": "HELLO advertising limits.max_frame (key 49) of 1024 bytes, below the 64 KiB floor of draft 0.8: a malformed HELLO.",
+      "binding": "wt",
+      "direction": "decode",
+      "hex": "01 00 13 12 a3 0e 81 01 10 81 64 63 62 6f 72 15 a1 18 31 19 04 00",
+      "error": {"code": "PROTOCOL_ERROR", "reason": "max_frame below 64 KiB"}
+    }
+  ]
+}

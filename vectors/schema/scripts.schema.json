@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wolfware-labs/pavia/vectors/schema/scripts.schema.json",
+  "title": "Pavia scripts",
+  "type": "object",
+  "required": ["group", "cases"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {"type": "string"},
+    "group": {"type": "string", "pattern": "^[a-z0-9-]+$"},
+    "note": {"type": "string"},
+    "cases": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/case"}}
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"},
+    "spec": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "pattern": "^([0-9]+(\\.[0-9]+)*|Appendix [A-Z])$"}
+    },
+    "ms": {"type": "integer", "minimum": 0},
+    "closeCode": {
+      "enum": [
+        "NORMAL", "PROTOCOL_ERROR", "UNSUPPORTED_VERSION", "UNAUTHENTICATED", "FORBIDDEN",
+        "IDLE_TIMEOUT", "SLOW_CONSUMER", "GOING_AWAY", "INTERNAL", "FRAME_TOO_LARGE",
+        "LIMIT_EXCEEDED", "RESUME_FAILED", "HANDSHAKE_TIMEOUT", "CONTRACT_MISMATCH"
+      ]
+    },
+    "frame": {
+      "type": "object",
+      "required": ["stream", "type", "header", "data"],
+      "properties": {
+        "stream": {"type": "integer", "minimum": 0},
+        "type": {"type": "integer", "minimum": 0, "maximum": 255},
+        "name": {"type": "string", "pattern": "^[A-Z_]+$"},
+        "flags": {"type": "integer", "minimum": 0, "maximum": 255},
+        "header": {"type": ["string", "null"]},
+        "data": {"type": ["string", "null"]},
+        "data_hex": {"type": "string", "pattern": "^([0-9a-f]{2}( ?[0-9a-f]{2})*)?$"}
+      }
+    },
+    "capture": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"pattern": "^[a-z_][a-z0-9_]*$"},
+      "additionalProperties": {"type": "string", "pattern": "^(header|data)(\\.[0-9a-z_]+)*$"}
+    },
+    "step": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 1,
+      "properties": {
+        "send": {
+          "allOf": [
+            {"$ref": "#/$defs/frame"},
+            {"properties": {"repeat": {"type": "integer", "minimum": 1}}}
+          ],
+          "unevaluatedProperties": false
+        },
+        "expect": {
+          "allOf": [
+            {"$ref": "#/$defs/frame"},
+            {"properties": {"capture": {"$ref": "#/$defs/capture"}}}
+          ],
+          "unevaluatedProperties": false
+        },
+        "expect_nothing_within": {
+          "type": "object", "required": ["ms"], "additionalProperties": false,
+          "properties": {"ms": {"$ref": "#/$defs/ms"}}
+        },
+        "wait": {
+          "type": "object", "required": ["ms"], "additionalProperties": false,
+          "properties": {"ms": {"$ref": "#/$defs/ms"}}
+        },
+        "close_transport": {"type": "object", "additionalProperties": false},
+        "expect_close": {
+          "type": "object", "required": ["code", "within_ms"], "additionalProperties": false,
+          "properties": {"code": {"$ref": "#/$defs/closeCode"}, "within_ms": {"$ref": "#/$defs/ms"}}
+        }
+      },
+      "additionalProperties": false
+    },
+    "case": {
+      "type": "object",
+      "required": ["id", "spec", "note", "binding", "codec", "steps"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "spec": {"$ref": "#/$defs/spec"},
+        "note": {"type": "string", "minLength": 1},
+        "binding": {"enum": ["ws", "wt", "any"]},
+        "codec": {"enum": ["cbor", "json"]},
+        "requires": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "steps": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/step"}}
+      }
+    }
+  }
+}
