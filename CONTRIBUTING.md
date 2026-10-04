@@ -15,6 +15,12 @@ Dependencies between issues are GitHub relationships, not text: a capability lis
 - Commits follow Conventional Commits and are signed.
 - Before pushing: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `scripts/check-deps.sh`; in `clients/typescript`: `pnpm typecheck`, `pnpm lint`, `pnpm test`.
 
+## Review
+
+Every pull request from a maintainer or collaborator gets an automated review against [`.github/REVIEWING.md`](.github/REVIEWING.md) and the path guides in `.github/instructions/`. Its `review` check is required: it fails when the review posts any finding, and the pull request merges once the findings are fixed, the threads are resolved and a new push gets a clean review. Pull requests from outside contributors are reviewed by a maintainer, who can also ask for the automated review with a `@claude review` comment, and they need a maintainer's approval.
+
+User guides live in the separate `wolfware-labs/pavia-docs` repository (created with #118 in M7); a behavior change that needs a guide update links the pavia-docs pull request from the pavia one.
+
 ## Design decisions
 
 Decisions that shape more than one issue are recorded under `docs/design/` and linked from the issues they affect. Decisions local to one issue are recorded in that issue.

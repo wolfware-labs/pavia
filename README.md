@@ -49,11 +49,13 @@ Implementations
 
 - [Specification](spec/pavia-protocol.md). Every published version is kept, unchanged, under `spec/versions/`; see the [versioning policy and index](spec/README.md).
 - [Roadmap](ROADMAP.md): milestones, capability IDs (`C4.7`), tests and exit criteria. Each capability is a GitHub issue and each milestone a GitHub milestone.
-- [Design records](docs/design/): decisions that shape more than one issue.
+- [Design records](docs/design/): decisions that shape more than one issue, including the crate layout ([`sans-io.md`](docs/design/sans-io.md)) and the protocol decisions of drafts 0.8 and 0.9 ([`spec-review-2026-10.md`](docs/design/spec-review-2026-10.md)).
+- [Test vectors](vectors/README.md): the frame, codec and script formats every implementation is checked against.
+- [Contributing](CONTRIBUTING.md) and the [review guide](.github/REVIEWING.md): how issues, pull requests and reviews work.
 
 ## Conformance
 
-The specification defines conformance levels (Core, Streaming, Server calls, WebTransport, Datagrams, Resumption, Channels, History, Presence) and a public suite of test vectors and scripts (spec section 17). An implementation states which levels it supports; the rest is negotiated per session through capabilities. The conformance matrix in the roadmap tracks which levels pass on which binding, codec and client.
+The specification defines conformance levels by feature (Core, Streaming, Server calls, Auth lifecycle, Lanes, Datagrams, Resumption, Channels, History, Presence) and a public suite of test vectors and scripts (spec section 17). Bindings (WebSocket, WebTransport) and codecs (`cbor`, `json`) are separate axes: an implementation states which levels it supports on which bindings and codecs, and the rest is negotiated per session through capabilities. The conformance matrix in the roadmap tracks which levels pass on which binding, codec and client.
 
 ## Repository layout
 
@@ -70,10 +72,11 @@ crates/               Rust workspace members
   pavia-webtransport/   HTTP/3 subset and WebTransport session layer on quinn
   pavia-codegen/        client code generation from a manifest
   pavia-cli/            the `pavia` binary
+  pavia-vectors/        test support: checks the files under vectors/ (not published)
 clients/              one directory per client platform, each with its own tooling
   rust/                 the `pavia-client` crate (a workspace member)
-  typescript/           pnpm workspace with `@pavia/client`
-examples/             runnable example applications
+  typescript/           pnpm workspace with `@pavia/client` and the test-only `@pavia/vectors`
+examples/             runnable example applications (from M7)
 scripts/              repository checks used by CI
 ```
 
