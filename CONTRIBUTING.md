@@ -6,6 +6,8 @@ Pavia is developed spec first. Read `spec/pavia-protocol.md` and `ROADMAP.md` be
 
 Use the issue forms: a capability from the roadmap, a spec finding, or a bug. Capability issues are the unit of work; each has a roadmap ID like `C4.7` and belongs to a milestone.
 
+Dependencies between issues are GitHub relationships, not text: a capability lists its prerequisites under "Blocked by" and is a sub-issue of its milestone tracker. An issue is ready to pick up when nothing blocks it.
+
 ## Pull requests
 
 - One capability or one spec change per PR, referencing its issue.

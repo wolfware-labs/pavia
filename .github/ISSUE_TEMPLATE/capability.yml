@@ -2,7 +2,16 @@ name: Capability
 description: Implementation work from the roadmap, one capability per issue.
 title: "C0.0 "
 labels: ["kind/feature"]
+type: Feature
 body:
+  - type: markdown
+    attributes:
+      value: |
+        A capability issue is written for someone who has not read the spec yet. Explain the problem before the solution, draw the mechanism, and say what is out of scope.
+
+        - Link every spec section you mention to its heading in [`spec/pavia-protocol.md`](https://github.com/wolfware-labs/pavia/blob/main/spec/pavia-protocol.md), for example `[spec 5.2](https://github.com/wolfware-labs/pavia/blob/main/spec/pavia-protocol.md#52-frame-layout)`.
+        - Do not list dependencies in the text. After creating the issue, add them under **Relationships** ("Blocked by") and make the issue a sub-issue of its milestone tracker.
+        - Diagrams use Mermaid in a ` ```mermaid ` block; byte layouts go in a plain code block.
   - type: input
     id: roadmap
     attributes:
@@ -14,20 +23,50 @@ body:
     id: spec
     attributes:
       label: Spec sections
-      placeholder: "12.4, 8.2"
-  - type: textarea
-    id: summary
+      description: Linked section numbers.
+      placeholder: "[8.2](https://github.com/wolfware-labs/pavia/blob/main/spec/pavia-protocol.md#82-call-0x10), [12.4](...)"
+    validations:
+      required: true
+  - type: input
+    id: crate
     attributes:
-      label: Summary
-      description: What the capability is, in the spec's terms.
+      label: Crate or package, and layer
+      placeholder: "pavia-proto, wire layer"
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Why this exists and the problem it solves, in plain words. Define each protocol term the first time it appears.
     validations:
       required: true
   - type: textarea
-    id: deliverables
+    id: how
     attributes:
-      label: Deliverables
+      label: How it works
+      description: At least one diagram. sequenceDiagram for message exchanges, stateDiagram-v2 for lifecycles, flowchart for decisions or data flow. Add short notes on what the diagram leaves out.
       value: |
+        ```mermaid
+        sequenceDiagram
+            participant C as Client
+            participant S as Server
+            C->>S: FRAME
+            S->>C: FRAME
+        ```
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: What this issue delivers, and which sibling issues own the adjacent work.
+      value: |
+        **In scope**
+
         -
+
+        **Out of scope**
+
+        - (owned by #N)
     validations:
       required: true
   - type: textarea
@@ -43,9 +82,31 @@ body:
     id: tests
     attributes:
       label: Tests
-      description: Vectors, scripts, property tests, browser runs.
+      description: Vectors, scripts, property tests, browser runs. Say what goes in and what must come out.
+      value: |
+        -
   - type: textarea
-    id: notes
+    id: getting-started
     attributes:
-      label: Notes
-      description: Pitfalls, dependencies on other capabilities, design records.
+      label: Getting started
+      description: Three to five first steps - what to read, which file to open, which test to write first.
+      value: |
+        1.
+  - type: textarea
+    id: learning
+    attributes:
+      label: Learning notes
+      description: Concepts the work touches, posed as design questions with links (Rust Book, docs.rs, RFCs, MDN). Hints only - no implementation code.
+      value: |
+        | Concept | Question to answer while designing | Where to read |
+        |---|---|---|
+        |  |  |  |
+
+        Common traps:
+  - type: textarea
+    id: references
+    attributes:
+      label: References
+      description: Linked spec sections with a few words on what to read each for, design records under docs/design/, decisions recorded in other issues, the milestone tracker.
+      value: |
+        -
