@@ -106,7 +106,12 @@ uvx check-jsonschema --schemafile vectors/schema/codecs.schema.json vectors/code
 uvx check-jsonschema --schemafile vectors/schema/scripts.schema.json vectors/scripts/*.json
 ```
 
-Schema validation checks structure only. That a header string really encodes to the bytes in `hex` is checked by the diagnostic-notation parsers in the Rust and TypeScript test suites (#5).
+Schema validation checks structure only. The content is checked twice, by independent implementations in each language: `crates/pavia-vectors` (Rust) and `clients/typescript/packages/vectors` (TypeScript) each parse the diagnostic notation, lay the decoded form out as a frame and compare it with `hex`, encode or decode every codec value, and check that scripts parse and capture every `$name` before using it. Both run with the normal test commands:
+
+```
+cargo test -p pavia-vectors
+cd clients/typescript && pnpm test
+```
 
 ## Adding vectors
 
