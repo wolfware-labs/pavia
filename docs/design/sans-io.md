@@ -5,7 +5,7 @@ Decision record for roadmap C0.7 (#2). Status: accepted, 2026-09-21.
 ## Decisions
 
 1. The protocol crate is sans-IO and exposes one driver loop: `handle_input(Input)` then `poll_output()` until it returns `Output::Timeout`.
-2. The Rust workspace has seven library crates plus the derive crate; dependency rules are enforced by Cargo and checked in CI.
+2. The Rust workspace has seven library crates plus the proc-macro crates (`pavia-contract-derive` today, `pavia-macros` planned in #218); dependency rules are enforced by Cargo and checked in CI.
 3. The TypeScript generator is a Rust crate, driven from the `pavia` binary.
 
 ## Why sans-IO
