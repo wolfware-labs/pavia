@@ -5,7 +5,7 @@ Decision record for roadmap C0.7 (#2). Status: accepted, 2026-09-21.
 ## Decisions
 
 1. The protocol crate is sans-IO and exposes one driver loop: `handle_input(Input)` then `poll_output()` until it returns `Output::Timeout`.
-2. The Rust workspace has seven library crates plus the derive crate; dependency rules are enforced by Cargo and checked in CI.
+2. The Rust workspace has seven library crates plus the proc-macro crates (`pavia-contract-derive` today, `pavia-macros` planned in #218); dependency rules are enforced by Cargo and checked in CI.
 3. The TypeScript generator is a Rust crate, driven from the `pavia` binary.
 
 ## Why sans-IO
@@ -22,6 +22,7 @@ Everything that parses bytes or holds protocol state lives in a crate with no so
 pavia-proto            wire, streams, session state machine, sequencing      no tokio, hyper, axum, quinn
 pavia-contract         type system, manifest, fingerprint, typed codecs      no pavia-proto, no IO
 pavia-contract-derive  #[derive] for contract types (proc-macro)            depends on nothing else here
+pavia-macros           #[service], #[client], error mapping (proc-macro)    planned (#218); re-exported by pavia-server
 pavia-server           tokio session tasks, registry, targeting, hooks,      no axum
                        RequestContext (request headers, cookies, peer)
 pavia-axum             mounting, filling RequestContext from the upgrade     axum + pavia-server
@@ -29,7 +30,7 @@ pavia-axum             mounting, filling RequestContext from the upgrade     axu
 pavia-client           tokio Rust client, WS and WT drivers                  no pavia-server
 pavia-webtransport     HTTP/3 subset and WebTransport session layer on quinn   tokio + quinn; no pavia-proto
 pavia-codegen          TypeScript generator over a manifest                 pavia-contract only
-pavia-cli              `pavia` binary: decode, contract export/diff, dev-cert, codegen
+pavia-cli              `pavia` binary: decode, contract diff/fetch, dev-cert, codegen  reads manifests, never links app code
 ```
 
 Rules:

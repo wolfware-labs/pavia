@@ -318,3 +318,10 @@ Rejected: pulling the credential lifecycle into the MVP, because it grows M2 to 
 HELLO `versions` carries integers, and the spec did not say whether a 1.x revision changes them.
 Rule: `versions` carries the major version only; compatible revisions keep `1` and negotiate their additions as capabilities (7.10).
 Rejected: a revision field, because it invites version sniffing instead of capability checks.
+
+## Follow-up: draft 0.9
+
+### Data-section encoding order
+Headers had a deterministic encoding (5.4.1) but data sections had none, so struct and map values had several valid byte forms and codec vectors could not be byte-exact.
+Rule: one encoding per value. Struct fields in manifest declaration order, `map` keys sorted, shortest integer and float forms, compact `json` with RFC 8785 strings and numbers. Decoders accept any order.
+Rejected: full RFC 8949 deterministic order for structs too (every struct encode sorts its fields, and the order differs from the manifest); no rule with value comparison in vectors (byte-level interop tests and hashing of payloads become unreliable).
