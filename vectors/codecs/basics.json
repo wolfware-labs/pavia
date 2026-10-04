@@ -133,18 +133,19 @@
       "json": "{\"TooLong\":{\"max\":2000}}"
     },
     {
-      "id": "struct-message-decode",
+      "id": "struct-message",
       "spec": [
         "12.3",
         "Appendix A"
       ],
-      "note": "A struct is a map keyed by field names. The spec fixes no key order for data sections, so this case is decode-only: an encoder may order the fields differently.",
+      "note": "A struct is a map keyed by field names, encoded in manifest declaration order (draft 0.9). Decoders accept any order.",
       "type": {
         "ref": "Message"
       },
-      "direction": "decode",
+      "direction": "both",
       "value": "{\"id\": 37(h'7d4448409dc011d1b2455ffdce74fad2'), \"author\": \"ana\", \"text\": \"hi\", \"sent_at\": 1(1758499200)}",
-      "cbor": "a4 62 69 64 d8 25 50 7d 44 48 40 9d c0 11 d1 b2 45 5f fd ce 74 fa d2 66 61 75 74 68 6f 72 63 61 6e 61 64 74 65 78 74 62 68 69 67 73 65 6e 74 5f 61 74 c1 1a 68 d0 91 80"
+      "cbor": "a4 62 69 64 d8 25 50 7d 44 48 40 9d c0 11 d1 b2 45 5f fd ce 74 fa d2 66 61 75 74 68 6f 72 63 61 6e 61 64 74 65 78 74 62 68 69 67 73 65 6e 74 5f 61 74 c1 1a 68 d0 91 80",
+      "json": "{\"id\":\"7d444840-9dc0-11d1-b245-5ffdce74fad2\",\"author\":\"ana\",\"text\":\"hi\",\"sent_at\":\"2025-09-22T00:00:00.000Z\"}"
     }
   ]
 }

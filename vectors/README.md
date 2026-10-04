@@ -58,7 +58,7 @@ A file may define named types in `types`, in the form of the manifest's `types` 
 | `json` | with `value`, or with `error` | The `json` encoding as text, compared byte for byte: compact, no insignificant whitespace |
 | `error` | one of | `{codec, reason?}`: decoding the given `cbor` or `json` input MUST fail. Error cases are always `decode` |
 
-Data sections have no deterministic encoding rule in the spec, so a value with a map of two or more keys (a struct, a map) can be encoded in more than one byte order. Such cases are `decode`.
+Every value has one encoding ([spec 12.3](../spec/pavia-protocol.md#123-codec-mapping), draft 0.9): struct fields in manifest declaration order, `map` keys sorted, shortest integer and float forms, compact `json`. Codec vectors are therefore `both` unless the input is one that encoders never produce, such as fields out of order.
 
 ## Scripts (`scripts/`)
 
