@@ -66,3 +66,29 @@ jobs:
         run: pnpm test
       - name: Build
         run: pnpm build
+
+  vectors:
+    name: vectors
+    runs-on: ubuntu-latest
+    env:
+      CHECK_JSONSCHEMA: check-jsonschema==0.38.2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Schemas are valid JSON Schema
+        run: pipx run --spec "$CHECK_JSONSCHEMA" check-jsonschema --check-metaschema vectors/schema/*.schema.json
+      - name: Vectors match their schemas
+        run: |
+          for kind in frames codecs scripts; do
+            pipx run --spec "$CHECK_JSONSCHEMA" check-jsonschema \
+              --schemafile "vectors/schema/$kind.schema.json" vectors/$kind/*.json
+          done
+      - name: Broken fixtures are rejected
+        run: |
+          for f in vectors/schema/invalid/*.json; do
+            kind=$(basename "$f" | cut -d- -f1)
+            if pipx run --spec "$CHECK_JSONSCHEMA" check-jsonschema \
+                --schemafile "vectors/schema/$kind.schema.json" "$f"; then
+              echo "::error file=$f::fixture should fail validation"
+              exit 1
+            fi
+          done

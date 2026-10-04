@@ -1,0 +1,99 @@
+{
+  "$schema": "../schema/frames.schema.json",
+  "group": "handshake",
+  "note": "Valid frames from the opening of a session, on both bindings.",
+  "cases": [
+    {
+      "id": "hello-minimal-wt",
+      "spec": ["5.2", "5.3", "5.4.1", "7.1"],
+      "note": "HELLO on the WebTransport control stream: no stream ID prefix. Header keys in deterministic order 14, 16, 18.",
+      "binding": "wt",
+      "direction": "both",
+      "hex": "01 00 14 13 a3 0e 81 01 10 81 64 63 62 6f 72 12 81 65 63 61 6c 6c 73",
+      "frames": [
+        {
+          "type": 1,
+          "name": "HELLO",
+          "flags": 0,
+          "header": "{14: [1], 16: [\"cbor\"], 18: [\"calls\"]}",
+          "data": null
+        }
+      ]
+    },
+    {
+      "id": "hello-minimal-ws",
+      "spec": ["5.4", "6.1", "7.1"],
+      "note": "The same HELLO as one WebSocket binary message: the stream ID varint (0, the control stream) comes first.",
+      "binding": "ws",
+      "direction": "both",
+      "hex": "00 01 00 14 13 a3 0e 81 01 10 81 64 63 62 6f 72 12 81 65 63 61 6c 6c 73",
+      "frames": [
+        {
+          "stream": 0,
+          "type": 1,
+          "name": "HELLO",
+          "flags": 0,
+          "header": "{14: [1], 16: [\"cbor\"], 18: [\"calls\"]}",
+          "data": null
+        }
+      ]
+    },
+    {
+      "id": "call-unary-ws",
+      "spec": ["5.2", "5.5", "6.1", "8.2"],
+      "note": "Client CALL on stream 2 (first client-initiated stream), unary shape, 5 s deadline. The data section is the cbor argument array.",
+      "binding": "ws",
+      "direction": "both",
+      "hex": "02 10 00 22 12 a3 02 69 63 68 61 74 2f 73 65 6e 64 04 19 13 88 05 00 82 67 67 65 6e 65 72 61 6c 65 68 65 6c 6c 6f",
+      "frames": [
+        {
+          "stream": 2,
+          "type": 16,
+          "name": "CALL",
+          "flags": 0,
+          "header": "{2: \"chat/send\", 4: 5000, 5: 0}",
+          "data": "[\"general\", \"hello\"]",
+          "codec": "cbor"
+        }
+      ]
+    },
+    {
+      "id": "ping-empty-ws",
+      "spec": ["5.2", "7.4"],
+      "note": "PING with no header and no data: HeaderLength is 0 and the payload is that single byte.",
+      "binding": "ws",
+      "direction": "both",
+      "hex": "00 04 00 01 00",
+      "frames": [
+        {"stream": 0, "type": 4, "name": "PING", "flags": 0, "header": null, "data": null}
+      ]
+    },
+    {
+      "id": "hello-partial-wt",
+      "spec": ["5.1", "5.3"],
+      "note": "The first 10 bytes of hello-minimal-wt with the stream still open: a decoder reports that it needs more bytes, not an error.",
+      "binding": "wt",
+      "direction": "decode",
+      "hex": "01 00 14 13 a3 0e 81 01 10 81",
+      "fin": false,
+      "frames": []
+    },
+    {
+      "id": "hello-key-order-wt",
+      "spec": ["5.4.1"],
+      "note": "Header keys out of deterministic order (16 before 14). Receivers SHOULD accept it; an encoder never produces it, so the case is decode-only.",
+      "binding": "wt",
+      "direction": "decode",
+      "hex": "01 00 0c 0b a2 10 81 64 63 62 6f 72 0e 81 01",
+      "frames": [
+        {
+          "type": 1,
+          "name": "HELLO",
+          "flags": 0,
+          "header": "{14: [1], 16: [\"cbor\"]}",
+          "data": null
+        }
+      ]
+    }
+  ]
+}

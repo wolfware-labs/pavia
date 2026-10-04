@@ -1,0 +1,17 @@
+{
+  "$schema": "../frames.schema.json",
+  "group": "broken",
+  "note": "Deliberately invalid fixture: the case has no id. CI checks that schema validation rejects it.",
+  "cases": [
+    {
+      "spec": ["7.4"],
+      "note": "missing id",
+      "binding": "ws",
+      "direction": "both",
+      "hex": "00 04 00 01 00",
+      "frames": [
+        {"stream": 0, "type": 4, "flags": 0, "header": null, "data": null}
+      ]
+    }
+  ]
+}

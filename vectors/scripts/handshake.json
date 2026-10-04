@@ -1,0 +1,41 @@
+{
+  "$schema": "../schema/scripts.schema.json",
+  "group": "handshake",
+  "note": "Session opening, heartbeat and resumption, from the client's side.",
+  "cases": [
+    {
+      "id": "hello-welcome-ping",
+      "spec": ["7.1", "7.2", "7.4"],
+      "note": "A minimal handshake followed by a PING: the server answers WELCOME, then PONG with the same (empty) data.",
+      "binding": "any",
+      "codec": "cbor",
+      "steps": [
+        {"send": {"stream": 0, "type": 1, "name": "HELLO", "header": "{14: [1], 16: [\"cbor\"], 18: [\"calls\"]}", "data": null}},
+        {"expect": {"stream": 0, "type": 2, "name": "WELCOME", "header": "{15: 1, 17: \"cbor\", 18: [\"calls\"], 19: *, 21: *, 22: *, 23: *, ...}", "data": null}},
+        {"send": {"stream": 0, "type": 4, "name": "PING", "header": null, "data": null}},
+        {"expect": {"stream": 0, "type": 5, "name": "PONG", "header": null, "data": null}},
+        {"expect_nothing_within": {"ms": 200}}
+      ]
+    },
+    {
+      "id": "resume-with-captured-token",
+      "spec": ["7.2", "7.8", "Appendix A"],
+      "note": "The resume token and session ID are chosen by the server, so the script captures them from WELCOME and sends them back after the transport drops.",
+      "binding": "any",
+      "codec": "cbor",
+      "requires": ["resume"],
+      "steps": [
+        {"send": {"stream": 0, "type": 1, "name": "HELLO", "header": "{14: [1], 16: [\"cbor\"], 18: [\"calls\", \"resume\"]}", "data": null}},
+        {"expect": {
+          "stream": 0, "type": 2, "name": "WELCOME",
+          "header": "{13: *, 15: 1, 17: \"cbor\", 18: *, 19: *, 37: *, ...}",
+          "data": null,
+          "capture": {"token": "header.13", "session": "header.19"}
+        }},
+        {"close_transport": {}},
+        {"send": {"stream": 0, "type": 1, "name": "HELLO", "header": "{14: [1], 16: [\"cbor\"], 18: [\"calls\", \"resume\"], 20: {13: $token, 19: $session, 44: {}}}", "data": null}},
+        {"expect": {"stream": 0, "type": 2, "name": "WELCOME", "header": "{13: *, 19: $session, 43: true, 44: {}, ...}", "data": null}}
+      ]
+    }
+  ]
+}

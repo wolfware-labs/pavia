@@ -1,0 +1,150 @@
+{
+  "$schema": "../schema/codecs.schema.json",
+  "group": "basics",
+  "note": "Primitive types, an alias, an enum and a struct.",
+  "types": {
+    "MessageId": {
+      "alias": "uuid"
+    },
+    "SendError": {
+      "enum": {
+        "variants": [
+          {
+            "name": "RoomNotFound"
+          },
+          {
+            "name": "TooLong",
+            "type": {
+              "struct": {
+                "fields": [
+                  {
+                    "name": "max",
+                    "type": "u32"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      }
+    },
+    "Message": {
+      "struct": {
+        "fields": [
+          {
+            "name": "id",
+            "type": {
+              "ref": "MessageId"
+            }
+          },
+          {
+            "name": "author",
+            "type": "string"
+          },
+          {
+            "name": "text",
+            "type": "string"
+          },
+          {
+            "name": "sent_at",
+            "type": "timestamp"
+          }
+        ]
+      }
+    }
+  },
+  "cases": [
+    {
+      "id": "u64-max",
+      "spec": [
+        "12.3"
+      ],
+      "note": "Largest u64. cbor: 8-byte unsigned integer. json: a decimal string, to avoid JavaScript precision loss.",
+      "type": "u64",
+      "direction": "both",
+      "value": "18446744073709551615",
+      "cbor": "1b ff ff ff ff ff ff ff ff",
+      "json": "\"18446744073709551615\""
+    },
+    {
+      "id": "timestamp-millis",
+      "spec": [
+        "12.3"
+      ],
+      "note": "A timestamp with milliseconds. cbor: tag 1 with the shortest float that keeps millisecond precision (float64 here). json: RFC 3339 in UTC with milliseconds.",
+      "type": "timestamp",
+      "direction": "both",
+      "value": "1(1758499200.123)",
+      "cbor": "c1 fb 41 da 34 24 60 07 df 3b",
+      "json": "\"2025-09-22T00:00:00.123Z\""
+    },
+    {
+      "id": "uuid-tag-37",
+      "spec": [
+        "12.3"
+      ],
+      "note": "uuid through an alias. cbor: tag 37 over a 16-byte byte string. json: lowercase hyphenated text.",
+      "type": {
+        "ref": "MessageId"
+      },
+      "direction": "both",
+      "value": "37(h'7d4448409dc011d1b2455ffdce74fad2')",
+      "cbor": "d8 25 50 7d 44 48 40 9d c0 11 d1 b2 45 5f fd ce 74 fa d2",
+      "json": "\"7d444840-9dc0-11d1-b245-5ffdce74fad2\""
+    },
+    {
+      "id": "bytes-base64url",
+      "spec": [
+        "12.3"
+      ],
+      "note": "bytes. json: base64url without padding; the value is chosen so that standard base64 would differ ('-' and '_').",
+      "type": "bytes",
+      "direction": "both",
+      "value": "h'fbff0001'",
+      "cbor": "44 fb ff 00 01",
+      "json": "\"-_8AAQ\""
+    },
+    {
+      "id": "bytes-padded-json",
+      "spec": [
+        "12.3"
+      ],
+      "note": "Padded base64url input: json decoders reject it.",
+      "type": "bytes",
+      "direction": "decode",
+      "error": {
+        "codec": "json",
+        "reason": "padded base64url"
+      },
+      "json": "\"-_8AAQ==\""
+    },
+    {
+      "id": "enum-data-variant",
+      "spec": [
+        "12.3"
+      ],
+      "note": "A data enum variant is a single-entry map keyed by the variant name.",
+      "type": {
+        "ref": "SendError"
+      },
+      "direction": "both",
+      "value": "{\"TooLong\": {\"max\": 2000}}",
+      "cbor": "a1 67 54 6f 6f 4c 6f 6e 67 a1 63 6d 61 78 19 07 d0",
+      "json": "{\"TooLong\":{\"max\":2000}}"
+    },
+    {
+      "id": "struct-message-decode",
+      "spec": [
+        "12.3",
+        "Appendix A"
+      ],
+      "note": "A struct is a map keyed by field names. The spec fixes no key order for data sections, so this case is decode-only: an encoder may order the fields differently.",
+      "type": {
+        "ref": "Message"
+      },
+      "direction": "decode",
+      "value": "{\"id\": 37(h'7d4448409dc011d1b2455ffdce74fad2'), \"author\": \"ana\", \"text\": \"hi\", \"sent_at\": 1(1758499200)}",
+      "cbor": "a4 62 69 64 d8 25 50 7d 44 48 40 9d c0 11 d1 b2 45 5f fd ce 74 fa d2 66 61 75 74 68 6f 72 63 61 6e 61 64 74 65 78 74 62 68 69 67 73 65 6e 74 5f 61 74 c1 1a 68 d0 91 80"
+    }
+  ]
+}
