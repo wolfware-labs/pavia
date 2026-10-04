@@ -51,14 +51,13 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 - [ ] **C0.2 Repository layout.** Rust workspace and a TypeScript workspace (monorepo or two repos; decide). At minimum: a sans-IO protocol crate, a server crate, an axum adapter crate, a TS runtime package, and a codegen entry point (cargo subcommand or standalone binary).
 - [ ] **C0.3 CI.** Rust: fmt, clippy `-D warnings`, tests. TS: typecheck, lint, tests. Both on every PR.
 - [ ] **C0.4 Vector format.** Define the file format for frame vectors, codec vectors and scripts (spec §17.2), with a README. Write 5 hand-made vectors to validate the format.
-- [ ] **C0.5 Diagnostic tooling.** A small CLI that decodes hex/binary frames to diagnostic notation and back. You'll use it constantly to author vectors and debug.
 - [ ] **C0.6 Scope statement.** README section: what Pavia is, conformance levels targeted for MVP, explicit non-goals.
 
 ### Exit criteria
 - CI green on empty crates/packages.
-- Vector format documented, with a working decoder CLI round-tripping the sample vectors.
+- Vector format documented, with every vector checked by schema and by independent content checks in Rust and TypeScript. (C0.5, the diagnostic CLI, moved to M1: it is built on the real decoders.)
 
-**Rust focus:** workspace organization, CLI with `clap`, CBOR diagnostic handling.
+**Rust focus:** workspace organization, CBOR diagnostic handling (the vector content checks of C0.4).
 
 ---
 
@@ -69,6 +68,7 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 **Spec:** §5, §6.1, §6.3 (as state rules), §15.
 
 ### Capabilities
+- [ ] **C0.5 Diagnostic tooling** (moved from M0; after C1.5). A `pavia` CLI that decodes hex/binary frames to diagnostic notation and back, built on the `wire` layer of `pavia-proto` rather than a decoder of its own. You'll use it constantly to author vectors and debug.
 - [ ] **C1.1 Varints** (§5.1): encode shortest form; decode any valid form; reject values above caller-supplied limits before allocating.
 - [ ] **C1.2 Frame codec** (§5.2): Type, Flags, Length, HeaderLength, Header, Data. Incremental decoding: accepts arbitrary byte chunks, yields complete frames, keeps remainders.
 - [ ] **C1.3 WS envelope** (§5.4): StreamId prefix; multiple frames per message; reject partial trailing frames.
@@ -94,7 +94,7 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 ### Exit criteria
 - All vectors pass; fuzz clean; the crate has no async runtime or HTTP dependency.
 
-**Rust focus:** `bytes::Buf`/`BufMut`, zero-copy slicing of data sections, enums and exhaustive matching, `proptest`, `cargo-fuzz`, `ciborium`/`minicbor` trade-offs (deterministic encoding support matters).
+**Rust focus:** `bytes::Buf`/`BufMut`, zero-copy slicing of data sections, enums and exhaustive matching, `proptest`, `cargo-fuzz`, `ciborium`/`minicbor` trade-offs (deterministic encoding support matters), a CLI with `clap` (C0.5).
 
 ---
 
