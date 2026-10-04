@@ -49,3 +49,4 @@ Why not the GitHub wiki: wiki pages are outside pull requests and CI, cannot be 
 | [draft-0.5](versions/draft-0.5/pavia-protocol.md) | 2026-09-21 | Working draft | Replay buffer eviction order and per-lane gap reporting (`lost`). |
 | [draft-0.6](versions/draft-0.6/pavia-protocol.md) | 2026-09-21 | Working draft | Resume routing hint; multi-node ownership, takeover and backplane outage (13.8). |
 | [draft-0.7](versions/draft-0.7/pavia-protocol.md) | 2026-09-21 | Working draft | Editorial: framework comparisons removed. |
+| [draft-0.8](versions/draft-0.8/pavia-protocol.md) | 2026-10-04 | Working draft | Decisions from the issue consistency review: sequencing and replay, early call completion, pre-WELCOME limits, conformance levels by feature, and more (`docs/design/spec-review-2026-10.md`). |
