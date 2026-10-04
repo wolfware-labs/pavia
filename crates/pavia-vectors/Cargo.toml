@@ -1,0 +1,15 @@
+[package]
+name = "pavia-vectors"
+description = "Test support: reads the vectors under vectors/ and checks them against an independent CBOR implementation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+ciborium = "0.2.2"
+serde_json = "1.0.151"

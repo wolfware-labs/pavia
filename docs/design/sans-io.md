@@ -31,6 +31,7 @@ pavia-client           tokio Rust client, WS and WT drivers                  no 
 pavia-webtransport     HTTP/3 subset and WebTransport session layer on quinn   tokio + quinn; no pavia-proto
 pavia-codegen          TypeScript generator over a manifest                 pavia-contract only
 pavia-cli              `pavia` binary: decode, contract diff/fetch, dev-cert, codegen  reads manifests, never links app code
+pavia-vectors          test support: checks the files under vectors/           not published; test-only
 ```
 
 Rules:

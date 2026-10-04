@@ -1,0 +1,15 @@
+{
+  "name": "@pavia/vectors",
+  "version": "0.1.0-alpha.0",
+  "private": true,
+  "description": "Test support: reads the vectors under vectors/ and checks them with an independent CBOR codec",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0"
+  }
+}
