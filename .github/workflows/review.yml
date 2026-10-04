@@ -61,7 +61,7 @@ jobs:
             echo "workflow_changed=true" >> "$GITHUB_OUTPUT"
           fi
       - id: review
-        uses: anthropics/claude-code-action@cfc3eb22bfed5c26ef66e3223c982af27e4524de # v1.0.231
+        uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1.0.239
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           use_sticky_comment: true
@@ -151,7 +151,7 @@ jobs:
           cp .github/instructions/*.md "$ctx/rules/"
           gh api --paginate "repos/$REPO/pulls/$PR/comments" \
             --jq '.[] | "\(.path):\(.line // .original_line) [\(.user.login)] \(.body)\n---"' > "$ctx/existing-comments.txt"
-      - uses: anthropics/claude-code-action@cfc3eb22bfed5c26ef66e3223c982af27e4524de # v1.0.231
+      - uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1.0.239
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           use_sticky_comment: true
