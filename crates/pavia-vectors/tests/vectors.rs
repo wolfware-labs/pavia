@@ -158,28 +158,44 @@ fn frame_vectors_match_their_hex() {
 }
 
 #[test]
-fn codec_vectors_match_their_cbor() {
-    for (ctx, case) in unique_ids("codecs") {
-        if let Some(json) = case["json"].as_str() {
-            serde_json::from_str::<Json>(json).unwrap_or_else(|e| panic!("{ctx}: json {e}"));
-        }
-        let (Some(value), Some(cbor)) = (case["value"].as_str(), case["cbor"].as_str()) else {
-            continue;
-        };
-        let expected = plain(value, &ctx);
-        let bytes = hex(cbor);
-        if case["direction"] == "both" {
-            assert_eq!(
-                encode(&expected),
-                bytes,
-                "{ctx}: value does not encode to cbor"
+fn codec_vectors_match_their_cbor_and_json() {
+    let cases = unique_ids("codecs");
+    for path in files("codecs") {
+        let doc = load(&path);
+        let empty = serde_json::Map::new();
+        let types = doc["types"].as_object().unwrap_or(&empty);
+        for case in doc["cases"].as_array().expect("cases") {
+            let ctx = format!("{}#{}", path.display(), str_field(case, "id"));
+            if let Some(json) = case["json"].as_str() {
+                serde_json::from_str::<Json>(json).unwrap_or_else(|e| panic!("{ctx}: json {e}"));
+            }
+            let (Some(value), Some(cbor)) = (case["value"].as_str(), case["cbor"].as_str()) else {
+                continue;
+            };
+            let expected = plain(value, &ctx);
+            let bytes = hex(cbor);
+            if case["direction"] == "both" {
+                assert_eq!(
+                    encode(&expected),
+                    bytes,
+                    "{ctx}: value does not encode to cbor"
+                );
+                if let Some(json) = case["json"].as_str() {
+                    let rendered = pavia_vectors::json::render(&case["type"], &expected, types)
+                        .unwrap_or_else(|e| panic!("{ctx}: {e}"));
+                    assert_eq!(
+                        rendered, json,
+                        "{ctx}: json is not the canonical form of value"
+                    );
+                }
+            }
+            assert!(
+                same(&decode(&bytes), &expected),
+                "{ctx}: cbor does not decode to value"
             );
         }
-        assert!(
-            same(&decode(&bytes), &expected),
-            "{ctx}: cbor does not decode to value"
-        );
     }
+    assert!(!cases.is_empty());
 }
 
 #[test]

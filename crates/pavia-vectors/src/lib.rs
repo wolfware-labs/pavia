@@ -2,6 +2,7 @@
 //! the vector files. Not published; used only by tests.
 
 pub mod diag;
+pub mod json;
 
 use std::path::{Path, PathBuf};
 

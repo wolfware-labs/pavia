@@ -3,11 +3,12 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { decode, encode, same } from "../src/cbor.js";
 import { type Diag, hexToBytes, parse, patternCount, refs } from "../src/diag.js";
+import { render } from "../src/json.js";
 
 const VECTORS = fileURLToPath(new URL("../../../../../vectors/", import.meta.url));
 
 type Json = Record<string, unknown>;
-type Case = { ctx: string; c: Json };
+type Case = { ctx: string; c: Json; types: Record<string, string | Json> };
 
 function cases(kind: string): Case[] {
   const seen = new Set<string>();
@@ -19,7 +20,7 @@ function cases(kind: string): Case[] {
       const id = c.id as string;
       expect(seen.has(id), `${kind}: duplicate id ${id}`).toBe(false);
       seen.add(id);
-      out.push({ ctx: `${kind}/${file}#${id}`, c });
+      out.push({ ctx: `${kind}/${file}#${id}`, c, types: (doc.types ?? {}) as Record<string, string | Json> });
     }
   }
   expect(out.length).toBeGreaterThan(0);
@@ -92,13 +93,18 @@ describe("frame vectors", () => {
 });
 
 describe("codec vectors", () => {
-  for (const { ctx, c } of cases("codecs")) {
+  for (const { ctx, c, types } of cases("codecs")) {
     it(ctx, () => {
       if (typeof c.json === "string") expect(() => JSON.parse(c.json as string)).not.toThrow();
       if (typeof c.value !== "string" || typeof c.cbor !== "string") return;
       const expected = parse(c.value);
       const bytes = hexToBytes(c.cbor);
-      if (c.direction === "both") expect([...encode(expected)]).toEqual([...bytes]);
+      if (c.direction === "both") {
+        expect([...encode(expected)]).toEqual([...bytes]);
+        if (typeof c.json === "string") {
+          expect(render(c.type as string | Json, expected, types), "json is not the canonical form of value").toBe(c.json);
+        }
+      }
       expect(same(decode(bytes), expected)).toBe(true);
     });
   }
