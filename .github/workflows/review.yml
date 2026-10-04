@@ -37,6 +37,7 @@ jobs:
       # Review context prepared outside the model: the rules, read from the base branch, and the
       # review comments already on the pull request. The review then needs no git or API tools.
       - name: Prepare review context
+        id: context
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -54,6 +55,11 @@ jobs:
           done
           gh api --paginate "repos/$REPO/pulls/$PR/comments" \
             --jq '.[] | "\(.path):\(.line // .original_line) [\(.user.login)] \(.body)\n---"' > "$ctx/existing-comments.txt"
+          # The Claude GitHub App refuses to run when this workflow differs from the base branch,
+          # so a pull request that edits it cannot be reviewed by the app.
+          if git diff --name-only "origin/$BASE_REF...HEAD" | grep -qx '.github/workflows/review.yml'; then
+            echo "workflow_changed=true" >> "$GITHUB_OUTPUT"
+          fi
       - id: review
         uses: anthropics/claude-code-action@cfc3eb22bfed5c26ef66e3223c982af27e4524de # v1.0.231
         with:
@@ -87,8 +93,21 @@ jobs:
         if: always()
         env:
           RESULT: ${{ steps.review.outputs.structured_output }}
+          WORKFLOW_CHANGED: ${{ steps.context.outputs.workflow_changed }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          if [ "${WORKFLOW_CHANGED:-}" = "true" ] && [ -z "${RESULT:-}" ]; then
+            permission=$(gh api "repos/$REPO/collaborators/$AUTHOR/permission" --jq .permission)
+            if [ "$permission" = "admin" ]; then
+              echo "::warning::This pull request edits review.yml, which the Claude GitHub App cannot review. Passing because the author is a repository admin; review the workflow change by hand."
+              exit 0
+            fi
+            echo "::error::This pull request edits review.yml, which the Claude GitHub App cannot review; only a repository admin can merge such a change."
+            exit 1
+          fi
           if [ -z "${RESULT:-}" ]; then
             echo "::error::The review produced no result; re-run the job."
             exit 1
