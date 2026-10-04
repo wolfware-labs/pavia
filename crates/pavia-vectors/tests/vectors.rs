@@ -260,3 +260,19 @@ fn count_patterns(d: &Diag) -> usize {
         _ => 0,
     }
 }
+
+/// The oracle relies on `ciborium` choosing the shortest exact float width (spec 12.3), as the
+/// float codec vectors require. Pinned here so a dependency update that changes it fails loudly.
+#[test]
+fn ciborium_writes_shortest_float_width() {
+    for (x, expected) in [
+        (1.5_f64, &[0xf9, 0x3e, 0x00][..]),
+        (100000.0, &[0xfa, 0x47, 0xc3, 0x50, 0x00][..]),
+        (
+            0.1,
+            &[0xfb, 0x3f, 0xb9, 0x99, 0x99, 0x99, 0x99, 0x99, 0x9a][..],
+        ),
+    ] {
+        assert_eq!(encode(&Value::Float(x)), expected, "{x}");
+    }
+}
