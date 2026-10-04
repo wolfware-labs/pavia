@@ -80,8 +80,8 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 - [ ] **C1.9 WS stream ID rules** (§6.1): parity per initiator, strictly increasing, closed-ID tolerance, never-opened-ID error.
 - [ ] **C1.10 Dynamic codec values:** encode/decode data sections for `cbor` and `json` as untyped values (typed mapping comes in M4). JSON: UTF-8 validation.
 - [ ] **C1.11 WT datagram encoding** (§11.3) and DATAGRAM/DGRAM_BIND frames, even though they're used much later.
-- [ ] **C1.12 Error model** that distinguishes: session-fatal (PROTOCOL_ERROR, FRAME_TOO_LARGE), ignorable, and per-call errors.
-- [ ] **C1.13 Sequencing model** (§7.8): per-lane, per-direction counters and `ack` maps as pure data structures with a bounded replay buffer, testable without IO. Used from M10 but designed now so frame types carry `seq`/`ack` from the start.
+- [ ] **C1.12 Error model** that distinguishes: session-fatal (PROTOCOL_ERROR, FRAME_TOO_LARGE), ignorable, and per-call errors. An undecodable data section outside CALL and NOTIFY is per call or per message, never session-fatal (§8.10): ITEM at the callee → ERROR INVALID_ARGUMENT; RESULT, ITEM or ERROR detail at the caller → local INTERNAL plus CANCEL if open; PUBLICATION, PRESENCE, snapshot or DATAGRAM value → dropped with a local error event.
+- [ ] **C1.13 Sequencing model** (§7.8): per-lane, per-direction counters and `ack` maps as pure data structures with a bounded replay buffer, testable without IO. `seq` is assigned when a frame is first written to a transport; a sequenced frame without `seq`, or one that skips ahead on a lane not listed in `lost`, is a PROTOCOL_ERROR. Used from M10 but designed now so frame types carry `seq`/`ack` from the start.
 - [ ] **C1.14 Tag and depth strictness** (§12.3, §14): headers reject tags; typed data accepts only declared tags; depth limits on data sections.
 
 ### Tests
@@ -102,13 +102,13 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 
 **Goal:** a client can connect over WebSocket, complete HELLO/WELCOME, stay alive, and be closed correctly with every close code. No calls yet.
 
-**Spec:** §4.1, §4.3, §6.2, §7.1-7.4, §7.6 (basic), §7.7, §7.10, §15.1.
+**Spec:** §4.1, §4.3, §6.2, §7.1-7.4, §7.7, §7.10, §15.1.
 
 ### Capabilities
-- [ ] **C2.1 Endpoint** accepts WebSocket upgrades on the configured path with subprotocol `pavia.1`; refuses upgrades without it.
-- [ ] **C2.2 Origin validation** against an allow-list; loopback exemption for development.
+- [ ] **C2.1 Endpoint** accepts WebSocket upgrades on the configured path with subprotocol `pavia.1`; refuses upgrades without it with 400.
+- [ ] **C2.2 Origin validation** against an allow-list (403 when not allowed); requests without `Origin` are not subject to it; loopback exemption for development.
 - [ ] **C2.3 Binary-only:** a text message → CLOSE PROTOCOL_ERROR.
-- [ ] **C2.4 HELLO parsing and handshake timeout** (default 10 s → HANDSHAKE_TIMEOUT).
+- [ ] **C2.4 HELLO parsing and handshake timeout** (default 10 s from transport accept until WELCOME or REJECT is sent, covering authentication and the on-connect hook → HANDSHAKE_TIMEOUT).
 - [ ] **C2.5 Version and codec negotiation;** no overlap → REJECT UNSUPPORTED_VERSION.
 - [ ] **C2.6 Capability negotiation:** grant the subset implemented so far; reject later use of ungranted capabilities with PROTOCOL_ERROR.
 - [ ] **C2.7 Authentication hook:** HELLO `auth` (and upgrade-request cookies) passed to a user-supplied authenticator; failure → REJECT UNAUTHENTICATED/FORBIDDEN; success → principal attached to the session.
@@ -121,10 +121,10 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 - [ ] **C2.14 Session registry:** sessions are registered after WELCOME and removed exactly once on end.
 - [ ] **C2.15 Contract fingerprint exchange** plumbing (policy `warn` only for now; manifests arrive in M4).
 - [ ] **C2.16 Server-at-capacity:** max sessions limit → REJECT LIMIT_EXCEEDED with `retry`.
-- [ ] **C2.17 Pre-WELCOME pipelining** (§4.1): frames after HELLO are buffered up to the pre-auth limit, processed in order after WELCOME, discarded on REJECT; LIMIT_EXCEEDED when the buffer overflows.
+- [ ] **C2.17 Pre-WELCOME pipelining** (§4.1): frames after HELLO are buffered up to the pre-auth limit (at least 64 KiB, the budget every client may pipeline), processed in order after WELCOME, discarded on REJECT; LIMIT_EXCEEDED when the buffer overflows. `max_frame` and `window` are never advertised below 64 KiB.
 - [ ] **C2.18 0-RTT:** early data is never processed (disable 0-RTT on the TLS/QUIC listener or defer reads); `permessage-deflate` is never negotiated; `426` for plain HTTP on the path.
 - [ ] **C2.19 Inbound backpressure** (§4.3): stop reading above the unprocessed-bytes limit and pause the idle timer; resume within the grace period or SLOW_CONSUMER.
-- [ ] **C2.20 Address-level rate limits:** handshakes per source address; PING rate limit per session (§7.4).
+- [ ] **C2.20 Address-level rate limits:** handshakes per source address (429 with `Retry-After`); PING rate limit per session (§7.4).
 - [ ] **C2.21 Session ID** format and uniqueness (§7.2), generated so it stays unique across nodes without coordination.
 
 ### Tests
@@ -155,7 +155,7 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 - [ ] **C3.6 Concurrency:** calls on different streams run concurrently; `max_calls` enforced (§6.5) with RESOURCE_EXHAUSTED.
 - [ ] **C3.7 Deadlines** (§8.6): server-side timer → handler cancelled → DEADLINE_EXCEEDED; optional server default/max deadline.
 - [ ] **C3.8 CANCEL for unary** (§8.5): handler cancelled; ERROR CANCELLED unless terminal already sent.
-- [ ] **C3.9 Metadata** (§8.7): exposed to handlers; `traceparent` propagated into tracing spans.
+- [ ] **C3.9 Metadata** (§8.7): exposed to handlers; `traceparent` propagated into tracing spans. A name outside `[a-z0-9-]` is a malformed header (PROTOCOL_ERROR); unknown `pavia-*` names are ignored.
 - [ ] **C3.10 Notifications client → server** (§9.1): dispatched, never answered, errors only logged.
 - [ ] **C3.11 Server → caller notifications** from inside a handler (NOTIFY on stream 0).
 - [ ] **C3.12 Server-initiated unary calls** (§8.8, capability `server-calls`): server opens an odd stream ID, awaits RESULT/ERROR; respects the client's `max_calls`; failure paths (client UNIMPLEMENTED, session ends mid-call → local UNAVAILABLE, deadline).
@@ -163,8 +163,8 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 - [ ] **C3.14 `json` codec** end to end for debugging (session negotiates `json`, every data section is JSON).
 - [ ] **C3.15 `nx` flag** (§8.4): set on every pre-dispatch failure and on UNAVAILABLE after GOAWAY; never set once a handler has started.
 - [ ] **C3.16 CANCEL race** (§8.5): CANCEL after a terminal frame is ignored; duplicate CANCEL ignored.
-- [ ] **C3.17 Stream open/CANCEL rate limit** (§6.5) → LIMIT_EXCEEDED; notification rate limit (§16).
-- [ ] **C3.18 Idempotency keys** (§8.7, capability `idempotency`): pluggable outcome store with an in-memory implementation; same key + same principal returns the stored outcome; retention window.
+- [ ] **C3.17 Stream open/CANCEL rate limit** (§6.5; CALL and LANE_OPEN both count as opens) → LIMIT_EXCEEDED; notification rate limit (§16). Every rate is a token bucket: capacity is the stated count, refill is count divided by the period.
+- [ ] **C3.18 Idempotency keys** (§8.7, capability `idempotency`): pluggable outcome store with an in-memory implementation; entries keyed by (principal, or session ID for anonymous sessions; method; key); only RESULT and handler ERRORs are stored, never CANCELLED, DEADLINE_EXCEEDED or `nx` errors; a duplicate while the first call runs → ERROR ABORTED `nx: true`; a key over 128 bytes → INVALID_ARGUMENT `nx: true`; retention window. Without the capability the key is ordinary metadata, not an error.
 
 ### Tests
 - **Scripts:** every status code path with the expected `nx` value; deadline; cancel; cancel racing a RESULT; panic; concurrency limit; rapid-reset (CALL+CANCEL loop → LIMIT_EXCEEDED); idempotency replay returns the identical outcome without re-executing (counter check); notification with a bad method (assert *nothing* comes back within a timeout); server-initiated call with and without a client handler (the runner plays the client).
@@ -185,13 +185,13 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 
 ### Capabilities: Rust side
 - [ ] **C4.1 Type system mapping** (§12.1): every contract type derivable from Rust types (a trait implemented for primitives, std collections, and via derive for user structs/enums). Unsupported Rust shapes are compile-time errors, not runtime surprises.
-- [ ] **C4.2 Typed codec mapping** (§12.3) for both `cbor` and `json`, including the tricky rows: `i64`/`u64` as JSON strings, timestamps (CBOR tag 1 float / RFC 3339), UUID (tag 37 / string), bytes (base64url in JSON), enums externally tagged, optional fields omitted.
-- [ ] **C4.3 Manifest export** (§12.2) from registered services, client methods, (declared-but-unused) channels and datagram topics. Deterministic output.
-- [ ] **C4.4 Fingerprint** (§12.5): SHA-256 over RFC 8785 canonical JSON; sent in WELCOME; `warn`/`strict` policy (§7.2).
-- [ ] **C4.5 Well-known endpoint** (§12.6), disabled by a config flag.
-- [ ] **C4.6 Unknown struct fields ignored; closed enums reject unknown variants; open enums map them to the catch-all** (§12.1).
+- [ ] **C4.2 Typed codec mapping** (§12.3) for both `cbor` and `json`, including the tricky rows: `i64`/`u64` as JSON strings, timestamps (CBOR tag 1, integer for whole seconds, otherwise the shortest float that keeps milliseconds / RFC 3339), UUID (tag 37 / string), bytes (base64url in JSON), enums externally tagged, optional fields omitted.
+- [ ] **C4.3 Manifest export** (§12.2) from registered services, client methods, (declared-but-unused) channels and datagram topics. Deterministic output; optional fields equal to their default are omitted. Service, method, type, field, variant and datagram topic names match `[A-Za-z_][A-Za-z0-9_]*`.
+- [ ] **C4.4 Fingerprint** (§12.5): SHA-256 over RFC 8785 canonical JSON; canonicalization rejects `null`, default values (an empty `params` included) and named-entry arrays not sorted by name (§12.2); sent in WELCOME; `warn`/`strict` policy (§7.2); under `strict` a HELLO without `contract` is a mismatch; a server without a manifest omits the fingerprint and never rejects.
+- [ ] **C4.5 Well-known endpoint** (§12.6): `ETag` is the lowercase hex fingerprint as a strong tag; disabled by a config flag, then 404 on every HTTP version.
+- [ ] **C4.6 Unknown struct fields ignored; closed enums reject unknown variants; open enums map them to the catch-all** (§12.1). A variant named `Unknown` in an open enum is a validation error; the catch-all is decode-only and encoding it is a local error.
 - [ ] **C4.6a Fingerprint scope** (§12.5): `docs` and `name` stripped before canonicalization; a docs-only change must not change the fingerprint (test it).
-- [ ] **C4.6b Contract compatibility checker:** `pavia contract diff old.json new.json` implementing §12.7, exit code non-zero on breaking changes, meant for CI (the `buf breaking` idea). Ship it with M4 because contract evolution is where users get burned first.
+- [ ] **C4.6b Contract compatibility checker:** `pavia contract diff old.json new.json` implementing §12.7 (any change the table does not list is breaking), exit code non-zero on breaking changes, meant for CI (the `buf breaking` idea). Ship it with M4 because contract evolution is where users get burned first.
 
 ### Capabilities: generator
 - [ ] **C4.7 TypeScript generation** (§12.4): types, service proxies (unary + notify now; streaming signatures stubbed until M5), client method handler registration, typed errors with detail, fingerprint constant.
@@ -205,8 +205,8 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 - [ ] **C4.13 Reconnect policy** (new session on loss; resumption is M10) with backoff and jitter, surfaced as connection state events.
 - [ ] **C4.14 Bundle size budget** declared and tracked in CI (pick a number and hold it).
 - [ ] **C4.15 Background-tab liveness** (§7.4): PONG from the receive path, no timer-based server-death verdict without a probing PING; `bufferedAmount` high-water mark as send backpressure (§4.3).
-- [ ] **C4.16 Pipelining in the client:** SUBSCRIBEs and CALLs issued right after HELLO are sent before WELCOME arrives and failed locally with `nx: true` on REJECT.
-- [ ] **C4.17 Retry policy:** automatic retry only when `nx: true`, when the method is `idempotent`, or when an idempotency key was attached (§8.4, §8.7).
+- [ ] **C4.16 Pipelining in the client:** SUBSCRIBEs and CALLs issued right after HELLO are sent before WELCOME arrives, up to 64 KiB of frames, and failed locally with `nx: true` on REJECT or on a CLOSE before WELCOME.
+- [ ] **C4.17 Retry policy:** automatic retry only when `nx: true`, when the method is `idempotent`, or when an idempotency key was attached on a session that granted `idempotency` (§8.4, §8.7).
 
 ### Tests
 - **Codec vectors:** every row of §12.3 in both codecs, both languages (Rust and TS must produce identical bytes for CBOR headers and equivalent values for data).
@@ -232,17 +232,17 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 
 ### Capabilities
 - [ ] **C5.1 Server stream** (shape 1): ITEM* then END; ERROR at any point; typed items.
-- [ ] **C5.2 Client stream** (shape 2): caller ITEM* END; callee RESULT/ERROR; callee may terminate early and the caller stops sending.
+- [ ] **C5.2 Client stream** (shape 2): caller ITEM* END; callee RESULT/ERROR; callee may terminate early: its RESULT or ERROR completes the call, the caller stops sending and late frames land on a closed stream (§6.3).
 - [ ] **C5.3 Bidirectional** (shape 3): both halves independent.
 - [ ] **C5.4 All shapes server → client** (server-initiated streaming calls).
-- [ ] **C5.5 WS credit** (§6.4): initial `window`; ITEM data consumes credit; CREDIT granted as the **application** consumes; sender blocks when out of credit; violation → PROTOCOL_ERROR; items larger than `window` rejected locally.
+- [ ] **C5.5 WS credit** (§6.4): initial `window`; ITEM data consumes credit; CREDIT granted as the **application** consumes; sender blocks when out of credit; violation → PROTOCOL_ERROR; items larger than the window wait for CREDIT; items whose frame exceeds `max_frame` are rejected locally (RESOURCE_EXHAUSTED) and the call stays open (§6.4).
 - [ ] **C5.6 Cancellation of streams:** caller CANCEL stops the producer promptly (measurable); callee early termination stops the caller's producer.
 - [ ] **C5.7 Deadlines** cover the whole stream.
 - [ ] **C5.8 Session end** cancels every stream in both directions, with local UNAVAILABLE on the caller side.
 - [ ] **C5.9 Frames after terminal** → PROTOCOL_ERROR; frames for closed stream IDs ignored.
 - [ ] **C5.10 TS runtime:** `AsyncIterable` in and out; `for await` + `break` sends CANCEL; backpressure honors consumer speed.
 - [ ] **C5.11 Client-side `window` and `max_frame`** from HELLO govern server → client streams (§6.4); each side's limits bound what is sent to it.
-- [ ] **C5.12 Sender scheduling** (§6.6): priority classes on the single WebSocket writer; coalescing flush on queue drain; WebSocket message size cap (§4.3).
+- [ ] **C5.12 Sender scheduling** (§6.6): priority classes on the single WebSocket writer; write batching: flush on queue drain; WebSocket message size cap (§4.3).
 
 ### Tests
 - **Scripts:** each shape × direction; empty streams; error mid-stream; cancel mid-stream (assert producer stopped via a counter); credit exhaustion and resumption; oversized item; frames after END.
@@ -268,13 +268,12 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 - [ ] **C6.2 Deduplication:** a session matched several ways receives a message once.
 - [ ] **C6.3 Groups** (§13.2): add/remove idempotent, case-sensitive, per-session, cleared on session end.
 - [ ] **C6.4 Users** (§13.3): user ID derived from the principal via a pluggable function; anonymous sessions never matched.
-- [ ] **C6.5 Context handle:** a cloneable handle usable from any task (background jobs, plain HTTP handlers) supporting every target, group operations, and server-initiated calls to a single session.
+- [ ] **C6.5 Context handle:** a cloneable handle usable from any task (background jobs, plain HTTP handlers) supporting every target, group operations, and server-initiated calls to a single session (unknown or ended session → local NOT_FOUND `nx: true`).
 - [ ] **C6.6 Broker boundary:** a trait/abstraction for "deliver to targets, group membership, session lookup" with an in-memory implementation. The multi-node implementation (M15) plugs in here; design it now.
-- [ ] **C6.7 Lifecycle hooks** (§13.4): on-connect (before WELCOME, may reject, may join groups) and on-disconnect (exactly once, at session end).
-- [ ] **C6.8 Outbound queue and slow consumers** (§13.5): bounded stream-0 queue, grace period, CLOSE SLOW_CONSUMER; PING/PONG/CLOSE bypass; one slow session never delays others.
+- [ ] **C6.7 Lifecycle hooks** (§13.4): on-connect (before WELCOME, may reject, may join groups; joins take effect when WELCOME is sent and are discarded on REJECT) and on-disconnect (exactly once, at session end).
+- [ ] **C6.8 Outbound queue and slow consumers** (§13.5): bounded stream-0 queue; over the bound, datagrams are dropped and history publications replaced by UNSUBSCRIBED code 2 while other frames queue up to a hard cap (default 2 × the bound); CLOSE SLOW_CONSUMER at the hard cap or after the grace period; PING/PONG/CLOSE bypass; one slow session never delays others.
 - [ ] **C6.9 Encode once** (§13.6): a broadcast encodes its data section once per codec.
 - [ ] **C6.10 Fan-out call helper** (optional): call a client method on many sessions and aggregate results (independent calls on the wire).
-- [ ] **C6.11 Maximum session age** with jitter → GOAWAY (§7.6); configurable, on by default.
 
 ### Tests
 - **Scripts with many sessions:** N raw clients; assert exact recipients per target, including "received nothing" assertions.
@@ -299,7 +298,8 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 - [ ] **C7.2 App state** reachable from handlers without depending on axum's `State`.
 - [ ] **C7.3 Request context:** headers, cookies and extensions of the upgrade request available to the authenticator and on-connect hook.
 - [ ] **C7.4 Coexistence** with user tower middleware (tracing, CORS for the well-known endpoint, compression that must not break upgrades).
-- [ ] **C7.5 GOAWAY and drain** (§7.6): on shutdown, GOAWAY spread over a drain window with jittered `retry`, reject new calls with UNAVAILABLE `nx: true`, finish calls up to a deadline, then CLOSE GOING_AWAY. The TS client honors `retry` with its own jitter and migrates to a new session.
+- [ ] **C7.5 GOAWAY and drain** (§7.6): on shutdown, GOAWAY spread over a drain window (default 60 s) with jittered `retry`, reject new calls with UNAVAILABLE `nx: true`, finish calls up to a drain deadline (default 5 min), then CLOSE GOING_AWAY. The TS client waits at least `retry` plus up to 20 % jitter and migrates to a new session.
+- [ ] **C6.11 Maximum session age** with jitter → GOAWAY through the C7.5 drain path (§7.6); configurable, on by default.
 - [ ] **C7.6 Tracing:** spans per session and per call; method, status, duration; no payloads by default.
 - [ ] **C7.7 Public API review:** no axum types in service-facing APIs; everything public documented.
 - [ ] **C7.8 Examples:** chat, a live dashboard fed by a background task, a file upload via client streaming.
@@ -325,21 +325,21 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 ### Capabilities
 - [ ] **C8.1 HTTP/3 and WebTransport layer on quinn** (decision #120): a `pavia-webtransport` crate owning the HTTP/3 subset and the WebTransport session layer, so the same port can also answer ordinary HTTP/3 requests. Split into C8.1a and C8.1b.
 - [ ] **C8.1a Minimal HTTP/3 on quinn:** control streams and SETTINGS (including the WebTransport settings), QPACK with the static table only, extended CONNECT parsing and response, `405` with `Allow: CONNECT` for any other request on the endpoint path, the well-known contract endpoint (§12.6) over HTTP/3, HTTP/3 GOAWAY on drain, 0-RTT never accepted.
-- [ ] **C8.1b WebTransport session layer:** session establishment on the CONNECT stream, tagging of bidi and uni streams and datagrams with the session ID, CLOSE_WEBTRANSPORT_SESSION and DRAIN_WEBTRANSPORT_SESSION capsules, draft version negotiation (C8.2), per-session stream and datagram routing into the Pavia driver.
+- [ ] **C8.1b WebTransport session layer:** session establishment on the CONNECT stream, at most one WebTransport session per QUIC connection (SETTINGS advertise one; a second CONNECT is refused), tagging of bidi and uni streams and datagrams with the session ID, CLOSE_WEBTRANSPORT_SESSION and DRAIN_WEBTRANSPORT_SESSION capsules, draft version negotiation (C8.2), per-session stream and datagram routing into the Pavia driver.
 - [ ] **C8.2 Draft compatibility** `[verify]`: accept the WebTransport draft versions used by current Chromium, Firefox and Safari. Build a small compatibility table in the docs and keep it current.
-- [ ] **C8.3 Control stream** = first client bidi stream; HELLO first; streams opened before WELCOME are reset.
-- [ ] **C8.4 Call streams** = one QUIC bidi stream per call, both directions; FIN after terminal frames; RESET_STREAM ↔ CANCEL/UNAVAILABLE mapping (§6.3); STOP_SENDING on early callee termination.
-- [ ] **C8.5 Limits:** QUIC `MAX_STREAMS` aligned with `max_calls`; QUIC flow control windows configured sensibly; no Pavia CREDIT frames on this binding.
+- [ ] **C8.3 Control stream** = lowest-numbered client bidi stream; HELLO first; streams opened before WELCOME are parked unread, released after WELCOME and reset on REJECT; a stream arriving before the control stream waits up to the handshake timeout.
+- [ ] **C8.4 Call streams** = one QUIC bidi stream per call, both directions; FIN after terminal frames; RESET_STREAM ↔ CANCEL/UNAVAILABLE mapping (§6.3), also applied to a FIN before the half's terminal frame; STOP_SENDING on early callee termination.
+- [ ] **C8.5 Limits:** QUIC bidi `MAX_STREAMS` = `max_calls` + 1 for the control stream; the server enforces the client's `max_calls` on server-initiated calls (beyond it: local RESOURCE_EXHAUSTED `nx: true`); QUIC flow control windows configured sensibly; no Pavia CREDIT frames on this binding.
 - [ ] **C8.6 Session close** with Pavia close code and reason.
-- [ ] **C8.7 Origin validation** on the CONNECT request.
+- [ ] **C8.7 Origin validation** on the CONNECT request, with the same refusal statuses as WebSocket (400, 403, 429).
 - [ ] **C8.8 Development certificates:** a dev mode that generates a certificate meeting the browser constraints for `serverCertificateHashes` and prints the hash `[verify constraints]`.
 - [ ] **C8.9 TS runtime WebTransport binding** with the same public API as WebSocket.
-- [ ] **C8.10 Transport race** (§4.4): WebTransport first, WebSocket after the head-start or on failure; first WELCOME wins; loser closed; failure cache per origin.
+- [ ] **C8.10 Transport race** (§4.4): WebTransport first, WebSocket after the head-start or on failure; while more than one attempt is in flight only HELLO is sent, and application frames are pipelined only on a lone attempt; first WELCOME wins; loser closed; failure cache per origin.
 - [ ] **C8.11 Binding independence:** application code is unaware of the binding; the active binding is observable for diagnostics.
 - [ ] **C8.12 Deployment notes:** UDP exposure, load balancers that handle QUIC, container/ingress caveats, `Alt-Svc` not required for WebTransport.
 - [ ] **C8.13 Pre-auth QUIC windows** (§4.2): small connection/stream flow-control limits until WELCOME, raised afterwards; pipelined streams are not read before WELCOME and are reset on REJECT.
 - [ ] **C8.14 Stream priorities:** `sendOrder` on the client for control > lanes > calls `[verify]`; equivalent server-side priorities in the QUIC stack.
-- [ ] **C8.15 QUIC idle alignment** (§4.2): `max_idle_timeout` > `idle`.
+- [ ] **C8.15 QUIC idle alignment** (§4.2): `max_idle_timeout` > `idle`; when the client's value leaves less than 15 s of margin, the server lowers WELCOME `idle` (and `hb`) to 15 s below the effective QUIC timeout, or to half of it when the effective timeout is 30 s or less.
 - [ ] **C8.16 `transports` hint** in WELCOME; client failure-cache shortening (§4.4).
 - [ ] **C8.17 Connection migration:** verify what browsers actually do on a network change over WebTransport `[verify]`; document whether the session survives at the QUIC layer or falls to resumption (M10).
 
@@ -367,27 +367,27 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 
 ### Capabilities: datagrams
 - [ ] **C9.1 Topics from the contract** (§12.2): typed payloads, direction, mode `latest`/`all`.
-- [ ] **C9.2 DGRAM_BIND** key spaces per direction; binding limit; unbound-key datagrams dropped silently.
-- [ ] **C9.3 WebTransport datagrams** (§11.3) with per-key seq; `latest` receivers drop stale seq.
-- [ ] **C9.4 Size limits:** min(`max_dgram`, transport `maxDatagramSize`); oversized rejected locally, never fragmented.
+- [ ] **C9.2 DGRAM_BIND** key spaces per direction; at most 256 keys per direction (fixed); rebinding a bound key or a 257th key → PROTOCOL_ERROR; topic = the name before the first `:`; a bind for an undeclared topic or a forbidden direction is ignored; unbound-key datagrams dropped silently.
+- [ ] **C9.3 WebTransport datagrams** (§11.3) with per-key seq; `latest` receivers drop stale seq; both sides reset seq to 1 per key on resumption.
+- [ ] **C9.4 Size limits:** min(`max_dgram`, transport `maxDatagramSize`); oversized rejected locally, never fragmented. Received WebTransport datagrams that fail to decode or exceed `max_dgram` are dropped; a WebSocket DATAGRAM frame over `max_dgram` is a PROTOCOL_ERROR.
 - [ ] **C9.5 WebSocket emulation** (§11.4): coalescing for `latest` (one pending per key), low priority, drop `all`-mode under pressure.
-- [ ] **C9.6 Server handlers** for inbound topics; server-side targeting (§13.1) for outbound; inbound rate limiting per session.
+- [ ] **C9.6 Server handlers** for inbound topics; server-side targeting (§13.1) for outbound; inbound rate limit per session → LIMIT_EXCEEDED, counting every inbound datagram, including dropped ones.
 - [ ] **C9.7 TS API:** typed `send` per topic; typed subscription to inbound topics.
 
 ### Capabilities: lanes
-- [ ] **C9.8 LANE_OPEN** and unidirectional lane streams on WebTransport; lane key on WebSocket (§9.2).
+- [ ] **C9.8 LANE_OPEN** and lane streams on both bindings: unidirectional QUIC streams on WebTransport, lane stream IDs on WebSocket (§9.2). LANE_OPEN is not sequenced; the first NOTIFY on a lane has seq 1. A FIN or reset of a lane stream is transport loss (§7.7), as for the control stream.
 - [ ] **C9.9 Lane selection API** on the server's send path and in the TS client (e.g. lane from a key hash).
-- [ ] **C9.10 Lane limits** per direction; excess → PROTOCOL_ERROR.
+- [ ] **C9.10 Lane limits:** lane numbers 1 to 16 (fixed); LANE_OPEN for lane 0, above 16, or for a lane already open on the transport → PROTOCOL_ERROR.
 
 ### Tests
 - **Loss and reorder** (UDP faults): `latest` never regresses; `all` loses but never corrupts.
 - **Coalescing on WebSocket:** a burst of 1,000 cursor updates on a slow link delivers the final value promptly with bounded queue size.
-- **Lane independence on WebTransport:** a stalled lane doesn't delay another lane; ordering within a lane preserved.
-- **Abuse:** datagram flood → rate limit applied; bind-table exhaustion → PROTOCOL_ERROR.
+- **Lane independence on WebTransport:** a stalled lane doesn't delay another lane; handlers within a lane run one at a time in seq order (§9.2).
+- **Abuse:** datagram flood → CLOSE LIMIT_EXCEEDED; bind-table exhaustion → PROTOCOL_ERROR.
 - **Demo:** collaborative cursors example (datagrams over channels in M12 later; for now server-relayed to a group).
 
 ### Exit criteria (Headline 0.x)
-- Datagram and lane behavior proven on both bindings; the cursors demo runs smoothly in all three browsers.
+- Conformance levels **Lanes** and **Datagrams** pass on both bindings; the cursors demo runs smoothly in all three browsers.
 - **Announce** (r/rust, This Week in Rust, Hacker News, relevant TypeScript communities) with benchmarks from M6 re-run on both bindings.
 
 ---
@@ -400,24 +400,24 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 
 ### Capabilities
 - [ ] **C10.1 Capability `resume`**; resume token issuance and rotation on every WELCOME.
-- [ ] **C10.2 Sequenced frames** (§7.8): every control-stream and lane frame except the exempt list carries `seq`; counters are **per lane, per direction**; client control requests (SUBSCRIBE, AUTH_REFRESH, DGRAM_BIND...) are sequenced too.
+- [ ] **C10.2 Sequenced frames** (§7.8): every control-stream and lane frame except the exempt list (which includes LANE_OPEN) carries `seq`, assigned when first written to a transport; counters are **per lane, per direction**; client control requests (SUBSCRIBE, AUTH_REFRESH, DGRAM_BIND...) are sequenced too.
 - [ ] **C10.3 Acknowledgment** via `ack` maps, as ACK frames and piggybacked on sequenced frames; cadence 1 s / 64 frames; replay-buffer trimming per lane, both sides.
-- [ ] **C10.4 Replay buffer bounds** (§7.8, decision #152): recoverable-first eviction (history publications, then presence, then the rest), one UNSUBSCRIBED code 2 per evicted channel, per-lane gap recording, `lost` in the resuming WELCOME and in the client's `resume` map, receiver re-anchoring; the sender never blocks.
+- [ ] **C10.4 Replay buffer bounds** (§7.8, decision #152): recoverable-first eviction (history publications, then presence, then the rest; never control requests, their replies SUBSCRIBED, REQUEST_ERROR and AUTH_RESULT, or DGRAM_BIND), one UNSUBSCRIBED code 2 per evicted channel, a gap recorded for every non-recoverable eviction and for a sent, unacknowledged recoverable frame (unsent frames have no seq yet, so no seq is skipped), `lost` in the resuming WELCOME and in the client's `resume` map, receiver re-anchoring; the sender never blocks. A sequenced frame that does not fit once every evictable frame is gone, including one larger than an empty buffer, is rejected locally with RESOURCE_EXHAUSTED.
 - [ ] **C10.5 Detached state:** transport loss without CLOSE detaches the session; targeted sends buffer; groups and subscriptions persist; `resume_window` expiry ends the session (on-disconnect runs, groups cleared).
-- [ ] **C10.6 Resume handshake:** HELLO `resume` → WELCOME `resumed: true` + `ack`; retransmission from the peer's position; duplicate discard.
-- [ ] **C10.7 Principal binding:** different principal or expired token → REJECT RESUME_FAILED; different codec or version → RESUME_FAILED; authorization re-evaluated after resume (§7.5).
-- [ ] **C10.7a Detached limits:** per-principal and total caps on detached sessions; resume-attempt rate limit per address.
+- [ ] **C10.6 Resume handshake:** HELLO `resume` with the session ID (key 19) → WELCOME `resumed: true` + `ack`; retransmission from the peer's position, which the client may start before WELCOME from its last known ack; duplicate discard. Pipelined frames carry `seq` when `resume` was requested. Datagram key bindings persist; datagram seq restarts at 1.
+- [ ] **C10.7 Principal binding:** different principal (compared by the authenticator's stable principal ID; anonymous resumes only anonymous) or expired token → REJECT RESUME_FAILED; different codec or version, or caps not covering the original grant → RESUME_FAILED; the resumed WELCOME grants exactly the original caps; an expired credential without fresh `auth` in HELLO → RESUME_FAILED; only a successful resume spends the token; authorization re-evaluated after resume (§7.5).
+- [ ] **C10.7a Detached limits:** per-principal (default 8) and total (default 10,000) caps on detached sessions, per node; anonymous sessions grouped by source address; resume-attempt rate limit per address.
 - [ ] **C10.7b Server calls to detached sessions** fail immediately with UNAVAILABLE `nx: true`.
-- [ ] **C10.8 Calls at transport loss** complete locally with UNAVAILABLE; handlers cancelled; TS client retries calls marked `idempotent`.
+- [ ] **C10.8 Calls at transport loss** complete locally with UNAVAILABLE; handlers cancelled; TS client retries calls marked `idempotent`, on the resumed session or on a new one.
 - [ ] **C10.9 Cross-binding resume:** start on WebTransport, resume on WebSocket, and the reverse.
 - [ ] **C10.10 TS runtime:** transparent resumption with state events (`reconnecting`, `resumed`, `new-session`) and a `gap` event per lane listed in `lost`; its own replay buffer applies the same eviction order and reports `lost` in `resume`.
 
 ### Tests
 - **Fault injection:** kill the transport during a notification burst at random points, 1,000 iterations; zero loss, zero duplicates, order preserved per lane.
 - **Expiry:** resume after `resume_window` → RESUME_FAILED → new session → on-disconnect ran exactly once for the old one.
-- **Buffer pressure while detached:** flood a detached session past the replay bound with history publications and notifications; on resume the history channels get UNSUBSCRIBED code 2 and re-sync with `since`, WELCOME `lost` names exactly the lanes whose notifications were evicted, the client emits one `gap` per lane, and server memory for the session never exceeded the bound.
+- **Buffer pressure while detached:** flood a detached session past the replay bound with history publications and notifications; on resume the history channels get UNSUBSCRIBED code 2 and re-sync with `since`, WELCOME `lost` names exactly the lanes that lost a notification or a sent, unacknowledged frame, the client emits one `gap` per lane, and server memory for the session never exceeded the bound.
 - **Security:** replaying an old resume token fails; resuming from a different user fails; opening 9 tabs and dropping them all keeps at most 8 detached sessions.
-- **Lanes under resumption (WebTransport):** drop the transport while three lanes carry traffic at different rates; each lane replays exactly its gap; LANE_OPEN is replayed first.
+- **Lanes under resumption (WebTransport):** drop the transport while three lanes carry traffic at different rates; each lane replays exactly its gap; each lane stream is reopened with an unsequenced LANE_OPEN before its frames are replayed.
 - **Lost control request:** drop the transport right after the client sends SUBSCRIBE; after resume the SUBSCRIBE is replayed and SUBSCRIBED arrives exactly once.
 
 ### Exit criteria
@@ -429,22 +429,23 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 
 ## M11: Authentication lifecycle, authorization and interceptors
 
-**Spec:** §7.5, §8.2 step 4, §10.2 step 4, §14.
+**Spec:** §7.5, §7.9, §8.2 step 5, §9.1, §10.2 step 5, §14.
 
 ### Capabilities
 - [ ] **C11.1 AUTH_EXPIRING** notices driven by credential expiry reported by the authenticator.
-- [ ] **C11.2 AUTH_REFRESH / AUTH_RESULT** in-band; different principal → FORBIDDEN; session continues with old credential until expiry.
-- [ ] **C11.3 Expiry enforcement:** no refresh → CLOSE UNAUTHENTICATED (with configurable grace).
-- [ ] **C11.4 Authorization hooks** per method (with access to principal, method, metadata, and decoded arguments) and per channel subscription.
+- [ ] **C11.2 AUTH_REFRESH / AUTH_RESULT** in-band; different principal → AUTH_RESULT PERMISSION_DENIED; invalid or expired → AUTH_RESULT UNAUTHENTICATED; malformed → REQUEST_ERROR INVALID_ARGUMENT; session continues with old credential until expiry.
+- [ ] **C11.3 Expiry enforcement:** no refresh → CLOSE UNAUTHENTICATED (configurable grace, default 0 s); an AUTH_REFRESH received before the close is processed first; detached sessions run no expiry timer and are checked at resume.
+- [ ] **C11.4 Authorization hooks** per method (with access to principal, method, metadata, and decoded arguments), applied to calls and to every inbound NOTIFY (denied → dropped and logged), and per channel subscription.
 - [ ] **C11.5 Interceptor pipeline** around calls, notifications and session lifecycle: global and per-service, deterministic order, can short-circuit with a status, can observe/transform errors, applies to streaming calls at call start (document whether items are intercepted).
 - [ ] **C11.6 TS runtime:** token provider callback; automatic refresh on AUTH_EXPIRING.
 - [ ] **C11.7 Authorization re-evaluation** on AUTH_REFRESH, on resume, and on an optional interval or policy signal (§7.5); revoked channels get UNSUBSCRIBED code 1.
-- [ ] **C11.8 Per-session rate limits** completed: control requests, notifications, datagrams (§16), all closing with LIMIT_EXCEEDED and each covered by the abuse suite.
+- [ ] **C11.8 Per-session rate limits** completed: control requests, notifications, datagrams (§16), all token buckets closing with LIMIT_EXCEEDED and each covered by the abuse suite; frames retransmitted after resumption do not count.
 
 ### Tests
 - Expiring JWTs in browser e2e (short lifetimes); refresh keeps a long-running stream alive; refresh with another user's token is refused; per-method denial codes; interceptor ordering table tests.
 
 ### Exit criteria
+- Conformance level **Auth lifecycle** passes on both bindings.
 - A long-lived session survives several token rotations without reconnecting.
 
 ---
@@ -454,7 +455,7 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 **Spec:** §10.1-10.5.
 
 ### Capabilities
-- [ ] **C12.1 Channel namespaces** from the contract with typed publications and subscription params.
+- [ ] **C12.1 Channel namespaces** from the contract with typed publications and a `subscribe` type for subscription params. Names are 1 to 255 bytes; a name without `:` is its own namespace; an empty namespace or empty part after `:` is invalid.
 - [ ] **C12.2 SUBSCRIBE processing order** (§10.2): validation, duplicates, limits, authorization.
 - [ ] **C12.3 UNSUBSCRIBE** (client) and server-initiated UNSUBSCRIBED with reason codes (§10.3).
 - [ ] **C12.4 Publishing API** from handlers and the context handle; publications encoded once per codec.
@@ -464,9 +465,9 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 - [ ] **C12.8 Continuity loss** → UNSUBSCRIBED code 2 to subscribers; new epoch.
 - [ ] **C12.9 Resumption interplay:** channel frames are sequenced (M10); a resumed session receives exactly what it missed.
 - [ ] **C12.10 TS runtime:** typed subscriptions, automatic resubscribe with `since` after new sessions, a "stale state" callback when `recovered: false`.
-- [ ] **C12.11 Snapshot-on-subscribe** (§10.2): per-namespace `snapshot` type; snapshot taken exactly at SUBSCRIBED `offset` (no publication between snapshot and offset); mandatory when `recovered: false` and the namespace declares a snapshot.
-- [ ] **C12.12 Lossy-with-recovery** (§13.5): over-threshold sessions drop pending history-channel publications and receive UNSUBSCRIBED code 2 before any SLOW_CONSUMER decision.
-- [ ] **C12.13 Single sequencer per channel** (§10.5): the history-store abstraction assigns offsets atomically; document the invariant so M15 doesn't break it.
+- [ ] **C12.11 Snapshot-on-subscribe** (§10.2): per-namespace `snapshot` type; with a snapshot, SUBSCRIBED `offset` is the snapshot's offset, no `since` replay is sent and every publication above `offset` follows without gaps; a snapshot older than retained history → REQUEST_ERROR UNAVAILABLE; mandatory when `recovered: false` and the namespace declares a snapshot.
+- [ ] **C12.12 Lossy-with-recovery** (§13.5): sessions over the queue bound drop pending history-channel publications and receive UNSUBSCRIBED code 2 before any SLOW_CONSUMER decision.
+- [ ] **C12.13 Single sequencer per channel** (§10.5), with or without history: the history-store abstraction assigns offsets atomically; document the invariant so M15 doesn't break it.
 
 ### Tests
 - Recovery matrix: within history, beyond history, wrong epoch, after server restart with a persistent store stub.
@@ -489,8 +490,8 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 - [ ] **C13.2 Snapshot on subscribe** (when requested), before replayed publications.
 - [ ] **C13.3 Join/leave deltas**, batched where possible.
 - [ ] **C13.4 Leave on session end** (including `resume_window` expiry), not on transport loss that resumes.
-- [ ] **C13.5 Presence limits** (large channels): configurable cap on snapshot size or presence disabled per namespace.
-- [ ] **C13.6 TS runtime:** reactive member list per channel, grouped by user if requested.
+- [ ] **C13.5 Presence limits** (large channels): configurable cap on presence size or presence disabled per namespace; SUBSCRIBE with `presence: true` over the cap → REQUEST_ERROR RESOURCE_EXHAUSTED, on a namespace without presence → FAILED_PRECONDITION.
+- [ ] **C13.6 TS runtime:** reactive member list per channel, grouped by user if requested; a leave for an unknown member is ignored and a join for a present member is an update.
 - [ ] **C13.7 Presence `update`** (kind 3) when a member's info changes without leaving.
 
 ### Tests
@@ -508,7 +509,7 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 - [ ] **C14.2 Client conformance:** the Rust client passes the client-runner scripts.
 - [ ] **C14.3 TS multi-tab sharing** via SharedWorker where available (one session per origin shared by tabs), falling back to per-tab sessions `[verify SharedWorker availability per browser, notably mobile]`.
 - [ ] **C14.4 Offline queue** for notifications (bounded, opt-in) flushed on reconnect.
-- [ ] **C14.5 Retry policy** for idempotent calls with backoff; never for non-idempotent calls.
+- [ ] **C14.5 Retry policy** with backoff for idempotent calls, calls failed with `nx: true`, and calls with an idempotency key on a session that granted `idempotency`; never for other non-idempotent calls.
 - [ ] **C14.6 Framework adapters** (optional): thin React/Svelte/Vue bindings for connection state, subscriptions and presence.
 
 ### Tests
@@ -523,13 +524,13 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 ### Capabilities
 - [ ] **C15.1 Distributed broker** implementing the M6 boundary over a message system (choose NATS or Redis; record why). Every target type works across nodes, delivered once.
 - [ ] **C15.2 Remote group operations:** adding a session that lives on another node to a group is forwarded to its node and acknowledged.
-- [ ] **C15.3 Session directory:** which node owns which session, for targeting and server-initiated calls across nodes.
-- [ ] **C15.4 Resumption across nodes** (§7.8, §13.8, decision #203): clients append `?session=<id>` on resume so balancers can route to the owner; a resume landing elsewhere triggers a takeover request to the owner over the broker (state handed over once, old owner forwards late arrivals); an unreachable owner means RESUME_FAILED. Deployment guide documents the balancer rule.
+- [ ] **C15.3 Session directory:** which node owns which session, for server-initiated calls across nodes, remote group operations and resume takeover.
+- [ ] **C15.4 Resumption across nodes** (§7.8, §13.8, decision #203): clients append `?session=<id>` on resume so balancers can route to the owner; a resume landing elsewhere finds the owner by the session ID in the `resume` map and triggers a takeover request to the owner over the broker (state handed over once, old owner forwards late arrivals); an unreachable owner means RESUME_FAILED. Deployment guide documents the balancer rule.
 - [ ] **C15.5 Shared history store** (e.g. Redis streams, NATS JetStream) implementing the M12 abstraction; epochs survive node restarts.
-- [ ] **C15.6 Distributed presence** with eventual consistency and guaranteed leave on node death (heartbeated node leases).
-- [ ] **C15.7 Backplane outage** (§13.8, decision #206): local sessions keep working; cross-node sends, history publishes and remote calls fail fast; on reconnect every local history-channel subscriber gets UNSUBSCRIBED code 2 and presence is re-announced. Tested by cutting the broker mid-run.
+- [ ] **C15.6 Distributed presence** with eventual consistency and guaranteed leave on node death (heartbeated node leases); an outage longer than the lease reports the node's members as left, then joined again on re-announce.
+- [ ] **C15.7 Backplane outage** (§13.8, decision #206): local sessions keep working; a send that may include remote sessions fails with UNAVAILABLE and reaches no session; publications on channels sequenced elsewhere, remote calls, remote group operations, keyed calls (`nx: true`), SUBSCRIBE with `since` and any SUBSCRIBE to a channel sequenced elsewhere fail fast with UNAVAILABLE; on reconnect every local subscriber of a channel sequenced elsewhere gets UNSUBSCRIBED code 2 and presence is re-announced. Tested by cutting the broker mid-run.
 - [ ] **C15.8 Deployment guide:** load balancing for WebSocket and QUIC (QUIC connection-ID-aware balancing for migration), affinity requirements, sizing.
-- [ ] **C15.9 Sequencer ownership:** how a channel's single sequencer is chosen and moved across nodes (store-assigned offsets vs channel ownership with lease), and how an epoch change is triggered on failover.
+- [ ] **C15.9 Sequencer across nodes:** offsets assigned atomically by the shared history store (decision #175), for every channel with or without history; no channel owner or failover; an epoch changes only when the store loses a channel's continuity.
 - [ ] **C15.10 Distributed idempotency store** for `pavia-idempotency-key` (§8.7).
 
 ### Tests
@@ -567,7 +568,7 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 ## M18: 1.0
 
 ### Capabilities
-- [ ] **C18.1 Spec freeze:** resolve or explicitly defer every §18 open question; tag protocol version 1 as stable.
+- [ ] **C18.1 Spec freeze:** resolve or explicitly defer every §18 open question; tag protocol version 1 as stable. Compatible revisions keep `versions` at `1`; their additions are negotiated as capabilities (§7.10).
 - [ ] **C18.2 Public conformance suite:** vectors and scripts packaged so third parties can test their own clients and servers (e.g. Swift, Kotlin, .NET clients).
 - [ ] **C18.3 Semver and MSRV policy** for crates; versioning policy for the TS packages; compatibility guarantees between client and server versions.
 - [ ] **C18.4 Compatibility matrix** published (below), all green.
@@ -584,11 +585,15 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 | Core | | | | | |
 | Streaming | | | | | |
 | Server calls | | | | | |
+| Auth lifecycle | | | | | |
+| Lanes | | | | | |
 | Datagrams | | | | | |
 | Resumption | | | | | |
 | Channels | | | | | |
 | History | | | | | |
 | Presence | | | | | |
+
+Levels describe features (spec §17.1); bindings and codecs are the columns, so there is no WebTransport row. The Multi-node column runs WS / cbor and WT / cbor.
 
 Each cell is run with the TS client (three browser engines) and the Rust client.
 

@@ -22,8 +22,10 @@ Everything that parses bytes or holds protocol state lives in a crate with no so
 pavia-proto            wire, streams, session state machine, sequencing      no tokio, hyper, axum, quinn
 pavia-contract         type system, manifest, fingerprint, typed codecs      no pavia-proto, no IO
 pavia-contract-derive  #[derive] for contract types (proc-macro)            depends on nothing else here
-pavia-server           tokio session tasks, registry, targeting, hooks       no axum
-pavia-axum             mounting, request context, tower coexistence         axum + pavia-server
+pavia-server           tokio session tasks, registry, targeting, hooks,      no axum
+                       RequestContext (request headers, cookies, peer)
+pavia-axum             mounting, filling RequestContext from the upgrade     axum + pavia-server
+                       request, tower coexistence
 pavia-client           tokio Rust client, WS and WT drivers                  no pavia-server
 pavia-webtransport     HTTP/3 subset and WebTransport session layer on quinn   tokio + quinn; no pavia-proto
 pavia-codegen          TypeScript generator over a manifest                 pavia-contract only
