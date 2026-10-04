@@ -258,6 +258,19 @@
       "value": "\"a\\\"b\\\\c\\nd\\u0001é😀\"",
       "cbor": "6e 61 22 62 5c 63 0a 64 01 c3 a9 f0 9f 98 80",
       "json": "\"a\\\"b\\\\c\\nd\\u0001é😀\""
+    },
+    {
+      "id": "map-non-shortest-decode",
+      "spec": [
+        "12.3"
+      ],
+      "note": "The map {\"a\": 1} with its length (0xb8 0x01) and its value (0x18 0x01) in non-shortest CBOR forms: valid CBOR that encoders never produce, which decoders accept.",
+      "type": {
+        "map": "u32"
+      },
+      "direction": "decode",
+      "value": "{\"a\": 1}",
+      "cbor": "b8 01 61 61 18 01"
     }
   ]
 }
