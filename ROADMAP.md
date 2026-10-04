@@ -57,7 +57,7 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 - CI green on empty crates/packages.
 - Vector format documented, with every vector checked by schema and by independent content checks in Rust and TypeScript. (C0.5, the diagnostic CLI, moved to M1: it is built on the real decoders.)
 
-**Rust focus:** workspace organization, CLI with `clap`, CBOR diagnostic handling.
+**Rust focus:** workspace organization, CBOR diagnostic handling (the vector content checks of C0.4).
 
 ---
 
@@ -94,7 +94,7 @@ CI runs layers 1-6 on every PR once they exist; layer 7 nightly.
 ### Exit criteria
 - All vectors pass; fuzz clean; the crate has no async runtime or HTTP dependency.
 
-**Rust focus:** `bytes::Buf`/`BufMut`, zero-copy slicing of data sections, enums and exhaustive matching, `proptest`, `cargo-fuzz`, `ciborium`/`minicbor` trade-offs (deterministic encoding support matters).
+**Rust focus:** `bytes::Buf`/`BufMut`, zero-copy slicing of data sections, enums and exhaustive matching, `proptest`, `cargo-fuzz`, `ciborium`/`minicbor` trade-offs (deterministic encoding support matters), a CLI with `clap` (C0.5).
 
 ---
 
