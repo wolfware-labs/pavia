@@ -2,6 +2,7 @@ name: Bug
 description: Behavior that disagrees with the specification or with the documentation.
 title: "Bug: "
 labels: ["bug"]
+type: Bug
 body:
   - type: input
     id: version

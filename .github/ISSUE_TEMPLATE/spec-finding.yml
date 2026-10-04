@@ -2,6 +2,7 @@ name: Spec finding
 description: A contradiction, gap or ambiguity in the specification, or a decision it must record.
 title: "Spec: "
 labels: ["kind/spec"]
+type: Task
 body:
   - type: input
     id: sections
