@@ -8,7 +8,7 @@ edition = "2024"
 rust-version = "1.95"
 repository = "https://github.com/wolfware-labs/pavia"
 homepage = "https://github.com/wolfware-labs/pavia"
-authors = ["Mariano Santoro"]
+authors = ["Wolfware LLC"]
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]

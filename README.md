@@ -88,4 +88,4 @@ Any edit to `spec/pavia-protocol.md` is a new spec version and lands together wi
 
 ## License
 
-Licensed under either of the Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE)) or the MIT license ([LICENSE-MIT](LICENSE-MIT)), at your option. Contributions are accepted under the same terms.
+Copyright (c) 2026 Wolfware LLC. Licensed under either of the Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE)) or the MIT license ([LICENSE-MIT](LICENSE-MIT)), at your option; see [NOTICE](NOTICE). Contributions are accepted under the same terms.
