@@ -151,10 +151,15 @@ mod tests {
       vec![0xC0, 0x25, 0xf1, 0xc7, 0xa2, 0xe5, 0xcc],
     ];
 
-    for varint in tests {
-      for i in 1..=varint.len() {
-        let result = decode(&varint[..i], u64::MAX);
-        assert_matches!(result, Ok(DecodeValue::NeedMoreBytes));
+    for test in tests {
+      for i in 1..=test.len() {
+        let prefix = &test[..i];
+        let result = decode(prefix, u64::MAX);
+        assert_matches!(
+          result,
+          Ok(DecodeValue::NeedMoreBytes),
+          "prefix {prefix:02x?} (length {i}) should need more bytes"
+        );
       }
     }
   }
