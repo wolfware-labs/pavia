@@ -15,6 +15,5 @@ thiserror.workspace = true
 [dev-dependencies]
 proptest.workspace = true
 
-# `cargo fuzz` builds with `--cfg fuzzing` (see fuzz/).
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }

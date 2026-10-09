@@ -109,5 +109,4 @@ jobs:
           workspaces: crates/pavia-proto/fuzz
       - name: Fuzz the varint decoder for 60 seconds
         working-directory: crates/pavia-proto
-        # The prebuilt cargo-fuzz is a musl binary and would default to a musl target.
         run: cargo +nightly fuzz run --target x86_64-unknown-linux-gnu varint_decode -- -max_total_time=60
