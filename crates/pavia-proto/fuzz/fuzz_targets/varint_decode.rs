@@ -1,5 +1,3 @@
-//! Feeds arbitrary bytes to the varint decoder: it must never panic, and a decoded value must
-//! stay within the input and within `max`.
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
