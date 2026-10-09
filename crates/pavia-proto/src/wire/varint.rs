@@ -19,7 +19,21 @@ pub enum DecodeError {
 }
 
 pub fn encode(content: u64) -> Result<Vec<u8>, EncodeError> {
-  todo!();
+  let (first_byte, length) = match content {
+    n if n <= 0x3F => (0x00u8, 1usize),
+    n if n <= 0x3FFF => (0x40u8, 2usize),
+    n if n <= 0x3FFF_FFFF => (0x80u8, 4usize),
+    n if n <= 0x3FFF_FFFF_FFFF_FFFF => (0xC0u8, 8usize),
+    _ => return Err(EncodeError::OutOfRange),
+  };
+
+  let mut result = vec![0u8; length];
+  result[0] = first_byte;
+  for i in 0..length {
+    result[length - i - 1] |= (content >> (8 * i)) as u8; // truncation intentional
+  }
+
+  Ok(result)
 }
 
 pub fn decode(content: &[u8], max: u64) -> Result<DecodeValue, DecodeError> {
@@ -51,6 +65,7 @@ pub fn decode(content: &[u8], max: u64) -> Result<DecodeValue, DecodeError> {
 mod tests {
   use super::*;
   use std::assert_matches;
+  use std::ops::Sub;
 
   /// 0 and 63 are the smallest and largest values that fit in one byte.
   #[test]
@@ -70,13 +85,49 @@ mod tests {
   /// 0, 63, 64, 16383, 16384, 2^30-1, 2^30, 2^62-1 survive encode then decode.
   #[test]
   fn round_trips_length_class_boundaries() {
-    todo!()
+    let tests = [
+      0u64,
+      63u64,
+      64u64,
+      16383u64,
+      16384u64,
+      2u64.pow(30).sub(1),
+      2u64.pow(30),
+      2u64.pow(62).sub(1),
+    ];
+
+    for expected_value in tests {
+      let encoded_value = encode(expected_value).unwrap();
+      let decoded_result = decode(&encoded_value, u64::MAX);
+      let Ok(DecodeValue::Value { value, consumed_length }) = decoded_result else {
+        panic!("decode returned unexpected value: {decoded_result:?}");
+      };
+      assert_eq!(value, expected_value);
+      assert_eq!(consumed_length, encoded_value.len());
+    }
   }
 
   /// Each boundary value encodes to the shortest length: 63 -> 1 byte, 64 -> 2 bytes, ...
   #[test]
   fn encodes_shortest_form_at_each_boundary() {
-    todo!()
+    let tests: [(u64, Vec<u8>); 8] = [
+      (0u64, vec![0x00]),
+      (63u64, vec![0x3F]),
+      (64u64, vec![0x40, 0x40]),
+      (16383u64, vec![0x7F, 0xFF]),
+      (16384u64, vec![0x80, 0x00, 0x40, 0x00]),
+      (2u64.pow(30).sub(1), vec![0xBF, 0xFF, 0xFF, 0xFF]),
+      (2u64.pow(30), vec![0xC0, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00]),
+      (2u64.pow(62).sub(1), vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]),
+    ];
+
+    for (value, expected_encoded_value) in tests {
+      let encoded_result = encode(value);
+      let Ok(encoded_value) = encoded_result else {
+        panic!("encode returned unexpected value: {encoded_result:?}");
+      };
+      assert_eq!(encoded_value, expected_encoded_value);
+    }
   }
 
   /// RFC 9000 appendix A.1 samples.
@@ -193,24 +244,48 @@ mod tests {
   /// 2^62 has no varint form and is refused with `OutOfRange`.
   #[test]
   fn encode_rejects_2_pow_62() {
-    todo!()
+    let result = encode(2u64.pow(62));
+    assert_matches!(result, Err(EncodeError::OutOfRange))
   }
 
   /// u64::MAX is refused too.
   #[test]
   fn encode_rejects_u64_max() {
-    todo!()
+    let result = encode(u64::MAX);
+    assert_matches!(result, Err(EncodeError::OutOfRange))
   }
 
   /// For any v < 2^62, decode(encode(v)) == v.
   #[test]
   fn property_round_trip_any_value() {
-    todo!()
+    for exp in 0..62 {
+      let number = 2u64.pow(exp);
+      let decoded_value = decode(&encode(number).unwrap(), u64::MAX);
+      let Ok(DecodeValue::Value { value, .. }) = decoded_value else {
+        panic!("decode returned unexpected value: {decoded_value:?}");
+      };
+      assert_eq!(value, number);
+    }
   }
 
   /// For any v < 2^62, encode(v) has the shortest length for v.
   #[test]
   fn property_encode_is_shortest() {
-    todo!()
+    for exp in 0..62 {
+      let number = 2u64.pow(exp);
+      let encoded_value = encode(number).unwrap();
+      let expected_length = match number {
+        n if n <= 0x3F => 1usize,
+        n if n <= 0x3FFF => 2usize,
+        n if n <= 0x3FFF_FFFF => 4usize,
+        n if n <= 0x3FFF_FFFF_FFFF_FFFF => 8usize,
+        _ => unreachable!(),
+      };
+      assert_eq!(
+        encoded_value.len(),
+        expected_length,
+        "The exponent {exp} didn't encode the shortest"
+      );
+    }
   }
 }
