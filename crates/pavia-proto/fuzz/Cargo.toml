@@ -1,0 +1,25 @@
+[package]
+name = "pavia-proto-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+
+[dependencies.pavia-proto]
+path = ".."
+
+# A workspace of its own: fuzzing needs nightly, so the main workspace never builds this crate.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "varint_decode"
+path = "fuzz_targets/varint_decode.rs"
+test = false
+doc = false
+bench = false

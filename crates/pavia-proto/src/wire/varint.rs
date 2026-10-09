@@ -64,6 +64,7 @@ pub fn decode(content: &[u8], max: u64) -> Result<DecodeValue, DecodeError> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use proptest::prelude::*;
   use std::assert_matches;
   use std::ops::Sub;
 
@@ -257,7 +258,7 @@ mod tests {
 
   /// For any v < 2^62, decode(encode(v)) == v.
   #[test]
-  fn property_round_trip_any_value() {
+  fn round_trips_every_power_of_two() {
     for exp in 0..62 {
       let number = 2u64.pow(exp);
       let decoded_value = decode(&encode(number).unwrap(), u64::MAX);
@@ -270,7 +271,7 @@ mod tests {
 
   /// For any v < 2^62, encode(v) has the shortest length for v.
   #[test]
-  fn property_encode_is_shortest() {
+  fn encodes_every_power_of_two_in_shortest_form() {
     for exp in 0..62 {
       let number = 2u64.pow(exp);
       let encoded_value = encode(number).unwrap();
@@ -286,6 +287,66 @@ mod tests {
         expected_length,
         "The exponent {exp} didn't encode the shortest"
       );
+    }
+  }
+
+  /// Largest value a varint can hold: 62 value bits, all set.
+  const MAX_VARINT: u64 = (1 << 62) - 1;
+
+  /// Shortest varint length for `value`, from the length classes of spec 5.1.
+  fn shortest_length(value: u64) -> usize {
+    match value {
+      0..=0x3F => 1,
+      0x40..=0x3FFF => 2,
+      0x4000..=0x3FFF_FFFF => 4,
+      _ => 8,
+    }
+  }
+
+  /// Any value a varint can hold, drawn evenly from the four length classes. A uniform draw over
+  /// 0..2^62 would almost never produce a 1- or 2-byte value.
+  fn any_varint() -> impl Strategy<Value = u64> {
+    prop_oneof![
+      0..=0x3Fu64,
+      0x40..=0x3FFFu64,
+      0x4000..=0x3FFF_FFFFu64,
+      0x4000_0000..=MAX_VARINT,
+    ]
+  }
+
+  // Property tests (#9): random inputs instead of fixed tables.
+  proptest! {
+    /// decode(encode(v)) == v for any value a varint can hold, consuming every byte written.
+    #[test]
+    fn round_trips_any_value(value in any_varint()) {
+      let encoded = encode(value).expect("value is in range");
+      let decoded = decode(&encoded, u64::MAX);
+      prop_assert!(
+        matches!(decoded, Ok(DecodeValue::Value { value: v, consumed_length: n }) if v == value && n == encoded.len()),
+        "{value} encoded as {encoded:02x?} decoded to {decoded:?}"
+      );
+    }
+
+    /// encode(v) has the shortest length for any value a varint can hold.
+    #[test]
+    fn encodes_any_value_in_shortest_form(value in any_varint()) {
+      let encoded = encode(value).expect("value is in range");
+      prop_assert_eq!(encoded.len(), shortest_length(value), "{} encoded as {:02x?}", value, encoded);
+    }
+
+    /// Any value above the varint range is refused.
+    #[test]
+    fn refuses_any_value_above_range(value in (MAX_VARINT + 1)..=u64::MAX) {
+      prop_assert!(matches!(encode(value), Err(EncodeError::OutOfRange)));
+    }
+
+    /// decode never panics, and a decoded value never claims more bytes than it was given.
+    #[test]
+    fn decode_handles_any_bytes(bytes in proptest::collection::vec(any::<u8>(), 0..16), max in any::<u64>()) {
+      if let Ok(DecodeValue::Value { value, consumed_length }) = decode(&bytes, max) {
+        prop_assert!(consumed_length <= bytes.len());
+        prop_assert!(value <= max);
+      }
     }
   }
 }

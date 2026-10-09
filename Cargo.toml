@@ -21,4 +21,5 @@ pavia-webtransport = { path = "crates/pavia-webtransport", version = "0.1.0-alph
 pavia-codegen = { path = "crates/pavia-codegen", version = "0.1.0-alpha.0" }
 pavia-client = { path = "clients/rust", version = "0.1.0-alpha.0" }
 
+proptest = "1.11.0"
 thiserror = "2.0.21"
