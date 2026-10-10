@@ -110,6 +110,43 @@ describe("codec vectors", () => {
   }
 });
 
+function varintBig(n: bigint): number[] {
+  const len = n < 0x40n ? 1 : n < 0x4000n ? 2 : n < 0x40000000n ? 4 : 8;
+  const out: number[] = [];
+  for (let i = len - 1; i >= 0; i--) out.push(Number((n >> BigInt(8 * i)) & 0xffn));
+  out[0] = (out[0] ?? 0) | ((31 - Math.clz32(len)) << 6);
+  return out;
+}
+
+function readVarintBig(b: Uint8Array): [bigint, number] {
+  const first = b[0] ?? 0;
+  const len = 1 << (first >> 6);
+  let v = BigInt(first & 0x3f);
+  for (let i = 1; i < len; i++) v = (v << 8n) | BigInt(b[i] ?? 0);
+  return [v, len];
+}
+
+describe("varint vectors", () => {
+  const MAX = (1n << 62n) - 1n;
+  for (const { ctx, c } of cases("varints")) {
+    it(ctx, () => {
+      const value = typeof c.value === "string" ? BigInt(c.value) : undefined;
+      const bytes = typeof c.hex === "string" ? hexToBytes(c.hex) : undefined;
+      if (bytes && c.need_more === true) {
+        expect(bytes.length).toBeLessThan(1 << ((bytes[0] ?? 0) >> 6));
+      } else if (bytes && value !== undefined) {
+        expect(readVarintBig(bytes)).toEqual([value, bytes.length]);
+        if (c.direction === "both") expect(varintBig(value)).toEqual([...bytes]);
+        else expect(varintBig(value)).not.toEqual([...bytes]);
+      } else if (value !== undefined) {
+        expect(value > MAX).toBe(true);
+      } else {
+        throw new Error(`${ctx}: unknown case shape`);
+      }
+    });
+  }
+});
+
 describe("scripts", () => {
   for (const { ctx, c } of cases("scripts")) {
     it(ctx, () => {

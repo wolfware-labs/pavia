@@ -211,6 +211,31 @@ fn scripts_parse_and_captures_resolve() {
   }
 }
 
+#[test]
+fn varint_vectors_match_their_hex() {
+  const MAX: u64 = (1 << 62) - 1;
+  for (ctx, case) in unique_ids("varints") {
+    let value = case["value"]
+      .as_str()
+      .map(|v| v.parse::<u64>().unwrap_or_else(|e| panic!("{ctx}: value: {e}")));
+    match (case["hex"].as_str().map(hex), value) {
+      (Some(bytes), None) if case["need_more"] == true => {
+        assert!(bytes.len() < 1 << (bytes[0] >> 6), "{ctx}: input is not truncated");
+      }
+      (Some(bytes), Some(value)) => {
+        assert_eq!(read_varint(&bytes, 0), (value, bytes.len()), "{ctx}: decode");
+        if str_field(&case, "direction") == "both" {
+          assert_eq!(varint(value), bytes, "{ctx}: encode");
+        } else {
+          assert_ne!(varint(value), bytes, "{ctx}: a decode-only case is not the shortest form");
+        }
+      }
+      (None, Some(value)) => assert!(value > MAX, "{ctx}: value has an encoding"),
+      _ => panic!("{ctx}: unknown case shape"),
+    }
+  }
+}
+
 /// Number of pattern elements (`*`, `$name`, open maps) in an item.
 fn count_patterns(d: &Diag) -> usize {
   match d {

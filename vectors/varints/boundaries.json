@@ -1,0 +1,25 @@
+{
+  "$schema": "../schema/varints.schema.json",
+  "group": "boundaries",
+  "note": "QUIC variable-length integers: both ends of each length class, the RFC 9000 Appendix A.1 samples, truncated input and values out of range.",
+  "cases": [
+    {"id": "one-byte-min", "spec": ["5.1"], "note": "Zero, the smallest value, in one byte.", "direction": "both", "hex": "00", "value": "0"},
+    {"id": "one-byte-max", "spec": ["5.1"], "note": "The largest one-byte value, 2^6-1.", "direction": "both", "hex": "3f", "value": "63"},
+    {"id": "two-byte-min", "spec": ["5.1"], "note": "The smallest value that needs two bytes, 2^6.", "direction": "both", "hex": "40 40", "value": "64"},
+    {"id": "two-byte-max", "spec": ["5.1"], "note": "The largest two-byte value, 2^14-1.", "direction": "both", "hex": "7f ff", "value": "16383"},
+    {"id": "four-byte-min", "spec": ["5.1"], "note": "The smallest value that needs four bytes, 2^14.", "direction": "both", "hex": "80 00 40 00", "value": "16384"},
+    {"id": "four-byte-max", "spec": ["5.1"], "note": "The largest four-byte value, 2^30-1.", "direction": "both", "hex": "bf ff ff ff", "value": "1073741823"},
+    {"id": "eight-byte-min", "spec": ["5.1"], "note": "The smallest value that needs eight bytes, 2^30.", "direction": "both", "hex": "c0 00 00 00 40 00 00 00", "value": "1073741824"},
+    {"id": "eight-byte-max", "spec": ["5.1"], "note": "The largest value a varint can carry, 2^62-1.", "direction": "both", "hex": "ff ff ff ff ff ff ff ff", "value": "4611686018427387903"},
+    {"id": "rfc-sample-eight-byte", "spec": ["5.1"], "note": "RFC 9000 Appendix A.1 sample in eight bytes.", "direction": "both", "hex": "c2 19 7c 5e ff 14 e8 8c", "value": "151288809941952652"},
+    {"id": "rfc-sample-four-byte", "spec": ["5.1"], "note": "RFC 9000 Appendix A.1 sample in four bytes.", "direction": "both", "hex": "9d 7f 3e 7d", "value": "494878333"},
+    {"id": "rfc-sample-two-byte", "spec": ["5.1"], "note": "RFC 9000 Appendix A.1 sample in two bytes.", "direction": "both", "hex": "7b bd", "value": "15293"},
+    {"id": "rfc-sample-one-byte", "spec": ["5.1"], "note": "RFC 9000 Appendix A.1 sample in one byte.", "direction": "both", "hex": "25", "value": "37"},
+    {"id": "rfc-sample-not-shortest", "spec": ["5.1"], "note": "37 in two bytes, from RFC 9000 Appendix A.1: a decoder accepts it, an encoder never writes it.", "direction": "decode", "hex": "40 25", "value": "37"},
+    {"id": "truncated-two-byte", "spec": ["5.1"], "note": "The prefix announces two bytes and only one arrived.", "direction": "decode", "hex": "40", "need_more": true},
+    {"id": "truncated-four-byte", "spec": ["5.1"], "note": "The prefix announces four bytes and only three arrived.", "direction": "decode", "hex": "80 00 40", "need_more": true},
+    {"id": "truncated-eight-byte", "spec": ["5.1"], "note": "The prefix announces eight bytes and only seven arrived.", "direction": "decode", "hex": "c0 00 00 00 40 00 00", "need_more": true},
+    {"id": "out-of-range-min", "spec": ["5.1"], "note": "2^62, one above the largest varint, has no encoding.", "direction": "encode", "value": "4611686018427387904", "error": "out_of_range"},
+    {"id": "out-of-range-u64-max", "spec": ["5.1"], "note": "2^64-1 has no encoding.", "direction": "encode", "value": "18446744073709551615", "error": "out_of_range"}
+  ]
+}

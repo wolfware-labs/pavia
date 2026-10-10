@@ -8,6 +8,7 @@ vectors/
   schema/              JSON Schema (2020-12) for each kind, plus invalid/ fixtures CI must reject
   frames/<group>.json  frame vectors
   codecs/<group>.json  codec vectors
+  varints/<group>.json varint vectors
   scripts/<group>.json scripts and abuse scripts
 ```
 
@@ -60,6 +61,16 @@ A file may define named types in `types`, in the form of the manifest's `types` 
 
 Every value has one encoding ([spec 12.3](../spec/pavia-protocol.md#123-codec-mapping), draft 0.9): struct fields in manifest declaration order, `map` keys sorted, shortest integer and float forms, compact `json`. Codec vectors are therefore `both` unless the input is one that encoders never produce, such as fields out of order.
 
+## Varint vectors (`varints/`)
+
+QUIC variable-length integers ([spec 5.1](../spec/pavia-protocol.md#51-variable-length-integers)), the prefix encoding inside frames and the WebSocket envelope. Values are decimal strings, because the largest ones do not fit a JSON number that every parser reads exactly. Each case is one of:
+
+| Fields | `direction` | Meaning |
+|---|---|---|
+| `hex`, `value` | `both` or `decode` | `hex` decodes to `value` and uses every byte; for `both`, encoding `value` gives exactly `hex`, the shortest form. `decode` marks a longer form that decoders accept and encoders never write |
+| `hex`, `need_more: true` | `decode` | `hex` is the start of a varint whose prefix announces more bytes than are present: the decoder asks for more input and consumes nothing |
+| `value`, `error: "out_of_range"` | `encode` | `value` is above 2^62-1, so it has no encoding and the encoder MUST refuse it |
+
 ## Scripts (`scripts/`)
 
 A script is an exchange seen from the client's side ([spec 17.2](../spec/pavia-protocol.md#172-test-vectors)). The server conformance runner plays the script against a server under test; the client conformance runner plays the server's side against a client under test.
@@ -103,10 +114,11 @@ CI validates every file against its schema and checks that the fixtures in `sche
 ```
 uvx check-jsonschema --schemafile vectors/schema/frames.schema.json vectors/frames/*.json
 uvx check-jsonschema --schemafile vectors/schema/codecs.schema.json vectors/codecs/*.json
+uvx check-jsonschema --schemafile vectors/schema/varints.schema.json vectors/varints/*.json
 uvx check-jsonschema --schemafile vectors/schema/scripts.schema.json vectors/scripts/*.json
 ```
 
-Schema validation checks structure only. The content is checked twice, by independent implementations in each language: `crates/pavia-vectors` (Rust) and `clients/typescript/packages/vectors` (TypeScript) each parse the diagnostic notation, lay the decoded form out as a frame and compare it with `hex`, encode or decode every codec value, and check that scripts parse and capture every `$name` before using it. Both run with the normal test commands:
+Schema validation checks structure only. The content is checked twice, by independent implementations in each language: `crates/pavia-vectors` (Rust) and `clients/typescript/packages/vectors` (TypeScript) each parse the diagnostic notation, lay the decoded form out as a frame and compare it with `hex`, encode or decode every codec value, encode or decode every varint, and check that scripts parse and capture every `$name` before using it. Both run with the normal test commands:
 
 ```
 cargo test -p pavia-vectors

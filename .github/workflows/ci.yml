@@ -78,7 +78,7 @@ jobs:
         run: pipx run --spec "$CHECK_JSONSCHEMA" check-jsonschema --check-metaschema vectors/schema/*.schema.json
       - name: Vectors match their schemas
         run: |
-          for kind in frames codecs scripts; do
+          for kind in frames codecs varints scripts; do
             pipx run --spec "$CHECK_JSONSCHEMA" check-jsonschema \
               --schemafile "vectors/schema/$kind.schema.json" vectors/$kind/*.json
           done
