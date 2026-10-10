@@ -20,6 +20,8 @@ jobs:
   rust:
     name: rust
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
@@ -43,6 +45,8 @@ jobs:
   typescript:
     name: typescript
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: clients/typescript
@@ -70,6 +74,8 @@ jobs:
   vectors:
     name: vectors
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
       CHECK_JSONSCHEMA: check-jsonschema==0.38.2
     steps:
@@ -96,6 +102,8 @@ jobs:
   fuzz:
     name: fuzz
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
