@@ -61,6 +61,18 @@ Limits and abuse
 
 - Rate limits are token buckets; every limit in section 16 is configurable and has a test (14, 16).
 
+## Architecture to check in code
+
+Report a structural problem as a finding, the same as a defect.
+
+- Layering. Inside `pavia-proto` the layers of `docs/design/sans-io.md` depend downward only: `session` may use `stream` and `wire`, `stream` may use `wire`, never the reverse. Within `wire`, the frame codec uses varints and header sections and the WebSocket envelope uses varints and frames; no other `wire` module depends on another.
+- One spec concept per module, for example varints (5.1), frames (5.2), header sections (5.4.1). A file that mixes two is a finding.
+- Minimal surface. Items are private or `pub(crate)` unless another crate needs them. A new `pub` item in a library crate is public API; the PR description names the caller that needs it.
+- Format apart from policy. Encoding and decoding follow the format; the defaults of spec section 16 (sizes, depths, timeouts, counts) arrive as parameters or configuration, not as constants inside a codec.
+- Errors belong to their layer. A module returns its own error type. Mapping errors to close codes or call status codes happens only in the error model (C1.12); until it lands, nothing maps them.
+- APIs shaped for their caller. Check a new function against the issues it blocks (their "Blocked by" relationships): an API the caller has to work around, or one that allocates per varint, header field or frame, is a finding.
+- No speculative structure. A trait, generic parameter or extension point with a single user needs a reason in the design records or the issue.
+
 ## What a good review comment looks like
 
 Cite the spec section or the design record the code disagrees with. Prefer "section 6.4 says credit is granted on consumption; this grants on arrival" over style remarks. Report only what would change the code, the spec text or the vectors.
