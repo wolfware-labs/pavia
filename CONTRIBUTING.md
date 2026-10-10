@@ -17,7 +17,7 @@ Dependencies between issues are GitHub relationships, not text: a capability lis
 
 ## Review
 
-Every pull request from a maintainer or collaborator gets an automated review against [`.github/REVIEWING.md`](.github/REVIEWING.md) and the path guides in `.github/instructions/`. Its `review` check is required: it fails when the review posts any finding, and the pull request merges once the findings are fixed, the threads are resolved and a new push gets a clean review. Pull requests from outside contributors are reviewed by a maintainer, who can also ask for the automated review with a `@claude review` comment, and they need a maintainer's approval.
+Every pull request gets a Copilot code review on each push, against [`.github/copilot-instructions.md`](.github/copilot-instructions.md) and the path guides in `.github/instructions/`. A pull request merges only with Copilot's approval: a review with findings withholds it, and the pull request merges once the findings are fixed, the threads are resolved and Copilot approves a later push. Pull requests from outside contributors also need a maintainer's approval.
 
 User guides live in the separate `wolfware-labs/pavia-docs` repository (created with #118 in M7); a behavior change that needs a guide update links the pavia-docs pull request from the pavia one.
 
