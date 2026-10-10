@@ -1,3 +1,4 @@
+use bytes::BufMut;
 use thiserror::Error;
 
 #[derive(Debug)]
@@ -18,7 +19,7 @@ pub enum DecodeError {
   AboveMax { value: u64, max: u64 },
 }
 
-pub fn encode(content: u64) -> Result<Vec<u8>, EncodeError> {
+pub fn encode(content: u64, out: &mut impl BufMut) -> Result<(), EncodeError> {
   let (first_byte, length) = match content {
     n if n <= 0x3F => (0x00u8, 1usize),
     n if n <= 0x3FFF => (0x40u8, 2usize),
@@ -27,13 +28,12 @@ pub fn encode(content: u64) -> Result<Vec<u8>, EncodeError> {
     _ => return Err(EncodeError::OutOfRange),
   };
 
-  let mut result = vec![0u8; length];
-  result[0] = first_byte;
-  for i in 0..length {
-    result[length - i - 1] |= (content >> (8 * i)) as u8; // truncation intentional
-  }
+  let content_bytes = content.to_be_bytes();
+  let encoded = &content_bytes[content_bytes.len() - length..];
+  out.put_u8(encoded[0] | first_byte);
+  out.put_slice(&encoded[1..]);
 
-  Ok(result)
+  Ok(())
 }
 
 pub fn decode(content: &[u8], max: u64) -> Result<DecodeValue, DecodeError> {
@@ -96,7 +96,7 @@ mod tests {
     ];
 
     for expected_value in tests {
-      let encoded_value = encode(expected_value).unwrap();
+      let encoded_value = encoded(expected_value).unwrap();
       let decoded_result = decode(&encoded_value, u64::MAX);
       let Ok(DecodeValue::Value { value, consumed_length }) = decoded_result else {
         panic!("decode returned unexpected value: {decoded_result:?}");
@@ -120,7 +120,7 @@ mod tests {
     ];
 
     for (value, expected_encoded_value) in tests {
-      let encoded_result = encode(value);
+      let encoded_result = encoded(value);
       let Ok(encoded_value) = encoded_result else {
         panic!("encode returned unexpected value: {encoded_result:?}");
       };
@@ -232,13 +232,13 @@ mod tests {
 
   #[test]
   fn encode_rejects_2_pow_62() {
-    let result = encode(2u64.pow(62));
+    let result = encoded(2u64.pow(62));
     assert_matches!(result, Err(EncodeError::OutOfRange))
   }
 
   #[test]
   fn encode_rejects_u64_max() {
-    let result = encode(u64::MAX);
+    let result = encoded(u64::MAX);
     assert_matches!(result, Err(EncodeError::OutOfRange))
   }
 
@@ -246,7 +246,7 @@ mod tests {
   fn round_trips_every_power_of_two() {
     for exp in 0..62 {
       let number = 2u64.pow(exp);
-      let decoded_value = decode(&encode(number).unwrap(), u64::MAX);
+      let decoded_value = decode(&encoded(number).unwrap(), u64::MAX);
       let Ok(DecodeValue::Value { value, .. }) = decoded_value else {
         panic!("decode returned unexpected value: {decoded_value:?}");
       };
@@ -258,7 +258,7 @@ mod tests {
   fn encodes_every_power_of_two_in_shortest_form() {
     for exp in 0..62 {
       let number = 2u64.pow(exp);
-      let encoded_value = encode(number).unwrap();
+      let encoded_value = encoded(number).unwrap();
       let expected_length = match number {
         n if n <= 0x3F => 1usize,
         n if n <= 0x3FFF => 2usize,
@@ -272,6 +272,11 @@ mod tests {
         "The exponent {exp} didn't encode the shortest"
       );
     }
+  }
+
+  fn encoded(value: u64) -> Result<Vec<u8>, EncodeError> {
+    let mut out = Vec::new();
+    encode(value, &mut out).map(|()| out)
   }
 
   fn hex_bytes(text: &str) -> Vec<u8> {
@@ -298,7 +303,7 @@ mod tests {
             "{id}"
           );
           if case["direction"] == "both" {
-            assert_eq!(encode(expected).unwrap(), bytes, "{id}");
+            assert_eq!(encoded(expected).unwrap(), bytes, "{id}");
           }
         }
         (Some(bytes), None, None) => assert_matches!(decode(&bytes, max), Ok(DecodeValue::NeedMoreBytes), "{id}"),
@@ -306,7 +311,7 @@ mod tests {
           assert_matches!(decode(&bytes, max), Err(DecodeError::AboveMax { .. }), "{id}")
         }
         (None, Some(value), Some("out_of_range")) => {
-          assert_matches!(encode(value), Err(EncodeError::OutOfRange), "{id}")
+          assert_matches!(encoded(value), Err(EncodeError::OutOfRange), "{id}")
         }
         _ => panic!("{id}: unknown case shape"),
       }
@@ -336,7 +341,7 @@ mod tests {
   proptest! {
     #[test]
     fn round_trips_any_value(value in any_varint()) {
-      let encoded = encode(value).expect("value is in range");
+      let encoded = encoded(value).expect("value is in range");
       let decoded = decode(&encoded, u64::MAX);
       prop_assert!(
         matches!(decoded, Ok(DecodeValue::Value { value: v, consumed_length: n }) if v == value && n == encoded.len()),
@@ -346,13 +351,13 @@ mod tests {
 
     #[test]
     fn encodes_any_value_in_shortest_form(value in any_varint()) {
-      let encoded = encode(value).expect("value is in range");
+      let encoded = encoded(value).expect("value is in range");
       prop_assert_eq!(encoded.len(), shortest_length(value), "{} encoded as {:02x?}", value, encoded);
     }
 
     #[test]
     fn refuses_any_value_above_range(value in (MAX_VARINT + 1)..=u64::MAX) {
-      prop_assert!(matches!(encode(value), Err(EncodeError::OutOfRange)));
+      prop_assert!(matches!(encoded(value), Err(EncodeError::OutOfRange)));
     }
 
     #[test]
