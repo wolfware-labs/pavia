@@ -65,7 +65,7 @@ Limits and abuse
 
 Report a structural problem as a finding, the same as a defect.
 
-- Layering. Inside `pavia-proto` the layers of `docs/design/sans-io.md` depend downward only: `session` may use `stream` and `wire`, `stream` may use `wire`, never the reverse. Within `wire`, the frame codec uses varints and header sections and the WebSocket envelope uses varints and frames; no other `wire` module depends on another.
+- Layering. Inside `pavia-proto` the layers of `docs/design/sans-io.md` depend downward only: `session` may use `stream` and `wire`, `stream` may use `wire`, never the reverse. Within `wire`, the frame codec uses varints and header sections, the WebSocket envelope uses varints and frames, and the datagram encoding (11.3) uses varints; no other `wire` module depends on another.
 - One spec concept per module, for example varints (5.1), frames (5.2), header sections (5.4.1). A file that mixes two is a finding.
 - Minimal surface. Items are private or `pub(crate)` unless another crate needs them. A new `pub` item in a library crate is public API; the PR description names the caller that needs it.
 - Format apart from policy. Encoding and decoding follow the format; the defaults of spec section 16 (sizes, depths, timeouts, counts) arrive as parameters or configuration, not as constants inside a codec.
