@@ -211,6 +211,39 @@ fn scripts_parse_and_captures_resolve() {
   }
 }
 
+#[test]
+fn varint_vectors_match_their_hex() {
+  const MAX: u64 = (1 << 62) - 1;
+  for (ctx, case) in unique_ids("varints") {
+    let number = |key: &str| {
+      case[key]
+        .as_str()
+        .map(|v| v.parse::<u64>().unwrap_or_else(|e| panic!("{ctx}: {key}: {e}")))
+    };
+    match (case["hex"].as_str().map(hex), number("value"), number("max")) {
+      (Some(bytes), None, None) if case["need_more"] == true => {
+        assert!(bytes.len() < 1 << (bytes[0] >> 6), "{ctx}: input is not truncated");
+      }
+      (Some(bytes), None, Some(max)) => {
+        let (value, end) = read_varint(&bytes, 0);
+        assert_eq!(end, bytes.len(), "{ctx}: hex is one complete varint");
+        assert!(value > max, "{ctx}: value is within max");
+      }
+      (Some(bytes), Some(value), max) => {
+        assert_eq!(read_varint(&bytes, 0), (value, bytes.len()), "{ctx}: decode");
+        assert!(max.is_none_or(|max| value <= max), "{ctx}: value is above max");
+        if str_field(&case, "direction") == "both" {
+          assert_eq!(varint(value), bytes, "{ctx}: encode");
+        } else {
+          assert_ne!(varint(value), bytes, "{ctx}: a decode-only case is not the shortest form");
+        }
+      }
+      (None, Some(value), None) => assert!(value > MAX, "{ctx}: value has an encoding"),
+      _ => panic!("{ctx}: unknown case shape"),
+    }
+  }
+}
+
 /// Number of pattern elements (`*`, `$name`, open maps) in an item.
 fn count_patterns(d: &Diag) -> usize {
   match d {
