@@ -67,8 +67,9 @@ QUIC variable-length integers ([spec 5.1](../spec/pavia-protocol.md#51-variable-
 
 | Fields | `direction` | Meaning |
 |---|---|---|
-| `hex`, `value` | `both` or `decode` | `hex` decodes to `value` and uses every byte; for `both`, encoding `value` gives exactly `hex`, the shortest form. `decode` marks a longer form that decoders accept and encoders never write |
+| `hex`, `value`, optional `max` | `both` or `decode` | `hex` decodes to `value` and uses every byte, also when the caller passes `max` as its limit; for `both`, encoding `value` gives exactly `hex`, the shortest form. `decode` marks a longer form that decoders accept and encoders never write |
 | `hex`, `need_more: true` | `decode` | `hex` is the start of a varint whose prefix announces more bytes than are present: the decoder asks for more input and consumes nothing |
+| `hex`, `max`, `error: "above_max"` | `decode` | `hex` is a complete varint whose value is above `max`, the limit the caller passes in: the decoder MUST refuse it without reading past the varint |
 | `value`, `error: "out_of_range"` | `encode` | `value` is above 2^62-1, so it has no encoding and the encoder MUST refuse it |
 
 ## Scripts (`scripts/`)

@@ -32,12 +32,14 @@
         "hex": {"$ref": "#/$defs/hex"},
         "value": {"$ref": "#/$defs/value"},
         "need_more": {"const": true},
-        "error": {"enum": ["out_of_range"]}
+        "max": {"$ref": "#/$defs/value"},
+        "error": {"enum": ["out_of_range", "above_max"]}
       },
       "oneOf": [
         {"required": ["hex", "value"], "not": {"anyOf": [{"required": ["need_more"]}, {"required": ["error"]}]}, "properties": {"direction": {"enum": ["both", "decode"]}}},
-        {"required": ["hex", "need_more"], "not": {"anyOf": [{"required": ["value"]}, {"required": ["error"]}]}, "properties": {"direction": {"const": "decode"}}},
-        {"required": ["value", "error"], "not": {"anyOf": [{"required": ["hex"]}, {"required": ["need_more"]}]}, "properties": {"direction": {"const": "encode"}}}
+        {"required": ["hex", "need_more"], "not": {"anyOf": [{"required": ["value"]}, {"required": ["error"]}, {"required": ["max"]}]}, "properties": {"direction": {"const": "decode"}}},
+        {"required": ["value", "error"], "not": {"anyOf": [{"required": ["hex"]}, {"required": ["need_more"]}, {"required": ["max"]}]}, "properties": {"direction": {"const": "encode"}, "error": {"const": "out_of_range"}}},
+        {"required": ["hex", "max", "error"], "not": {"anyOf": [{"required": ["value"]}, {"required": ["need_more"]}]}, "properties": {"direction": {"const": "decode"}, "error": {"const": "above_max"}}}
       ]
     }
   }

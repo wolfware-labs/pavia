@@ -131,11 +131,17 @@ describe("varint vectors", () => {
   for (const { ctx, c } of cases("varints")) {
     it(ctx, () => {
       const value = typeof c.value === "string" ? BigInt(c.value) : undefined;
+      const max = typeof c.max === "string" ? BigInt(c.max) : undefined;
       const bytes = typeof c.hex === "string" ? hexToBytes(c.hex) : undefined;
       if (bytes && c.need_more === true) {
         expect(bytes.length).toBeLessThan(1 << ((bytes[0] ?? 0) >> 6));
+      } else if (bytes && value === undefined && max !== undefined) {
+        const [v, len] = readVarintBig(bytes);
+        expect(len).toBe(bytes.length);
+        expect(v > max).toBe(true);
       } else if (bytes && value !== undefined) {
         expect(readVarintBig(bytes)).toEqual([value, bytes.length]);
+        if (max !== undefined) expect(value <= max).toBe(true);
         if (c.direction === "both") expect(varintBig(value)).toEqual([...bytes]);
         else expect(varintBig(value)).not.toEqual([...bytes]);
       } else if (value !== undefined) {

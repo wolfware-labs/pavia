@@ -1,7 +1,7 @@
 {
   "$schema": "../schema/varints.schema.json",
   "group": "boundaries",
-  "note": "QUIC variable-length integers: both ends of each length class, the RFC 9000 Appendix A.1 samples, truncated input and values out of range.",
+  "note": "QUIC variable-length integers: both ends of each length class, the RFC 9000 Appendix A.1 samples, truncated input, a value above the caller's limit and values out of range.",
   "cases": [
     {"id": "one-byte-min", "spec": ["5.1"], "note": "Zero, the smallest value, in one byte.", "direction": "both", "hex": "00", "value": "0"},
     {"id": "one-byte-max", "spec": ["5.1"], "note": "The largest one-byte value, 2^6-1.", "direction": "both", "hex": "3f", "value": "63"},
@@ -19,6 +19,8 @@
     {"id": "truncated-two-byte", "spec": ["5.1"], "note": "The prefix announces two bytes and only one arrived.", "direction": "decode", "hex": "40", "need_more": true},
     {"id": "truncated-four-byte", "spec": ["5.1"], "note": "The prefix announces four bytes and only three arrived.", "direction": "decode", "hex": "80 00 40", "need_more": true},
     {"id": "truncated-eight-byte", "spec": ["5.1"], "note": "The prefix announces eight bytes and only seven arrived.", "direction": "decode", "hex": "c0 00 00 00 40 00 00", "need_more": true},
+    {"id": "above-max", "spec": ["5.1"], "note": "16384 in four bytes against a limit of 16383: the decoder refuses it, reading no further than the varint.", "direction": "decode", "hex": "80 00 40 00", "max": "16383", "error": "above_max"},
+    {"id": "at-max", "spec": ["5.1"], "note": "16383 against a limit of 16383 is accepted: the limit is inclusive.", "direction": "both", "hex": "7f ff", "value": "16383", "max": "16383"},
     {"id": "out-of-range-min", "spec": ["5.1"], "note": "2^62, one above the largest varint, has no encoding.", "direction": "encode", "value": "4611686018427387904", "error": "out_of_range"},
     {"id": "out-of-range-u64-max", "spec": ["5.1"], "note": "2^64-1 has no encoding.", "direction": "encode", "value": "18446744073709551615", "error": "out_of_range"}
   ]
