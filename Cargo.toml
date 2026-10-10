@@ -22,4 +22,5 @@ pavia-codegen = { path = "crates/pavia-codegen", version = "0.1.0-alpha.0" }
 pavia-client = { path = "clients/rust", version = "0.1.0-alpha.0" }
 
 proptest = "1.11.0"
+serde_json = "1.0.151"
 thiserror = "2.0.21"

@@ -274,6 +274,45 @@ mod tests {
     }
   }
 
+  fn hex_bytes(text: &str) -> Vec<u8> {
+    let digits: Vec<u8> = text.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    digits
+      .chunks(2)
+      .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+      .collect()
+  }
+
+  #[test]
+  fn matches_the_shared_vectors() {
+    let doc: serde_json::Value = serde_json::from_str(include_str!("../../../../vectors/varints/boundaries.json")).unwrap();
+    for case in doc["cases"].as_array().unwrap() {
+      let id = case["id"].as_str().unwrap();
+      let number = |key: &str| case[key].as_str().map(|text| text.parse::<u64>().unwrap());
+      let bytes = case["hex"].as_str().map(hex_bytes);
+      let max = number("max").unwrap_or(u64::MAX);
+      match (bytes, number("value"), case["error"].as_str()) {
+        (Some(bytes), Some(expected), None) => {
+          assert_matches!(
+            decode(&bytes, max),
+            Ok(DecodeValue::Value { value, consumed_length }) if value == expected && consumed_length == bytes.len(),
+            "{id}"
+          );
+          if case["direction"] == "both" {
+            assert_eq!(encode(expected).unwrap(), bytes, "{id}");
+          }
+        }
+        (Some(bytes), None, None) => assert_matches!(decode(&bytes, max), Ok(DecodeValue::NeedMoreBytes), "{id}"),
+        (Some(bytes), None, Some("above_max")) => {
+          assert_matches!(decode(&bytes, max), Err(DecodeError::AboveMax { .. }), "{id}")
+        }
+        (None, Some(value), Some("out_of_range")) => {
+          assert_matches!(encode(value), Err(EncodeError::OutOfRange), "{id}")
+        }
+        _ => panic!("{id}: unknown case shape"),
+      }
+    }
+  }
+
   const MAX_VARINT: u64 = (1 << 62) - 1;
 
   fn shortest_length(value: u64) -> usize {
