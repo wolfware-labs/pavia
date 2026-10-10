@@ -107,6 +107,6 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: crates/pavia-proto/fuzz
-      - name: Fuzz the varint decoder for 60 seconds
+      - name: Fuzz the varint decoder for 10 minutes
         working-directory: crates/pavia-proto
-        run: cargo +nightly-2026-10-01 fuzz run --target x86_64-unknown-linux-gnu varint_decode -- -max_total_time=60
+        run: cargo +nightly-2026-10-01 fuzz run --target x86_64-unknown-linux-gnu varint_decode -- -max_total_time=600
