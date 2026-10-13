@@ -1,24 +1,63 @@
+//! QUIC variable-length integers (RFC 9000 §16), the encoding Pavia uses for every integer in a
+//! frame prefix (spec §5.1).
+//!
+//! The two most significant bits of the first byte give the length of the encoding. The other bits
+//! hold the value, most significant byte first:
+//!
+//! | First two bits | First byte mask | Length  | Largest value           |
+//! |----------------|-----------------|---------|-------------------------|
+//! | `00`           | `0x00`          | 1 byte  | `0x3F`                  |
+//! | `01`           | `0x40`          | 2 bytes | `0x3FFF`                |
+//! | `10`           | `0x80`          | 4 bytes | `0x3FFF_FFFF`           |
+//! | `11`           | `0xC0`          | 8 bytes | `0x3FFF_FFFF_FFFF_FFFF` |
+//!
+//! [`encode`] always writes the shortest form, as spec §5.1 requires. [`decode`] accepts any valid
+//! form, including one longer than needed, and checks the value against a caller-supplied limit.
+
 use bytes::BufMut;
 use thiserror::Error;
 
+/// What [`decode`] found at the start of its input.
 #[derive(Debug)]
 pub enum DecodeValue {
-  Value { value: u64, consumed_length: usize },
+  /// A complete varint.
+  Value {
+    /// The decoded integer.
+    value: u64,
+    /// How many input bytes the varint took: 1, 2, 4 or 8. The next item starts right after them.
+    consumed_length: usize,
+  },
+  /// The input ends before the varint does. Call [`decode`] again once more bytes have arrived.
   NeedMoreBytes,
 }
 
+/// Error returned by [`encode`].
 #[derive(Debug, Error)]
 pub enum EncodeError {
+  /// The value needs more than 62 bits, so no varint can hold it.
   #[error("the value is above 2^62 - 1")]
   OutOfRange,
 }
 
+/// Error returned by [`decode`].
 #[derive(Debug, Error)]
 pub enum DecodeError {
+  /// The varint is well-formed, but its value is above the caller's limit.
   #[error("too big: got {value}, max {max}")]
-  AboveMax { value: u64, max: u64 },
+  AboveMax {
+    /// The decoded value.
+    value: u64,
+    /// The limit passed to [`decode`].
+    max: u64,
+  },
 }
 
+/// Writes `content` to `out` as a varint, in the shortest form that holds it.
+///
+/// # Errors
+///
+/// Returns [`EncodeError::OutOfRange`] if `content` is above 2^62 − 1. Nothing is written to `out`
+/// in that case.
 pub fn encode(content: u64, out: &mut impl BufMut) -> Result<(), EncodeError> {
   let (first_byte, length) = match content {
     n if n <= 0x3F => (0x00u8, 1usize),
@@ -36,6 +75,17 @@ pub fn encode(content: u64, out: &mut impl BufMut) -> Result<(), EncodeError> {
   Ok(())
 }
 
+/// Reads one varint from the start of `content`.
+///
+/// Bytes after the varint are left alone; [`DecodeValue::Value`] reports how many were used.
+/// Returns [`DecodeValue::NeedMoreBytes`] if `content` is empty or shorter than the length its first
+/// byte announces.
+///
+/// # Errors
+///
+/// Returns [`DecodeError::AboveMax`] if the value is above `max`. Pass the limit of the field being
+/// read, such as `max_frame` for a frame Length, so that an oversized value is rejected before
+/// anything is allocated for it.
 pub fn decode(content: &[u8], max: u64) -> Result<DecodeValue, DecodeError> {
   let Some(first_byte) = content.first() else {
     return Ok(DecodeValue::NeedMoreBytes);
