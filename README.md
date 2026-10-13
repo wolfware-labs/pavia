@@ -50,7 +50,7 @@ Implementations
 - [Specification](spec/pavia-protocol.md). Every published version is kept, unchanged, under `spec/versions/`; see the [versioning policy and index](spec/README.md).
 - [Roadmap](ROADMAP.md): milestones, capability IDs (`C4.7`), tests and exit criteria. Each capability is a GitHub issue and each milestone a GitHub milestone.
 - [Design records](docs/design/): decisions that shape more than one issue, including the crate layout ([`sans-io.md`](docs/design/sans-io.md)) and the protocol decisions of drafts 0.8 and 0.9 ([`spec-review-2026-10.md`](docs/design/spec-review-2026-10.md)).
-- [Test vectors](vectors/README.md): the frame, codec and script formats every implementation is checked against.
+- [Test vectors](vectors/README.md): the frame, codec, varint and script formats every implementation is checked against.
 - [Contributing](CONTRIBUTING.md) and the [review guide](.github/copilot-instructions.md): how issues, pull requests and reviews work.
 
 ## Conformance

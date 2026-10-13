@@ -1,0 +1,8 @@
+{
+  "$schema": "../varints.schema.json",
+  "group": "broken",
+  "note": "Deliberately invalid fixture: a truncated case cannot also carry a value. CI checks that schema validation rejects it.",
+  "cases": [
+    {"id": "truncated-with-value", "spec": ["5.1"], "note": "need_more and value together", "direction": "decode", "hex": "40", "need_more": true, "value": "64"}
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wolfware-labs/pavia/vectors/schema/varints.schema.json",
+  "title": "Pavia varint vectors",
+  "type": "object",
+  "required": ["group", "cases"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {"type": "string"},
+    "group": {"type": "string", "pattern": "^[a-z0-9-]+$"},
+    "note": {"type": "string"},
+    "cases": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/case"}}
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"},
+    "spec": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "pattern": "^([0-9]+(\\.[0-9]+)*|Appendix [A-Z])$"}
+    },
+    "hex": {"type": "string", "pattern": "^[0-9a-f]{2}( ?[0-9a-f]{2})*$"},
+    "value": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$"},
+    "case": {
+      "type": "object",
+      "required": ["id", "spec", "note", "direction"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "spec": {"$ref": "#/$defs/spec"},
+        "note": {"type": "string", "minLength": 1},
+        "direction": {"enum": ["both", "decode", "encode"]},
+        "hex": {"$ref": "#/$defs/hex"},
+        "value": {"$ref": "#/$defs/value"},
+        "need_more": {"const": true},
+        "max": {"$ref": "#/$defs/value"},
+        "error": {"enum": ["out_of_range", "above_max"]}
+      },
+      "oneOf": [
+        {"required": ["hex", "value"], "not": {"anyOf": [{"required": ["need_more"]}, {"required": ["error"]}]}, "properties": {"direction": {"enum": ["both", "decode"]}}},
+        {"required": ["hex", "need_more"], "not": {"anyOf": [{"required": ["value"]}, {"required": ["error"]}, {"required": ["max"]}]}, "properties": {"direction": {"const": "decode"}}},
+        {"required": ["value", "error"], "not": {"anyOf": [{"required": ["hex"]}, {"required": ["need_more"]}, {"required": ["max"]}]}, "properties": {"direction": {"const": "encode"}, "error": {"const": "out_of_range"}}},
+        {"required": ["hex", "max", "error"], "not": {"anyOf": [{"required": ["value"]}, {"required": ["need_more"]}]}, "properties": {"direction": {"const": "decode"}, "error": {"const": "above_max"}}}
+      ]
+    }
+  }
+}

@@ -2,3 +2,6 @@ target/
 node_modules/
 dist/
 clients/typescript/**/dist/
+crates/*/fuzz/corpus/
+crates/*/fuzz/artifacts/
+crates/*/fuzz/coverage/

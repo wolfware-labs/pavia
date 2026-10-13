@@ -5,7 +5,7 @@ Pavia is a real-time RPC and messaging protocol (spec in `spec/pavia-protocol.md
 ## Layout
 
 - `spec/`: editor's draft plus one frozen copy per version under `spec/versions/`. `spec/README.md` has the rules.
-- `vectors/`: frame, codec and script vectors shared by every implementation; `vectors/README.md` defines the formats, `vectors/schema/` validates their structure, and `crates/pavia-vectors` and `clients/typescript/packages/vectors` (test only, unpublished) check their content.
+- `vectors/`: frame, codec, varint and script vectors shared by every implementation; `vectors/README.md` defines the formats, `vectors/schema/` validates their structure, and `crates/pavia-vectors` and `clients/typescript/packages/vectors` (test only, unpublished) check their content.
 - `crates/`: Rust workspace members (`pavia-proto` sans-IO core, `pavia-contract`, `pavia-contract-derive`, `pavia-server`, `pavia-axum`, `pavia-webtransport`, `pavia-codegen`, `pavia-cli`; `pavia-macros` is planned in #218).
 - `clients/rust/`: the `pavia-client` crate. `clients/typescript/`: pnpm workspace with `@pavia/client`.
 - `docs/design/`: decision records (`sans-io.md` for crates and layering, `spec-review-2026-10.md` for the draft 0.8 and 0.9 protocol decisions). `ROADMAP.md`: milestones and capability IDs (`C4.7`) that issues and commits reference.
