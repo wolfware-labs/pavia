@@ -244,6 +244,133 @@ fn varint_vectors_match_their_hex() {
   }
 }
 
+#[test]
+fn header_vectors_match_their_hex() {
+  for (ctx, case) in unique_ids("headers") {
+    let bytes = hex(str_field(&case, "hex"));
+    let max_size = case["max_size"].as_u64().map_or(16 * 1024, |n| n as usize);
+    let max_depth = case["max_depth"].as_u64().map_or(16, |n| n as usize);
+    let Some(header) = case["header"].as_str() else {
+      match str_field(&case, "error") {
+        "too_large" => assert!(bytes.len() > max_size, "{ctx}: header is within max_size"),
+        "too_deep" => assert!(depth(&decode(&bytes)) > max_depth, "{ctx}: header is within max_depth"),
+        rule => assert_eq!(header_error(&bytes), Err(rule), "{ctx}: rule the header breaks"),
+      }
+      continue;
+    };
+    assert_eq!(header_error(&bytes), Ok(()), "{ctx}: header breaks a rule");
+    let expected = plain(header, &ctx);
+    assert!(matches!(expected, Value::Map(_)), "{ctx}: header is not a map");
+    assert!(same(&decode(&bytes), &expected), "{ctx}: hex does not decode to header");
+    assert!(bytes.len() <= max_size, "{ctx}: hex is above max_size");
+    assert!(depth(&expected) <= max_depth, "{ctx}: header is above max_depth");
+    let deterministic = encode(&sorted(&expected));
+    if case["direction"] == "both" {
+      assert_eq!(encode(&expected), bytes, "{ctx}: header does not encode to hex");
+      assert_eq!(deterministic, bytes, "{ctx}: hex is not in deterministic encoding");
+    } else {
+      assert_ne!(deterministic, bytes, "{ctx}: a decode-only case is in deterministic encoding");
+    }
+  }
+}
+
+/// The first spec 5.4.1 rule a header breaks, apart from the size and depth limits. A walk over
+/// the item heads (RFC 8949 section 3) that uses no CBOR library, so it checks the error vectors
+/// independently of both `ciborium` and `pavia-proto`.
+fn header_error(bytes: &[u8]) -> Result<(), &'static str> {
+  match bytes.first().map(|b| (b >> 5, b & 0x1f)) {
+    Some((5, 31)) => return Err("indefinite_length"),
+    Some((5, _)) => {}
+    Some(_) => return Err("not_a_map"),
+    None => return Err("malformed"),
+  }
+  let mut pos = 0;
+  cbor_item(bytes, &mut pos)?;
+  if pos < bytes.len() { Err("trailing_bytes") } else { Ok(()) }
+}
+
+/// Reads one head: major type, additional information and argument.
+fn cbor_head(bytes: &[u8], pos: &mut usize) -> Result<(u8, u8, u64), &'static str> {
+  let byte = *bytes.get(*pos).ok_or("malformed")?;
+  *pos += 1;
+  let (major, info) = (byte >> 5, byte & 0x1f);
+  let width = match info {
+    0..=23 => return Ok((major, info, u64::from(info))),
+    24..=27 => 1 << (info - 24),
+    31 => return Ok((major, info, 0)),
+    _ => return Err("malformed"),
+  };
+  let argument = bytes.get(*pos..*pos + width).ok_or("malformed")?;
+  *pos += width;
+  Ok((major, info, argument.iter().fold(0, |n, b| (n << 8) | u64::from(*b))))
+}
+
+/// Walks one item and returns how a decoder identifies it as a map key: integers by value, text
+/// and byte strings by content, anything else by its encoded bytes.
+fn cbor_item(bytes: &[u8], pos: &mut usize) -> Result<(u8, u64, Vec<u8>), &'static str> {
+  let start = *pos;
+  let (major, info, argument) = cbor_head(bytes, pos)?;
+  match (major, info) {
+    (2..=5, 31) => return Err("indefinite_length"),
+    (_, 31) => return Err("malformed"),
+    (6, _) => return Err("tag"),
+    (7, 24) if argument < 32 => return Err("malformed"),
+    _ => {}
+  }
+  match major {
+    0 | 1 => return Ok((major, argument, Vec::new())),
+    2 | 3 => {
+      let end = usize::try_from(argument).ok().and_then(|n| pos.checked_add(n));
+      let content = end.and_then(|end| bytes.get(*pos..end)).ok_or("malformed")?;
+      if major == 3 && std::str::from_utf8(content).is_err() {
+        return Err("malformed");
+      }
+      *pos += content.len();
+      return Ok((major, 0, content.to_vec()));
+    }
+    4 => {
+      for _ in 0..argument {
+        cbor_item(bytes, pos)?;
+      }
+    }
+    5 => {
+      let mut keys = HashSet::new();
+      for _ in 0..argument {
+        if !keys.insert(cbor_item(bytes, pos)?) {
+          return Err("duplicate_key");
+        }
+        cbor_item(bytes, pos)?;
+      }
+    }
+    _ => {}
+  }
+  Ok((u8::MAX, 0, bytes[start..*pos].to_vec()))
+}
+
+/// Nesting depth as spec 5.4.1 counts it: arrays and maps add one level, tags add none.
+fn depth(value: &Value) -> usize {
+  match value {
+    Value::Map(entries) => 1 + entries.iter().map(|(k, v)| depth(k).max(depth(v))).max().unwrap_or(0),
+    Value::Array(items) => 1 + items.iter().map(depth).max().unwrap_or(0),
+    Value::Tag(_, inner) => depth(inner),
+    _ => 0,
+  }
+}
+
+/// The same value with the keys of every map sorted by their encoded bytes (RFC 8949 section 4.2.1).
+fn sorted(value: &Value) -> Value {
+  match value {
+    Value::Map(entries) => {
+      let mut entries: Vec<(Value, Value)> = entries.iter().map(|(k, v)| (sorted(k), sorted(v))).collect();
+      entries.sort_by_cached_key(|(k, _)| encode(k));
+      Value::Map(entries)
+    }
+    Value::Array(items) => Value::Array(items.iter().map(sorted).collect()),
+    Value::Tag(tag, inner) => Value::Tag(*tag, Box::new(sorted(inner))),
+    other => other.clone(),
+  }
+}
+
 /// Number of pattern elements (`*`, `$name`, open maps) in an item.
 fn count_patterns(d: &Diag) -> usize {
   match d {
