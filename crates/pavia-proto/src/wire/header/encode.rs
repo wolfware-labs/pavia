@@ -1,6 +1,7 @@
 use super::Value;
 use bytes::BufMut;
 use half::f16;
+use std::cmp::Ordering;
 use thiserror::Error;
 
 const UNSIGNED: u8 = 0;
@@ -121,26 +122,51 @@ fn write_array(items: &[Value<'_>], buffer: &mut impl BufMut) -> Result<(), Enco
 }
 
 fn write_map(entries: &[(Value<'_>, Value<'_>)], buffer: &mut impl BufMut) -> Result<(), EncodeError> {
-  let mut encoded = Vec::with_capacity(entries.len());
-  for (key, value) in entries {
-    let mut encoded_key = vec![];
-    write_value(key, &mut encoded_key)?;
-    encoded.push((encoded_key, value));
-  }
-
-  encoded.sort_unstable_by(|(k1, _), (k2, _)| k1.cmp(k2));
-
-  if encoded.array_windows().any(|[(k1, _), (k2, _)]| k1 == k2) {
-    return Err(EncodeError::DuplicateKey);
-  }
+  let mut sorted: Vec<_> = entries.iter().collect();
+  sorted.sort_unstable_by(|(a, _), (b, _)| cmp_encoded(a, b));
 
   write_head(MAP, entries.len() as u64, buffer);
 
-  for (key, value) in encoded {
-    buffer.put_slice(&key);
+  let mut previous = None;
+  for (key, value) in sorted {
+    if previous.is_some_and(|previous| cmp_encoded(previous, key) == Ordering::Equal) {
+      return Err(EncodeError::DuplicateKey);
+    }
+    write_value(key, buffer)?;
     write_value(value, buffer)?;
+    previous = Some(key);
   }
   Ok(())
+}
+
+fn cmp_encoded(a: &Value<'_>, b: &Value<'_>) -> Ordering {
+  match (a, b) {
+    (Value::Unsigned(x), Value::Unsigned(y)) | (Value::Negative(x), Value::Negative(y)) => x.cmp(y),
+    (Value::Bytes(x), Value::Bytes(y)) => (x.len(), x).cmp(&(y.len(), y)),
+    (Value::Text(x), Value::Text(y)) => (x.len(), x).cmp(&(y.len(), y)),
+    _ if major_type(a) != major_type(b) => major_type(a).cmp(&major_type(b)),
+    _ => encoded_for_ordering(a).cmp(&encoded_for_ordering(b)),
+  }
+}
+
+fn major_type(value: &Value<'_>) -> u8 {
+  match value {
+    Value::Unsigned(_) => UNSIGNED,
+    Value::Negative(_) => NEGATIVE,
+    Value::Bytes(_) => BYTES,
+    Value::Text(_) => TEXT,
+    Value::Array(_) => ARRAY,
+    Value::Map(_) => MAP,
+    Value::Bool(_) | Value::Null | Value::Undefined | Value::Simple(_) | Value::Float(_) => SIMPLE,
+  }
+}
+
+fn encoded_for_ordering(value: &Value<'_>) -> Vec<u8> {
+  let mut bytes = Vec::new();
+  if write_value(value, &mut bytes).is_err() {
+    bytes.clear();
+  }
+  bytes
 }
 
 #[cfg(test)]
@@ -273,6 +299,14 @@ mod tests {
     let written = written(&Value::Text(&text));
     assert_eq!(written[..3], [0x79, 0x01, 0x2c]);
     assert_eq!(written.len(), 303);
+  }
+
+  proptest! {
+    #[test]
+    fn orders_keys_like_their_encoded_bytes(a in any_value(), b in any_value()) {
+      prop_assume!(write_value(&a, &mut Vec::new()).is_ok() && write_value(&b, &mut Vec::new()).is_ok());
+      prop_assert_eq!(cmp_encoded(&a, &b), written(&a).cmp(&written(&b)));
+    }
   }
 
   proptest! {
