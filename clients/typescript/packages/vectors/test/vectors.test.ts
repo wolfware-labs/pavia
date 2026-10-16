@@ -153,6 +153,71 @@ describe("varint vectors", () => {
   }
 });
 
+/** Nesting depth as spec 5.4.1 counts it: arrays and maps add one level, tags add none. */
+function depth(d: Diag): number {
+  switch (d.kind) {
+    case "map":
+      return 1 + Math.max(0, ...d.entries.map(([k, v]) => Math.max(depth(k), depth(v))));
+    case "array":
+      return 1 + Math.max(0, ...d.items.map(depth));
+    case "tag":
+      return depth(d.value);
+    default:
+      return 0;
+  }
+}
+
+function compareBytes(a: Uint8Array, b: Uint8Array): number {
+  for (let i = 0; i < Math.min(a.length, b.length); i++) {
+    if (a[i] !== b[i]) return (a[i] ?? 0) - (b[i] ?? 0);
+  }
+  return a.length - b.length;
+}
+
+/** The same value with the keys of every map sorted by their encoded bytes (RFC 8949 section 4.2.1). */
+function sorted(d: Diag): Diag {
+  switch (d.kind) {
+    case "map": {
+      const entries = d.entries.map(([k, v]): [Diag, Diag] => [sorted(k), sorted(v)]);
+      entries.sort(([a], [b]) => compareBytes(encode(a), encode(b)));
+      return { ...d, entries };
+    }
+    case "array":
+      return { ...d, items: d.items.map(sorted) };
+    case "tag":
+      return { ...d, value: sorted(d.value) };
+    default:
+      return d;
+  }
+}
+
+describe("header vectors", () => {
+  for (const { ctx, c } of cases("headers")) {
+    it(ctx, () => {
+      const bytes = hexToBytes(c.hex as string);
+      const maxSize = typeof c.max_size === "number" ? c.max_size : 16 * 1024;
+      const maxDepth = typeof c.max_depth === "number" ? c.max_depth : 16;
+      if (typeof c.header !== "string") {
+        if (c.error === "too_large") expect(bytes.length, "header is within max_size").toBeGreaterThan(maxSize);
+        if (c.error === "too_deep") expect(depth(decode(bytes)), "header is within max_depth").toBeGreaterThan(maxDepth);
+        return;
+      }
+      const expected = parse(c.header);
+      expect(expected.kind, "header is not a map").toBe("map");
+      expect(same(decode(bytes), expected), "hex does not decode to header").toBe(true);
+      expect(bytes.length, "hex is above max_size").toBeLessThanOrEqual(maxSize);
+      expect(depth(expected), "header is above max_depth").toBeLessThanOrEqual(maxDepth);
+      const deterministic = [...encode(sorted(expected))];
+      if (c.direction === "both") {
+        expect([...encode(expected)], "header does not encode to hex").toEqual([...bytes]);
+        expect(deterministic, "hex is not in deterministic encoding").toEqual([...bytes]);
+      } else {
+        expect(deterministic, "a decode-only case is in deterministic encoding").not.toEqual([...bytes]);
+      }
+    });
+  }
+});
+
 describe("scripts", () => {
   for (const { ctx, c } of cases("scripts")) {
     it(ctx, () => {
