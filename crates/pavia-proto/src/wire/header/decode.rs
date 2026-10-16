@@ -61,7 +61,8 @@ pub fn decode<'a>(header: &'a [u8], limits: &DecodeLimits) -> Result<Option<Vec<
   let mut decoder = Decoder::new(header);
   match decoder.datatype().map_err(|_| DecodeError::Malformed)? {
     Type::Map => {
-      let header_map = walk_map(&mut decoder, 1, limits.max_depth)?;
+      let depth = next_depth(0, limits.max_depth)?;
+      let header_map = walk_map(&mut decoder, depth, limits.max_depth)?;
       if decoder.position() < header.len() {
         Err(DecodeError::TrailingBytes)
       } else {
@@ -458,6 +459,15 @@ mod tests {
     let content = header_with_depth_under_unknown_key(17);
     let result = decode(&content, &DecodeLimits::default());
     assert_matches!(result, Err(DecodeError::TooDeep));
+  }
+
+  #[test]
+  fn rejects_empty_map_with_zero_depth_limit() {
+    let limits = DecodeLimits {
+      max_depth: 0,
+      ..DecodeLimits::default()
+    };
+    assert_matches!(decode(&[0xa0], &limits), Err(DecodeError::TooDeep));
   }
 
   #[test]
