@@ -1,0 +1,20 @@
+{
+  "$schema": "../schema/headers.schema.json",
+  "group": "deterministic",
+  "note": "Valid header sections: what a sender writes in core deterministic encoding, and encodings a receiver accepts although a sender never writes them.",
+  "cases": [
+    {"id": "empty-map", "spec": ["5.4.1"], "note": "A header with no entries is the empty map a0. A frame with no header at all has HeaderLength 0 instead (spec 5.2).", "direction": "both", "hex": "a0", "header": "{}"},
+    {"id": "integer-keys-sorted", "spec": ["5.4.1"], "note": "Integer keys in ascending order: 1 and 2 encode as 01 and 02.", "direction": "both", "hex": "a2 01 61 61 02 41 00", "header": "{1: \"a\", 2: h'00'}"},
+    {"id": "unsigned-keys-before-negative", "spec": ["5.4.1"], "note": "10 (0a) sorts before -1 (20): keys are ordered by their encoded bytes, and the major type is in the first byte.", "direction": "both", "hex": "a2 0a 00 20 01", "header": "{10: 0, -1: 1}"},
+    {"id": "text-keys-by-encoded-bytes", "spec": ["5.4.1"], "note": "\"b\" (61 62) sorts before \"aa\" (62 61 61): the length in the head byte is compared first.", "direction": "both", "hex": "a2 61 62 01 62 61 61 02", "header": "{\"b\": 1, \"aa\": 2}"},
+    {"id": "key-types-sorted", "spec": ["5.4.1"], "note": "Keys of four major types sort by their first byte: unsigned, negative, byte string, text string.", "direction": "both", "hex": "a4 00 f6 20 f5 41 00 f4 61 61 81 01", "header": "{0: null, -1: true, h'00': false, \"a\": [1]}"},
+    {"id": "shortest-integer-forms", "spec": ["5.4.1"], "note": "Each value uses the shortest head: 24 needs one extra byte, 256 two, 65536 four, 2^32 eight.", "direction": "both", "hex": "a4 01 18 18 02 19 01 00 03 1a 00 01 00 00 04 1b 00 00 00 01 00 00 00 00", "header": "{1: 24, 2: 256, 3: 65536, 4: 4294967296}"},
+    {"id": "shortest-float-forms", "spec": ["5.4.1"], "note": "Each float uses the shortest width that keeps its exact value: 1.5 in f16, 100000.0 in f32, 0.1 in f64.", "direction": "both", "hex": "a3 01 f9 3e 00 02 fa 47 c3 50 00 03 fb 3f b9 99 99 99 99 99 9a", "header": "{1: 1.5, 2: 100000.0, 3: 0.1}"},
+    {"id": "nested-map-keys-sorted", "spec": ["5.4.1"], "note": "Key order applies to every map, including one nested inside a value.", "direction": "both", "hex": "a1 01 a2 61 62 01 62 61 61 02", "header": "{1: {\"b\": 1, \"aa\": 2}}"},
+    {"id": "depth-at-limit", "spec": ["5.4.1"], "note": "Depth 16, the default limit: the map is depth 1 and holds 15 nested arrays.", "direction": "both", "hex": "a1 01 81 81 81 81 81 81 81 81 81 81 81 81 81 81 80", "header": "{1: [[[[[[[[[[[[[[[]]]]]]]]]]]]]]]}"},
+    {"id": "size-at-limit", "spec": ["5.4.1"], "note": "A 7-byte header against a 7-byte limit is accepted: the limit is inclusive.", "direction": "both", "hex": "a1 01 64 61 61 61 61", "header": "{1: \"aaaa\"}", "max_size": 7},
+    {"id": "non-shortest-integer", "spec": ["5.4.1"], "note": "1 in a two-byte head (18 01). Receivers accept it; a sender writes 01.", "direction": "decode", "hex": "a1 01 18 01", "header": "{1: 1}"},
+    {"id": "non-shortest-float", "spec": ["5.4.1"], "note": "1.5 as an f64. Receivers accept it; a sender writes the f16 f9 3e 00.", "direction": "decode", "hex": "a1 01 fb 3f f8 00 00 00 00 00 00", "header": "{1: 1.5}"},
+    {"id": "keys-out-of-order", "spec": ["5.4.1"], "note": "Key 2 before key 1. Receivers accept it; a sender sorts the keys.", "direction": "decode", "hex": "a2 02 00 01 00", "header": "{2: 0, 1: 0}"}
+  ]
+}

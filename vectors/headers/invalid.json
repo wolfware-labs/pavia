@@ -1,0 +1,21 @@
+{
+  "$schema": "../schema/headers.schema.json",
+  "group": "invalid",
+  "note": "Header sections a receiver rejects with PROTOCOL_ERROR (spec 5.4.1). The error names the rule that fails.",
+  "cases": [
+    {"id": "not-a-map", "spec": ["5.4.1"], "note": "The header is an array, not a map.", "direction": "decode", "hex": "80", "error": "not_a_map"},
+    {"id": "trailing-bytes", "spec": ["5.4.1"], "note": "A complete map followed by one more byte: the header is not exactly one map.", "direction": "decode", "hex": "a0 00", "error": "trailing_bytes"},
+    {"id": "truncated-map", "spec": ["5.4.1"], "note": "The map announces one entry and the value is missing.", "direction": "decode", "hex": "a1 01", "error": "malformed"},
+    {"id": "reserved-additional-information", "spec": ["5.4.1"], "note": "Additional information 28 is reserved in RFC 8949, so the item is not well-formed.", "direction": "decode", "hex": "a1 01 1c", "error": "malformed"},
+    {"id": "two-byte-simple-below-32", "spec": ["5.4.1"], "note": "f8 14 writes simple value 20 in two bytes, which RFC 8949 section 3.3 makes not well-formed.", "direction": "decode", "hex": "a1 01 f8 14", "error": "malformed"},
+    {"id": "indefinite-map", "spec": ["5.4.1"], "note": "The header map itself has indefinite length.", "direction": "decode", "hex": "bf ff", "error": "indefinite_length"},
+    {"id": "indefinite-text-in-value", "spec": ["5.4.1"], "note": "An indefinite-length text string inside a value.", "direction": "decode", "hex": "a1 01 7f 61 61 ff", "error": "indefinite_length"},
+    {"id": "tag-in-value", "spec": ["5.4.1"], "note": "Tag 1 (epoch time) inside a value: headers carry no tags.", "direction": "decode", "hex": "a1 01 c1 00", "error": "tag"},
+    {"id": "duplicate-key", "spec": ["5.4.1"], "note": "Key 1 appears twice.", "direction": "decode", "hex": "a2 01 00 01 01", "error": "duplicate_key"},
+    {"id": "duplicate-key-non-shortest", "spec": ["5.4.1"], "note": "01 and 18 01 are the same key 1 in two encodings.", "direction": "decode", "hex": "a2 01 00 18 01 01", "error": "duplicate_key"},
+    {"id": "duplicate-key-in-nested-map", "spec": ["5.4.1"], "note": "Key 1 appears twice in a map nested inside a value.", "direction": "decode", "hex": "a1 01 a2 01 00 01 00", "error": "duplicate_key"},
+    {"id": "depth-over-limit", "spec": ["5.4.1"], "note": "Depth 17: the map holds 16 nested arrays, one more than the default limit allows.", "direction": "decode", "hex": "a1 01 81 81 81 81 81 81 81 81 81 81 81 81 81 81 81 80", "error": "too_deep"},
+    {"id": "depth-over-custom-limit", "spec": ["5.4.1"], "note": "Depth 3 against a limit of 2.", "direction": "decode", "hex": "a1 01 81 80", "max_depth": 2, "error": "too_deep"},
+    {"id": "size-over-limit", "spec": ["5.4.1"], "note": "A 7-byte header against a 6-byte limit.", "direction": "decode", "hex": "a1 01 64 61 61 61 61", "max_size": 6, "error": "too_large"}
+  ]
+}

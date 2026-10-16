@@ -86,3 +86,66 @@ pub enum Value<'a> {
   /// A floating-point number, whether it was encoded as f16, f32 or f64.
   Float(f64),
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn hex_bytes(text: &str) -> Vec<u8> {
+    let digits: Vec<u8> = text.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    digits
+      .chunks(2)
+      .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+      .collect()
+  }
+
+  fn error_name(error: &DecodeError) -> &'static str {
+    match error {
+      DecodeError::TooLarge { .. } => "too_large",
+      DecodeError::TooDeep => "too_deep",
+      DecodeError::NotAMap => "not_a_map",
+      DecodeError::IndefiniteLength => "indefinite_length",
+      DecodeError::Malformed => "malformed",
+      DecodeError::DuplicateKey => "duplicate_key",
+      DecodeError::Tag => "tag",
+      DecodeError::TrailingBytes => "trailing_bytes",
+    }
+  }
+
+  #[test]
+  fn matches_the_shared_vectors() {
+    for file in [
+      include_str!("../../../../vectors/headers/deterministic.json"),
+      include_str!("../../../../vectors/headers/invalid.json"),
+    ] {
+      let doc: serde_json::Value = serde_json::from_str(file).unwrap();
+      for case in doc["cases"].as_array().unwrap() {
+        let id = case["id"].as_str().unwrap();
+        let bytes = hex_bytes(case["hex"].as_str().unwrap());
+        let defaults = DecodeLimits::default();
+        let limit = |key: &str, default: usize| case[key].as_u64().map_or(default, |n| n as usize);
+        let limits = DecodeLimits {
+          max_size: limit("max_size", defaults.max_size),
+          max_depth: limit("max_depth", defaults.max_depth),
+        };
+        let decoded = decode(&bytes, &limits);
+        match case["error"].as_str() {
+          Some(expected) => {
+            let error = decoded.expect_err(id);
+            assert_eq!(error_name(&error), expected, "{id}");
+          }
+          None => {
+            let header = decoded.unwrap_or_else(|e| panic!("{id}: {e}")).expect(id);
+            let mut encoded = Vec::new();
+            encode(&header, &mut encoded).unwrap_or_else(|e| panic!("{id}: {e}"));
+            if case["direction"] == "both" {
+              assert_eq!(encoded, bytes, "{id}: encoder output");
+            } else {
+              assert_ne!(encoded, bytes, "{id}: a decode-only case is what the encoder writes");
+            }
+          }
+        }
+      }
+    }
+  }
+}

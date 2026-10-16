@@ -244,6 +244,59 @@ fn varint_vectors_match_their_hex() {
   }
 }
 
+#[test]
+fn header_vectors_match_their_hex() {
+  for (ctx, case) in unique_ids("headers") {
+    let bytes = hex(str_field(&case, "hex"));
+    let max_size = case["max_size"].as_u64().map_or(16 * 1024, |n| n as usize);
+    let max_depth = case["max_depth"].as_u64().map_or(16, |n| n as usize);
+    let Some(header) = case["header"].as_str() else {
+      match case["error"].as_str() {
+        Some("too_large") => assert!(bytes.len() > max_size, "{ctx}: header is within max_size"),
+        Some("too_deep") => assert!(depth(&decode(&bytes)) > max_depth, "{ctx}: header is within max_depth"),
+        _ => {}
+      }
+      continue;
+    };
+    let expected = plain(header, &ctx);
+    assert!(matches!(expected, Value::Map(_)), "{ctx}: header is not a map");
+    assert!(same(&decode(&bytes), &expected), "{ctx}: hex does not decode to header");
+    assert!(bytes.len() <= max_size, "{ctx}: hex is above max_size");
+    assert!(depth(&expected) <= max_depth, "{ctx}: header is above max_depth");
+    let deterministic = encode(&sorted(&expected));
+    if case["direction"] == "both" {
+      assert_eq!(encode(&expected), bytes, "{ctx}: header does not encode to hex");
+      assert_eq!(deterministic, bytes, "{ctx}: hex is not in deterministic encoding");
+    } else {
+      assert_ne!(deterministic, bytes, "{ctx}: a decode-only case is in deterministic encoding");
+    }
+  }
+}
+
+/// Nesting depth as spec 5.4.1 counts it: arrays and maps add one level, tags add none.
+fn depth(value: &Value) -> usize {
+  match value {
+    Value::Map(entries) => 1 + entries.iter().map(|(k, v)| depth(k).max(depth(v))).max().unwrap_or(0),
+    Value::Array(items) => 1 + items.iter().map(depth).max().unwrap_or(0),
+    Value::Tag(_, inner) => depth(inner),
+    _ => 0,
+  }
+}
+
+/// The same value with the keys of every map sorted by their encoded bytes (RFC 8949 section 4.2.1).
+fn sorted(value: &Value) -> Value {
+  match value {
+    Value::Map(entries) => {
+      let mut entries: Vec<(Value, Value)> = entries.iter().map(|(k, v)| (sorted(k), sorted(v))).collect();
+      entries.sort_by_cached_key(|(k, _)| encode(k));
+      Value::Map(entries)
+    }
+    Value::Array(items) => Value::Array(items.iter().map(sorted).collect()),
+    Value::Tag(tag, inner) => Value::Tag(*tag, Box::new(sorted(inner))),
+    other => other.clone(),
+  }
+}
+
 /// Number of pattern elements (`*`, `$name`, open maps) in an item.
 fn count_patterns(d: &Diag) -> usize {
   match d {
