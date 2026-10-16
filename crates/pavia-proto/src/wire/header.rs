@@ -44,9 +44,12 @@
 mod decode;
 mod encode;
 
-#[expect(
-  unused_imports,
-  reason = "used by the frame codec and the typed header model from #10 and #13"
+#[cfg_attr(
+  not(fuzzing),
+  expect(
+    unused_imports,
+    reason = "used by the frame codec and the typed header model from #10 and #13"
+  )
 )]
 pub use self::{
   decode::{DecodeError, DecodeLimits, decode},
