@@ -322,6 +322,9 @@ fn cbor_item(bytes: &[u8], pos: &mut usize) -> Result<(u8, u64, Vec<u8>), &'stat
     2 | 3 => {
       let end = usize::try_from(argument).ok().and_then(|n| pos.checked_add(n));
       let content = end.and_then(|end| bytes.get(*pos..end)).ok_or("malformed")?;
+      if major == 3 && std::str::from_utf8(content).is_err() {
+        return Err("malformed");
+      }
       *pos += content.len();
       return Ok((major, 0, content.to_vec()));
     }

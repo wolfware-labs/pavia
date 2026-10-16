@@ -207,6 +207,13 @@ function cborItem(bytes: Uint8Array, r: { pos: number }): string {
   if (major === 2 || major === 3) {
     if (BigInt(r.pos) + argument > BigInt(bytes.length)) throw new HeaderError("malformed");
     const content = bytes.slice(r.pos, r.pos + Number(argument));
+    if (major === 3) {
+      try {
+        new TextDecoder("utf-8", { fatal: true }).decode(content);
+      } catch {
+        throw new HeaderError("malformed");
+      }
+    }
     r.pos += content.length;
     return `${major}:${[...content].join(",")}`;
   }

@@ -8,6 +8,7 @@
     {"id": "truncated-map", "spec": ["5.4.1"], "note": "The map announces one entry and the value is missing.", "direction": "decode", "hex": "a1 01", "error": "malformed"},
     {"id": "reserved-additional-information", "spec": ["5.4.1"], "note": "Additional information 28 is reserved in RFC 8949, so the item is not well-formed.", "direction": "decode", "hex": "a1 01 1c", "error": "malformed"},
     {"id": "two-byte-simple-below-32", "spec": ["5.4.1"], "note": "f8 14 writes simple value 20 in two bytes, which RFC 8949 section 3.3 makes not well-formed.", "direction": "decode", "hex": "a1 01 f8 14", "error": "malformed"},
+    {"id": "invalid-utf8-text", "spec": ["5.4.1"], "note": "A text string holding the byte ff, which is not UTF-8: RFC 8949 section 3.1 requires text strings to be valid UTF-8.", "direction": "decode", "hex": "a1 01 61 ff", "error": "malformed"},
     {"id": "indefinite-map", "spec": ["5.4.1"], "note": "The header map itself has indefinite length.", "direction": "decode", "hex": "bf ff", "error": "indefinite_length"},
     {"id": "indefinite-text-in-value", "spec": ["5.4.1"], "note": "An indefinite-length text string inside a value.", "direction": "decode", "hex": "a1 01 7f 61 61 ff", "error": "indefinite_length"},
     {"id": "tag-in-value", "spec": ["5.4.1"], "note": "Tag 1 (epoch time) inside a value: headers carry no tags.", "direction": "decode", "hex": "a1 01 c1 00", "error": "tag"},
