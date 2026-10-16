@@ -278,6 +278,7 @@ name = "pavia-proto"
 version = "0.1.0-alpha.0"
 dependencies = [
  "bytes",
+ "half",
  "minicbor",
  "proptest",
  "serde_json",

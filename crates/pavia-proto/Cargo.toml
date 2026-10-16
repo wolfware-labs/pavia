@@ -11,6 +11,7 @@ license.workspace = true
 
 [dependencies]
 bytes.workspace = true
+half.workspace = true
 minicbor.workspace = true
 thiserror.workspace = true
 
