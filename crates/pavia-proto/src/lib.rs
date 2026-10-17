@@ -3,6 +3,9 @@
 //! See the crate README for its place in the workspace.
 #![forbid(unsafe_code)]
 
+mod error;
+mod registry;
+
 #[cfg(not(fuzzing))]
 mod wire;
 #[cfg(fuzzing)]
