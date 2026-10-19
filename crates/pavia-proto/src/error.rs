@@ -8,52 +8,57 @@ use thiserror::Error;
 /// A frame or data section the receiver rejects; [`ProtocolError::outcome`] says what happens next.
 #[derive(Debug, Error)]
 pub enum ProtocolError {
-  #[error("frame too large")]
   /// A frame longer than the receiver's `max_frame` (close code FRAME_TOO_LARGE, §15.1).
+  #[error("frame too large")]
   FrameTooLarge,
-  #[error("malformed WebSocket message")]
   /// A WebSocket message that does not parse as frames, such as a truncated frame (§5.4).
+  #[error("malformed WebSocket message")]
   MalformedMessage,
-  #[error("bytes left over after the last frame in a message")]
   /// Bytes after the last complete frame of a WebSocket message (§5.4).
+  #[error("bytes left over after the last frame in a message")]
   LeftoverBytes,
-  #[error("malformed header section")]
   /// A header section that is not a well-formed map (§5.4.1).
+  #[error("malformed header section")]
   MalformedHeader,
-  #[error("frame type not allowed here")]
   /// An unknown must-understand type (`0x00` to `0x7F`), or a known type where it is not allowed (§5.6).
+  #[error("frame type not allowed here")]
   FrameTypeNotAllowed,
+  /// A stream ID that breaks the opening order (§6.1): an opening frame at or below the
+  /// initiator's highest opened ID, or a non-opening frame above it. Gaps between IDs are allowed.
   #[error("stream id out of order")]
-  /// A stream ID that breaks the opening order: a reused or skipped opening ID, or a non-opening frame above the highest opened ID (§6.1).
   StreamIdOutOfOrder,
-  #[error("frame after the terminal frame of its half")]
   /// A frame on a half that already sent its terminal frame (§6.3).
+  #[error("frame after the terminal frame of its half")]
   FrameAfterTerminalFrame,
-  #[error("ITEM beyond the credit window")]
   /// An ITEM the sender had no credit for (§6.4).
+  #[error("ITEM beyond the credit window")]
   ItemBeyondCreditWindow,
-  #[error("stream open or CANCEL rate exceeded")]
   /// More stream opens and CANCELs than the per-session rate allows (§6.5).
+  #[error("stream open or CANCEL rate exceeded")]
   StreamRateExceeded,
-  #[error("unknown extension frame type")]
   /// An unknown extension type (`0x80` to `0xFF`), skipped by its length (§5.6).
+  #[error("unknown extension frame type")]
   UnknownExtensionFrameType,
-  #[error("frame on a closed stream")]
   /// A non-opening frame for a stream at or below the highest opened ID that is no longer open (§6.1).
+  #[error("frame on a closed stream")]
   FrameOnClosedStream,
-  #[error("frame after the call completed")]
   /// A frame that arrives after the call completed locally.
+  #[error("frame after the call completed")]
   FrameAfterCallCompleted,
-  #[error("CALL above max_calls")]
   /// A CALL beyond the advertised `max_calls` (§6.5).
+  #[error("CALL above max_calls")]
   CallAboveMaxCalls,
-  #[error("ITEM larger than max_frame")]
   /// An ITEM this side was about to send that exceeds the peer's `max_frame`.
+  #[error("ITEM larger than max_frame")]
   LocalItemTooLarge,
-  /// A missing or ill-typed header field. `rid` is the control request's ID when the frame is
-  /// one (§7.9); without it the frame cannot be answered and the session ends.
-  #[error("missing or ill-typed header field")]
-  InvalidHeaderField { rid: Option<u64> },
+  /// A missing or ill-typed header field in a control request this side received: AUTH_REFRESH,
+  /// SUBSCRIBE or UNSUBSCRIBE (§7.9). `rid` is the request's ID, answered with REQUEST_ERROR.
+  #[error("invalid control request field")]
+  InvalidControlRequestField { rid: u64 },
+  /// A missing or ill-typed header field in any other frame, including a reply that carries a
+  /// `rid`. Nothing can be answered, so the session ends.
+  #[error("invalid header field")]
+  InvalidHeaderField,
   /// A data section that does not decode against its contract type (§8.10).
   #[error("undecodable data section")]
   UndecodableData(DataSection),
@@ -181,11 +186,11 @@ impl ProtocolError {
         status: ErrorStatus(StatusCode::ResourceExhausted),
         cancel: false,
       },
-      Self::InvalidHeaderField { rid: Some(rid) } => Outcome::PerRequest {
+      Self::InvalidControlRequestField { rid } => Outcome::PerRequest {
         status: ErrorStatus(StatusCode::InvalidArgument),
         rid: *rid,
       },
-      Self::InvalidHeaderField { .. } => Outcome::SessionFatal(CloseCode::ProtocolError),
+      Self::InvalidHeaderField => Outcome::SessionFatal(CloseCode::ProtocolError),
       Self::UndecodableData(section) => match section {
         DataSection::CallArguments => Outcome::PerCall {
           status: ErrorStatus(StatusCode::InvalidArgument),
@@ -283,7 +288,7 @@ mod tests {
 
   #[test]
   fn answers_a_bad_field_in_a_control_request_with_request_error() {
-    let subscribe = ProtocolError::InvalidHeaderField { rid: Some(7) };
+    let subscribe = ProtocolError::InvalidControlRequestField { rid: 7 };
     assert_eq!(
       subscribe.outcome(),
       Outcome::PerRequest {
@@ -294,8 +299,8 @@ mod tests {
   }
 
   #[test]
-  fn ends_the_session_on_a_bad_field_without_a_rid() {
-    let error = ProtocolError::InvalidHeaderField { rid: None };
+  fn ends_the_session_on_a_bad_field_outside_a_control_request() {
+    let error = ProtocolError::InvalidHeaderField;
     assert_eq!(error.outcome(), Outcome::SessionFatal(CloseCode::ProtocolError));
   }
 
