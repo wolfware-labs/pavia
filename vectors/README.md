@@ -9,6 +9,7 @@ vectors/
   frames/<group>.json  frame vectors
   codecs/<group>.json  codec vectors
   varints/<group>.json varint vectors
+  headers/<group>.json header section vectors
   scripts/<group>.json scripts and abuse scripts
 ```
 
@@ -71,6 +72,17 @@ QUIC variable-length integers ([spec 5.1](../spec/pavia-protocol.md#51-variable-
 | `hex`, `need_more: true` | `decode` | `hex` is the start of a varint whose prefix announces more bytes than are present: the decoder asks for more input and consumes nothing |
 | `hex`, `max`, `error: "above_max"` | `decode` | `hex` is a complete varint whose value is above `max`, the limit the caller passes in: the decoder MUST refuse it without reading past the varint |
 | `value`, `error: "out_of_range"` | `encode` | `value` is above 2^62-1, so it has no encoding and the encoder MUST refuse it |
+
+## Header vectors (`headers/`)
+
+Header sections on their own, without the frame around them ([spec 5.4.1](../spec/pavia-protocol.md#541-header-section-encoding)). Frame vectors cover headers inside frames; these cover the encoding rules and every reason a receiver rejects a header. Each case is one of:
+
+| Fields | `direction` | Meaning |
+|---|---|---|
+| `hex`, `header` | `both` or `decode` | `hex` decodes to `header`, given in diagnostic notation. For `both`, encoding `header` gives exactly `hex`, in core deterministic encoding. `decode` marks an encoding receivers accept and senders never write: a longer integer or float form, or keys out of order |
+| `hex`, `error` | `decode` | Decoding `hex` MUST fail, and the receiver closes the session with `PROTOCOL_ERROR`. `error` names the rule that fails: `not_a_map`, `trailing_bytes`, `malformed` (not well-formed CBOR), `indefinite_length`, `tag`, `duplicate_key`, `too_deep` or `too_large` |
+
+Either shape may set `max_size` (bytes) or `max_depth`, the limits the receiver applies. When absent, they are the defaults from spec 5.4.1: 16384 bytes and depth 16.
 
 ## Scripts (`scripts/`)
 

@@ -153,6 +153,152 @@ describe("varint vectors", () => {
   }
 });
 
+class HeaderError extends Error {}
+
+/**
+ * The first spec 5.4.1 rule a header breaks, apart from the size and depth limits. A walk over the
+ * item heads (RFC 8949 section 3) that uses no CBOR library, so it checks the error vectors
+ * independently of both the codec in src/cbor.ts and pavia-proto.
+ */
+function headerError(bytes: Uint8Array): string | undefined {
+  const first = bytes[0];
+  if (first === undefined) return "malformed";
+  if (first === 0xbf) return "indefinite_length";
+  if (first >> 5 !== 5) return "not_a_map";
+  const r = { pos: 0 };
+  try {
+    cborItem(bytes, r);
+  } catch (e) {
+    if (e instanceof HeaderError) return e.message;
+    throw e;
+  }
+  return r.pos < bytes.length ? "trailing_bytes" : undefined;
+}
+
+/** Reads one head: major type, additional information and argument. */
+function cborHead(bytes: Uint8Array, r: { pos: number }): [number, number, bigint] {
+  const byte = bytes[r.pos];
+  if (byte === undefined) throw new HeaderError("malformed");
+  r.pos += 1;
+  const major = byte >> 5;
+  const info = byte & 0x1f;
+  if (info < 24) return [major, info, BigInt(info)];
+  if (info === 31) return [major, info, 0n];
+  if (info > 27) throw new HeaderError("malformed");
+  const width = 1 << (info - 24);
+  if (r.pos + width > bytes.length) throw new HeaderError("malformed");
+  let argument = 0n;
+  for (let i = 0; i < width; i++) argument = (argument << 8n) | BigInt(bytes[r.pos + i] ?? 0);
+  r.pos += width;
+  return [major, info, argument];
+}
+
+/**
+ * Walks one item and returns how a decoder identifies it as a map key: integers by value, text and
+ * byte strings by content, anything else by its encoded bytes.
+ */
+function cborItem(bytes: Uint8Array, r: { pos: number }): string {
+  const start = r.pos;
+  const [major, info, argument] = cborHead(bytes, r);
+  if (info === 31) throw new HeaderError(major >= 2 && major <= 5 ? "indefinite_length" : "malformed");
+  if (major === 6) throw new HeaderError("tag");
+  if (major === 7 && info === 24 && argument < 32n) throw new HeaderError("malformed");
+  if (major === 0 || major === 1) return `${major}:${argument}`;
+  if (major === 2 || major === 3) {
+    if (BigInt(r.pos) + argument > BigInt(bytes.length)) throw new HeaderError("malformed");
+    const content = bytes.slice(r.pos, r.pos + Number(argument));
+    if (major === 3) {
+      try {
+        new TextDecoder("utf-8", { fatal: true }).decode(content);
+      } catch {
+        throw new HeaderError("malformed");
+      }
+    }
+    r.pos += content.length;
+    return `${major}:${[...content].join(",")}`;
+  }
+  if (major === 4) {
+    for (let i = 0n; i < argument; i++) cborItem(bytes, r);
+  }
+  if (major === 5) {
+    const keys = new Set<string>();
+    for (let i = 0n; i < argument; i++) {
+      const key = cborItem(bytes, r);
+      if (keys.has(key)) throw new HeaderError("duplicate_key");
+      keys.add(key);
+      cborItem(bytes, r);
+    }
+  }
+  return `raw:${[...bytes.slice(start, r.pos)].join(",")}`;
+}
+
+/** Nesting depth as spec 5.4.1 counts it: arrays and maps add one level, tags add none. */
+function depth(d: Diag): number {
+  switch (d.kind) {
+    case "map":
+      return 1 + Math.max(0, ...d.entries.map(([k, v]) => Math.max(depth(k), depth(v))));
+    case "array":
+      return 1 + Math.max(0, ...d.items.map(depth));
+    case "tag":
+      return depth(d.value);
+    default:
+      return 0;
+  }
+}
+
+function compareBytes(a: Uint8Array, b: Uint8Array): number {
+  for (let i = 0; i < Math.min(a.length, b.length); i++) {
+    if (a[i] !== b[i]) return (a[i] ?? 0) - (b[i] ?? 0);
+  }
+  return a.length - b.length;
+}
+
+/** The same value with the keys of every map sorted by their encoded bytes (RFC 8949 section 4.2.1). */
+function sorted(d: Diag): Diag {
+  switch (d.kind) {
+    case "map": {
+      const entries = d.entries.map(([k, v]): [Diag, Diag] => [sorted(k), sorted(v)]);
+      entries.sort(([a], [b]) => compareBytes(encode(a), encode(b)));
+      return { ...d, entries };
+    }
+    case "array":
+      return { ...d, items: d.items.map(sorted) };
+    case "tag":
+      return { ...d, value: sorted(d.value) };
+    default:
+      return d;
+  }
+}
+
+describe("header vectors", () => {
+  for (const { ctx, c } of cases("headers")) {
+    it(ctx, () => {
+      const bytes = hexToBytes(c.hex as string);
+      const maxSize = typeof c.max_size === "number" ? c.max_size : 16 * 1024;
+      const maxDepth = typeof c.max_depth === "number" ? c.max_depth : 16;
+      if (typeof c.header !== "string") {
+        if (c.error === "too_large") expect(bytes.length, "header is within max_size").toBeGreaterThan(maxSize);
+        else if (c.error === "too_deep") expect(depth(decode(bytes)), "header is within max_depth").toBeGreaterThan(maxDepth);
+        else expect(headerError(bytes), "rule the header breaks").toBe(c.error);
+        return;
+      }
+      expect(headerError(bytes), "header breaks a rule").toBeUndefined();
+      const expected = parse(c.header);
+      expect(expected.kind, "header is not a map").toBe("map");
+      expect(same(decode(bytes), expected), "hex does not decode to header").toBe(true);
+      expect(bytes.length, "hex is above max_size").toBeLessThanOrEqual(maxSize);
+      expect(depth(expected), "header is above max_depth").toBeLessThanOrEqual(maxDepth);
+      const deterministic = [...encode(sorted(expected))];
+      if (c.direction === "both") {
+        expect([...encode(expected)], "header does not encode to hex").toEqual([...bytes]);
+        expect(deterministic, "hex is not in deterministic encoding").toEqual([...bytes]);
+      } else {
+        expect(deterministic, "a decode-only case is in deterministic encoding").not.toEqual([...bytes]);
+      }
+    });
+  }
+});
+
 describe("scripts", () => {
   for (const { ctx, c } of cases("scripts")) {
     it(ctx, () => {

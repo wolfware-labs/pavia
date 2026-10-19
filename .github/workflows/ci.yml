@@ -84,7 +84,7 @@ jobs:
         run: pipx run --spec "$CHECK_JSONSCHEMA" check-jsonschema --check-metaschema vectors/schema/*.schema.json
       - name: Vectors match their schemas
         run: |
-          for kind in frames codecs varints scripts; do
+          for kind in frames codecs varints headers scripts; do
             pipx run --spec "$CHECK_JSONSCHEMA" check-jsonschema \
               --schemafile "vectors/schema/$kind.schema.json" vectors/$kind/*.json
           done
@@ -118,3 +118,6 @@ jobs:
       - name: Fuzz the varint decoder for 10 minutes
         working-directory: crates/pavia-proto
         run: cargo +nightly-2026-10-01 fuzz run --target x86_64-unknown-linux-gnu varint_decode -- -max_total_time=600
+      - name: Fuzz the header decoder and encoder for 10 minutes
+        working-directory: crates/pavia-proto
+        run: cargo +nightly-2026-10-01 fuzz run --target x86_64-unknown-linux-gnu header_decode -- -max_total_time=600

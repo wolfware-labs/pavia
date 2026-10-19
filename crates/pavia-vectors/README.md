@@ -3,7 +3,7 @@
 Test support for the vectors under [`vectors/`](../../vectors/README.md). Not published.
 
 - `diag`: a parser for the CBOR diagnostic notation the vectors use (RFC 8949 section 8, basic notation), plus the script pattern extensions `*`, `...` and `$name`.
-- `tests/vectors.rs`: checks every vector file. Frame vectors: the header and data strings, laid out as a frame, give exactly the bytes in `hex`. Codec vectors: `value` encodes to `cbor`, or decodes from it for `decode` cases. Scripts: every pattern parses and every `$name` is captured before use.
+- `tests/vectors.rs`: checks every vector file. Frame vectors: the header and data strings, laid out as a frame, give exactly the bytes in `hex`. Codec vectors: `value` encodes to `cbor`, or decodes from it for `decode` cases. Header vectors: `header` decodes from `hex`, and for `both` cases encodes back to it in deterministic encoding; each error case breaks the rule it names, found by a walk over the item heads that uses no CBOR library. Scripts: every pattern parses and every `$name` is captured before use.
 
 The CBOR encoding here uses `ciborium` and serves only as an independent oracle for the fixtures. The protocol crates choose their own CBOR implementation.
 

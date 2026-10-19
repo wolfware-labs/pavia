@@ -1,0 +1,8 @@
+{
+  "$schema": "../headers.schema.json",
+  "group": "broken",
+  "note": "Deliberately invalid fixture: an error case cannot also carry a decoded header. CI checks that schema validation rejects it.",
+  "cases": [
+    {"id": "error-with-header", "spec": ["5.4.1"], "note": "header and error together", "direction": "decode", "hex": "80", "header": "{}", "error": "not_a_map"}
+  ]
+}

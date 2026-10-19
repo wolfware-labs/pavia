@@ -22,3 +22,10 @@ path = "fuzz_targets/varint_decode.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "header_decode"
+path = "fuzz_targets/header_decode.rs"
+test = false
+doc = false
+bench = false
