@@ -7,6 +7,7 @@ use thiserror::Error;
 
 /// A frame or data section the receiver rejects; [`ProtocolError::outcome`] says what happens next.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ProtocolError {
   /// A frame longer than the receiver's `max_frame` (close code FRAME_TOO_LARGE, §15.1).
   #[error("frame too large")]
@@ -72,6 +73,7 @@ pub enum ProtocolError {
 
 /// Which data section failed to decode, and on which side for ITEMs (§8.10).
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DataSection {
   /// CALL arguments, decoded by the callee before the handler runs (§8.2).
   CallArguments,
@@ -113,6 +115,9 @@ pub enum DataSection {
 pub struct ErrorStatus(StatusCode);
 
 /// What the session driver does about a [`ProtocolError`].
+///
+/// Unlike [`ProtocolError`], this enum is exhaustive on purpose: a new kind of outcome needs new
+/// driver code, so adding one must break every driver's `match`.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Outcome {
   /// Close the session with this code.
