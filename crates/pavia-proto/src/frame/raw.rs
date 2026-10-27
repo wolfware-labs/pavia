@@ -15,6 +15,7 @@ impl Frame {
   ///
   /// - [`FrameError::UnknownType`] for an unregistered type from `0x00` to `0x7F`.
   /// - [`FrameError::MalformedHeader`] if the header is not a valid CBOR map.
+  /// - [`FrameError::HeartbeatTooLarge`] for a PING or PONG data section over 8 bytes.
   /// - [`FrameError::Field`] for a missing or ill-typed field.
   ///
   /// Every error converts into the [`ProtocolError`] the session acts on.
@@ -30,6 +31,9 @@ impl Frame {
         Err(FrameError::UnknownType(raw.frame_type))
       };
     };
+    if matches!(frame_type, FrameType::Ping | FrameType::Pong) {
+      Heartbeat::try_from(raw.data.clone())?;
+    }
     let entries = header::decode(&raw.header, limits)
       .map_err(|_| FrameError::MalformedHeader)?
       .unwrap_or_default();
@@ -113,8 +117,8 @@ fn decode_typed(frame_type: FrameType, f: &Fields<'_, '_>, data: Bytes) -> Resul
       msg: f.required(key::MSG, text)?,
       retry: f.optional(key::RETRY, uint)?,
     }),
-    FrameType::Ping => Frame::Ping { data },
-    FrameType::Pong => Frame::Pong { data },
+    FrameType::Ping => Frame::Ping { data: Heartbeat(data) },
+    FrameType::Pong => Frame::Pong { data: Heartbeat(data) },
     FrameType::Goaway => Frame::Goaway(Goaway {
       code: f.required(key::CODE, uint)?,
       msg: f.required(key::MSG, text)?,
@@ -300,7 +304,7 @@ fn encode_typed<'a>(frame: &'a Frame, w: &mut Writer<'a>, data: &mut Bytes) {
       w.put(key::MSG, text_value(&reject.msg));
       w.put_some(key::RETRY, reject.retry.as_ref(), uint_value);
     }
-    Frame::Ping { data: payload } | Frame::Pong { data: payload } => *data = payload.clone(),
+    Frame::Ping { data: payload } | Frame::Pong { data: payload } => *data = payload.as_bytes().clone(),
     Frame::Goaway(goaway) => {
       w.put(key::CODE, uint_value(&goaway.code));
       w.put(key::MSG, text_value(&goaway.msg));

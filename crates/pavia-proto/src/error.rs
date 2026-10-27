@@ -27,6 +27,9 @@ pub enum ProtocolError {
   /// A header section that is not a well-formed map (§5.4.1).
   #[error("malformed header section")]
   MalformedHeader,
+  /// A PING or PONG whose data section is longer than 8 bytes (§7.4).
+  #[error("heartbeat data section longer than 8 bytes")]
+  HeartbeatTooLarge,
   /// An unknown must-understand type (`0x00` to `0x7F`), or a known type where it is not allowed (§5.6).
   #[error("frame type not allowed here")]
   FrameTypeNotAllowed,
@@ -200,6 +203,7 @@ impl ProtocolError {
       | Self::MessageTooLarge
       | Self::LeftoverBytes
       | Self::MalformedHeader
+      | Self::HeartbeatTooLarge
       | Self::FrameTypeNotAllowed
       | Self::StreamIdOutOfOrder
       | Self::FrameAfterTerminalFrame
@@ -267,6 +271,7 @@ mod tests {
       (ProtocolError::MessageTooLarge, CloseCode::ProtocolError),
       (ProtocolError::LeftoverBytes, CloseCode::ProtocolError),
       (ProtocolError::MalformedHeader, CloseCode::ProtocolError),
+      (ProtocolError::HeartbeatTooLarge, CloseCode::ProtocolError),
       (ProtocolError::FrameTypeNotAllowed, CloseCode::ProtocolError),
       (ProtocolError::StreamIdOutOfOrder, CloseCode::ProtocolError),
       (ProtocolError::FrameAfterTerminalFrame, CloseCode::ProtocolError),

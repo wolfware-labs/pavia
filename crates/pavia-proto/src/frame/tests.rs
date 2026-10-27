@@ -223,6 +223,51 @@ fn reports_a_malformed_header() {
 }
 
 #[test]
+fn accepts_heartbeats_up_to_eight_bytes() {
+  for frame_type in [0x04, 0x05] {
+    let frame = typed(&raw(frame_type, &[], b"12345678")).unwrap();
+    assert_eq!(frame.frame_type().map(u8::from), Some(frame_type));
+  }
+}
+
+#[test]
+fn ends_the_session_for_a_heartbeat_over_eight_bytes() {
+  for frame_type in [0x04, 0x05] {
+    let error = typed(&raw(frame_type, &[], b"123456789")).unwrap_err();
+    assert_eq!(error, FrameError::HeartbeatTooLarge(HeartbeatTooLarge));
+    assert!(matches!(ProtocolError::from(error), ProtocolError::HeartbeatTooLarge));
+  }
+}
+
+fn call_with_meta_name(name: &str) -> RawFrame {
+  let entries = [
+    (u(2), Value::Text("m")),
+    (u(3), Value::Map(vec![(Value::Text(name), Value::Text("v"))])),
+    (u(5), u(0)),
+  ];
+  raw(0x10, &entries, &[])
+}
+
+#[test]
+fn accepts_metadata_names_in_the_grammar() {
+  for name in ["traceparent", "pavia-idempotency-key", "x-2"] {
+    assert!(matches!(typed(&call_with_meta_name(name)), Ok(Frame::Call(_))), "{name}");
+  }
+}
+
+#[test]
+fn rejects_metadata_names_outside_the_grammar() {
+  for name in ["", "Trace", "a_b", "a b", "é"] {
+    let error = field_error(&call_with_meta_name(name));
+    assert_eq!((error.key, error.problem), (key::META, FieldProblem::WrongType), "{name:?}");
+    assert!(matches!(
+      ProtocolError::from(FrameError::Field(error)),
+      ProtocolError::InvalidHeaderField
+    ));
+  }
+}
+
+#[test]
 fn accepts_both_forms_of_unsubscribed() {
   let reply = [(u(9), Value::Text("c")), (u(1), u(4))];
   let Ok(Frame::Unsubscribed(unsubscribed)) = typed(&raw(0x33, &reply, &[])) else {
@@ -297,9 +342,13 @@ fn any_token() -> impl Strategy<Value = Token> {
   prop_oneof![any_bytes().prop_map(Token::Bytes), small_text().prop_map(Token::Text)]
 }
 
+fn any_heartbeat() -> impl Strategy<Value = Heartbeat> {
+  prop::collection::vec(any::<u8>(), 0..=Heartbeat::MAX_LEN).prop_map(|data| Heartbeat(Bytes::from(data)))
+}
+
 fn any_meta() -> impl Strategy<Value = Option<Meta>> {
   prop::option::of(prop::collection::btree_map(
-    small_text(),
+    "[a-z0-9-]{1,8}",
     prop_oneof![small_text().prop_map(MetaValue::Text), any_bytes().prop_map(MetaValue::Bytes)],
     0..3,
   ))
@@ -425,8 +474,8 @@ fn any_control_frame() -> BoxedStrategy<Frame> {
       msg,
       retry
     })),
-    any_bytes().prop_map(|data| Frame::Ping { data }),
-    any_bytes().prop_map(|data| Frame::Pong { data }),
+    any_heartbeat().prop_map(|data| Frame::Ping { data }),
+    any_heartbeat().prop_map(|data| Frame::Pong { data }),
     (
       small_uint(),
       small_text(),

@@ -276,6 +276,51 @@ pub enum Token {
   Text(String),
 }
 
+/// The data section of a PING or PONG: at most 8 opaque bytes (§7.4).
+///
+/// ```
+/// use bytes::Bytes;
+/// use pavia_proto::frame::Heartbeat;
+///
+/// assert!(Heartbeat::try_from(Bytes::from_static(b"12345678")).is_ok());
+/// assert!(Heartbeat::try_from(Bytes::from_static(b"123456789")).is_err());
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Heartbeat(Bytes);
+
+impl Heartbeat {
+  /// The longest data section a PING or PONG may carry.
+  pub const MAX_LEN: usize = 8;
+
+  /// The opaque bytes.
+  pub fn as_bytes(&self) -> &Bytes {
+    &self.0
+  }
+}
+
+/// The error for [`Heartbeat::try_from`] given more than [`Heartbeat::MAX_LEN`] bytes.
+#[derive(Debug, Error, Copy, Clone, Eq, PartialEq)]
+#[error("heartbeat data section longer than 8 bytes")]
+pub struct HeartbeatTooLarge;
+
+impl TryFrom<Bytes> for Heartbeat {
+  type Error = HeartbeatTooLarge;
+
+  fn try_from(value: Bytes) -> Result<Self, Self::Error> {
+    if value.len() > Self::MAX_LEN {
+      Err(HeartbeatTooLarge)
+    } else {
+      Ok(Self(value))
+    }
+  }
+}
+
+impl From<Heartbeat> for Bytes {
+  fn from(value: Heartbeat) -> Self {
+    value.0
+  }
+}
+
 /// The `limits` map (key 21, §7.2). Every entry is optional.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Limits {
@@ -710,15 +755,15 @@ pub enum Frame {
   Welcome(Welcome),
   /// REJECT.
   Reject(Reject),
-  /// PING; the data section holds up to 8 opaque bytes (§7.4).
+  /// PING (§7.4).
   Ping {
     /// The data section, echoed by PONG.
-    data: Bytes,
+    data: Heartbeat,
   },
-  /// PONG; the data section holds up to 8 opaque bytes (§7.4).
+  /// PONG (§7.4).
   Pong {
     /// The data section of the PING being answered.
-    data: Bytes,
+    data: Heartbeat,
   },
   /// GOAWAY.
   Goaway(Goaway),
@@ -798,6 +843,9 @@ pub enum FrameError {
   /// The header section is not valid deterministic CBOR (§5.4.1).
   #[error("malformed header section")]
   MalformedHeader,
+  /// A PING or PONG data section longer than 8 bytes (§7.4).
+  #[error(transparent)]
+  HeartbeatTooLarge(#[from] HeartbeatTooLarge),
   /// A field is missing or has the wrong type.
   #[error(transparent)]
   Field(#[from] FieldError),
@@ -808,6 +856,7 @@ impl From<FrameError> for ProtocolError {
     match error {
       FrameError::UnknownType(_) => Self::FrameTypeNotAllowed,
       FrameError::MalformedHeader => Self::MalformedHeader,
+      FrameError::HeartbeatTooLarge(_) => Self::HeartbeatTooLarge,
       FrameError::Field(FieldError {
         frame_type,
         rid: Some(rid),

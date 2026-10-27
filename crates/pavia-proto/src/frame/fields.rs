@@ -139,9 +139,19 @@ pub fn meta(value: &Value<'_>) -> Option<Meta> {
         Value::Bytes(bytes) => MetaValue::Bytes(Bytes::copy_from_slice(bytes)),
         _ => return None,
       };
-      Some((text(name)?, value))
+      Some((meta_name(name)?, value))
     })
     .collect()
+}
+
+/// A metadata name: non-empty lowercase ASCII `[a-z0-9-]` (§8.7).
+fn meta_name(value: &Value<'_>) -> Option<String> {
+  text(value).filter(|name| {
+    !name.is_empty()
+      && name
+        .bytes()
+        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+  })
 }
 
 pub fn limits(value: &Value<'_>) -> Option<Limits> {
