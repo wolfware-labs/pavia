@@ -77,13 +77,14 @@ fn varint_length(value: u64) -> u64 {
 /// Cuts a byte stream into frames, one chunk at a time (§5.3).
 ///
 /// ```text
-/// feed(chunk) ─► buffer ─► next_frame() ─► Ok(Some(frame)) │ Ok(None): need more │ Err(_)
-///                                     finish() at end of stream ─► Err if a frame is cut off
+/// feed(chunk) ─► checks each Length ─► buffer ─► next_frame() ─► Ok(Some(frame)) │ Ok(None)
+///                                       finish() at end of stream ─► Err if a frame is cut off
 /// ```
 #[derive(Debug)]
 pub struct FrameDecoder {
   buffer: BytesMut,
   max_frame: u64,
+  checked: usize,
 }
 
 impl FrameDecoder {
@@ -92,12 +93,37 @@ impl FrameDecoder {
     Self {
       buffer: BytesMut::new(),
       max_frame,
+      checked: 0,
     }
   }
 
-  /// Appends bytes read from the stream.
-  pub fn feed(&mut self, chunk: &[u8]) {
-    self.buffer.extend_from_slice(chunk);
+  /// Appends bytes read from the stream, checking each frame's Length as soon as it is complete.
+  ///
+  /// Payload bytes are copied only once their frame's Length has passed the check, so an
+  /// oversized frame never gets its payload buffered, even when it arrives in the same chunk as
+  /// the prefix (§5.2).
+  ///
+  /// # Errors
+  ///
+  /// Returns [`ProtocolError::FrameTooLarge`] for a Length above `max_frame`. This ends the
+  /// session, so the decoder is not meant to be used after an error.
+  pub fn feed(&mut self, mut chunk: &[u8]) -> Result<(), ProtocolError> {
+    while !chunk.is_empty() {
+      if self.checked > self.buffer.len() {
+        let length = (self.checked - self.buffer.len()).min(chunk.len());
+        let (payload, rest) = chunk.split_at(length);
+        self.buffer.extend_from_slice(payload);
+        chunk = rest;
+      } else {
+        let (byte, rest) = chunk.split_at(1);
+        self.buffer.extend_from_slice(byte);
+        chunk = rest;
+        if let Some((prefix_length, payload_length)) = read_prefix(&self.buffer[self.checked..], self.max_frame)? {
+          self.checked += prefix_length + payload_length;
+        }
+      }
+    }
+    Ok(())
   }
 
   /// Takes the next complete frame out of the buffer, or `Ok(None)` if it has not fully arrived.
@@ -107,10 +133,8 @@ impl FrameDecoder {
   ///
   /// # Errors
   ///
-  /// - [`ProtocolError::FrameTooLarge`] as soon as a Length above `max_frame` is complete.
-  /// - [`ProtocolError::MalformedHeader`] if HeaderLength does not fit in the payload (§5.4.1).
-  ///
-  /// Both end the session, so the decoder is not meant to be used after an error.
+  /// Returns [`ProtocolError::MalformedHeader`] if HeaderLength does not fit in the payload
+  /// (§5.4.1). This ends the session, so the decoder is not meant to be used after an error.
   pub fn next_frame(&mut self) -> Result<Option<Frame>, ProtocolError> {
     let Some((prefix_length, payload_length)) = read_prefix(&self.buffer, self.max_frame)? else {
       return Ok(None);
@@ -120,6 +144,7 @@ impl FrameDecoder {
       return Ok(None);
     }
     let mut bytes = self.buffer.split_to(frame_length).freeze();
+    self.checked -= frame_length;
     let frame_type = bytes.get_u8();
     let flags = bytes.get_u8();
     bytes.advance(prefix_length - 2);
@@ -226,7 +251,7 @@ mod tests {
     while !rest.is_empty() {
       let length = lengths.next().copied().unwrap_or(rest.len()).clamp(1, rest.len());
       let (chunk, tail) = rest.split_at(length);
-      decoder.feed(chunk);
+      decoder.feed(chunk)?;
       frames.extend(drain(&mut decoder)?);
       rest = tail;
     }
@@ -255,7 +280,7 @@ mod tests {
   fn decodes_a_frame_fed_whole() {
     let call = frame(0x10, 0, &[0xa0], &[0x01, 0x02]);
     let mut decoder = FrameDecoder::new(MAX_FRAME);
-    decoder.feed(&encoded(std::slice::from_ref(&call)));
+    decoder.feed(&encoded(std::slice::from_ref(&call))).unwrap();
     assert_eq!(decoder.next_frame().unwrap(), Some(call));
     assert_eq!(decoder.next_frame().unwrap(), None);
     decoder.finish().unwrap();
@@ -276,7 +301,7 @@ mod tests {
       frame(0x05, 0, &[], &[]),
     ];
     let mut decoder = FrameDecoder::new(MAX_FRAME);
-    decoder.feed(&encoded(&frames));
+    decoder.feed(&encoded(&frames)).unwrap();
     assert_eq!(drain(&mut decoder).unwrap(), frames);
   }
 
@@ -285,9 +310,9 @@ mod tests {
     let frames = [frame(0x04, 0, &[], &[]), frame(0x10, 0, &[0xa0], &[0x01])];
     let bytes = encoded(&frames);
     let mut decoder = FrameDecoder::new(MAX_FRAME);
-    decoder.feed(&bytes[..6]);
+    decoder.feed(&bytes[..6]).unwrap();
     assert_eq!(drain(&mut decoder).unwrap(), [frames[0].clone()]);
-    decoder.feed(&bytes[6..]);
+    decoder.feed(&bytes[6..]).unwrap();
     assert_eq!(drain(&mut decoder).unwrap(), [frames[1].clone()]);
     decoder.finish().unwrap();
   }
@@ -302,8 +327,10 @@ mod tests {
   #[test]
   fn rejects_a_length_above_max_frame_before_the_payload_arrives() {
     let mut decoder = FrameDecoder::new(100);
-    decoder.feed(&[0x10, 0x00, 0x40, 0x65]);
-    assert!(matches!(decoder.next_frame(), Err(ProtocolError::FrameTooLarge)));
+    assert!(matches!(
+      decoder.feed(&[0x10, 0x00, 0x40, 0x65]),
+      Err(ProtocolError::FrameTooLarge)
+    ));
   }
 
   #[test]
@@ -312,21 +339,21 @@ mod tests {
     let bytes = encoded(&[frame(0x10, 0, &[], &data)]);
     assert_eq!(bytes.len(), 2 + 2 + 100);
     let mut decoder = FrameDecoder::new(100);
-    decoder.feed(&bytes);
+    decoder.feed(&bytes).unwrap();
     assert!(decoder.next_frame().unwrap().is_some());
   }
 
   #[test]
   fn rejects_a_header_length_past_the_end_of_the_payload() {
     let mut decoder = FrameDecoder::new(MAX_FRAME);
-    decoder.feed(&hex_bytes("04 00 03 05 a0 00"));
+    decoder.feed(&hex_bytes("04 00 03 05 a0 00")).unwrap();
     assert!(matches!(decoder.next_frame(), Err(ProtocolError::MalformedHeader)));
   }
 
   #[test]
   fn rejects_a_payload_without_a_header_length() {
     let mut decoder = FrameDecoder::new(MAX_FRAME);
-    decoder.feed(&[0x04, 0x00, 0x00]);
+    decoder.feed(&[0x04, 0x00, 0x00]).unwrap();
     assert!(matches!(decoder.next_frame(), Err(ProtocolError::MalformedHeader)));
   }
 
@@ -335,13 +362,32 @@ mod tests {
     let bytes = encoded(&[frame(0x10, 0, &[0xa1, 0x01, 0x02], &[0x01, 0x02, 0x03])]);
     for cut in 1..bytes.len() {
       let mut decoder = FrameDecoder::new(MAX_FRAME);
-      decoder.feed(&bytes[..cut]);
+      decoder.feed(&bytes[..cut]).unwrap();
       assert_eq!(decoder.next_frame().unwrap(), None, "cut at {cut}");
       assert!(
         matches!(decoder.finish(), Err(ProtocolError::StreamEndedMidFrame)),
         "cut at {cut}"
       );
     }
+  }
+
+  #[test]
+  fn does_not_buffer_the_payload_of_an_oversized_frame() {
+    let mut bytes = vec![0x10, 0x00, 0x40, 0x65];
+    bytes.extend([0; 101]);
+    let mut decoder = FrameDecoder::new(100);
+    assert!(matches!(decoder.feed(&bytes), Err(ProtocolError::FrameTooLarge)));
+    assert_eq!(decoder.buffer.len(), 4);
+  }
+
+  #[test]
+  fn checks_the_length_of_a_later_frame_in_the_same_chunk() {
+    let mut bytes = encoded(&[frame(0x04, 0, &[], &[])]);
+    bytes.extend([0x10, 0x00, 0x40, 0x65]);
+    bytes.extend([0; 101]);
+    let mut decoder = FrameDecoder::new(100);
+    assert!(matches!(decoder.feed(&bytes), Err(ProtocolError::FrameTooLarge)));
+    assert_eq!(decoder.buffer.len(), 8);
   }
 
   #[test]
@@ -353,7 +399,7 @@ mod tests {
   fn shares_the_buffer_instead_of_copying_the_payload() {
     let bytes = encoded(&[frame(0x10, 0, &[0xa0], &[0x01, 0x02])]);
     let mut decoder = FrameDecoder::new(MAX_FRAME);
-    decoder.feed(&bytes);
+    decoder.feed(&bytes).unwrap();
     let decoded = decoder.next_frame().unwrap().unwrap();
     assert_eq!(decoded.header.as_ptr_range().end, decoded.data.as_ptr());
   }
@@ -375,7 +421,7 @@ mod tests {
           let mut decoder = FrameDecoder::new(MAX_FRAME);
           let mut frames = Vec::new();
           for chunk in bytes.chunks(chunk_length) {
-            decoder.feed(chunk);
+            decoder.feed(chunk).unwrap_or_else(|e| panic!("{id}: {e}"));
             frames.extend(drain(&mut decoder).unwrap_or_else(|e| panic!("{id}: {e}")));
           }
           if case["fin"] == true {
