@@ -82,7 +82,8 @@ fn sequencing(fields: &Fields<'_, '_>) -> Result<Sequencing, Bad> {
 
 fn decode_typed(frame_type: FrameType, f: &Fields<'_, '_>, data: Bytes) -> Result<Frame, Bad> {
   use fields::{
-    ack_map, auth, boolean, client, fingerprint, limits, meta, resume, since, text, text_array, token, uint, uint_array,
+    ack_map, auth, boolean, client, fingerprint, limits, meta, resume, server_limits, since, text, text_array, token, uint,
+    uint_array,
   };
   Ok(match frame_type {
     FrameType::Hello => Frame::Hello(Hello {
@@ -101,7 +102,7 @@ fn decode_typed(frame_type: FrameType, f: &Fields<'_, '_>, data: Bytes) -> Resul
       caps: f.required(key::CAPS, text_array)?,
       session: f.required(key::SESSION, text)?,
       token: f.optional(key::TOKEN, token)?,
-      limits: f.required(key::LIMITS, limits)?,
+      limits: f.required(key::LIMITS, server_limits)?,
       hb: f.required(key::HB, uint)?,
       idle: f.required(key::IDLE, uint)?,
       resume_window: f.optional(key::RESUME_WINDOW, uint)?,
@@ -269,7 +270,7 @@ fn put_sequencing<'a>(w: &mut Writer<'a>, sequencing: &'a Sequencing) {
 fn encode_typed<'a>(frame: &'a Frame, w: &mut Writer<'a>, data: &mut Bytes) {
   use fields::{
     ack_map_value, auth_value, bool_value, client_value, fingerprint_value, limits_value, meta_value, resume_value,
-    since_value, text_array_value, text_value, token_value, uint_array_value, uint_value,
+    server_limits_value, since_value, text_array_value, text_value, token_value, uint_array_value, uint_value,
   };
   match frame {
     Frame::Hello(hello) => {
@@ -288,7 +289,7 @@ fn encode_typed<'a>(frame: &'a Frame, w: &mut Writer<'a>, data: &mut Bytes) {
       w.put(key::CAPS, text_array_value(&welcome.caps));
       w.put(key::SESSION, text_value(&welcome.session));
       w.put_some(key::TOKEN, welcome.token.as_ref(), token_value);
-      w.put(key::LIMITS, limits_value(&welcome.limits));
+      w.put(key::LIMITS, server_limits_value(&welcome.limits));
       w.put(key::HB, uint_value(&welcome.hb));
       w.put(key::IDLE, uint_value(&welcome.idle));
       w.put_some(key::RESUME_WINDOW, welcome.resume_window.as_ref(), uint_value);

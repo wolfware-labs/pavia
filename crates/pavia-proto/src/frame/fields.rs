@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use bytes::Bytes;
 
-use super::{AckMap, Auth, ClientInfo, Limits, Meta, MetaValue, Resume, Since, Token, key};
+use super::{AckMap, Auth, ClientInfo, Limits, Meta, MetaValue, Resume, ServerLimits, Since, Token, key};
 use crate::wire::header::{self, Value};
 
 /// What is wrong with a header field.
@@ -165,6 +165,17 @@ pub fn limits(value: &Value<'_>) -> Option<Limits> {
   })
 }
 
+pub fn server_limits(value: &Value<'_>) -> Option<ServerLimits> {
+  let fields = Fields::new(map(value)?);
+  Some(ServerLimits {
+    max_calls: fields.required(key::MAX_CALLS, uint).ok()?,
+    max_frame: fields.required(key::MAX_FRAME, uint).ok()?,
+    max_subs: fields.required(key::MAX_SUBS, uint).ok()?,
+    max_dgram: fields.required(key::MAX_DGRAM, uint).ok()?,
+    window: fields.optional(key::WINDOW, uint).ok()?,
+  })
+}
+
 pub fn auth(value: &Value<'_>) -> Option<Auth> {
   let fields = Fields::new(map(value)?);
   Some(Auth {
@@ -288,7 +299,7 @@ fn nested<'a>(write: impl FnOnce(&mut Writer<'a>)) -> Value<'a> {
   Value::Map(writer.entries)
 }
 
-pub fn limits_value(limits: &Limits) -> Value<'_> {
+pub fn limits_value<'a>(limits: &Limits) -> Value<'a> {
   let entries = [
     (key::MAX_CALLS, limits.max_calls),
     (key::MAX_FRAME, limits.max_frame),
@@ -298,6 +309,16 @@ pub fn limits_value(limits: &Limits) -> Value<'_> {
   ];
   let map: BTreeMap<u64, u64> = entries.into_iter().filter_map(|(key, value)| Some((key, value?))).collect();
   ack_map_value(&map)
+}
+
+pub fn server_limits_value<'a>(limits: &ServerLimits) -> Value<'a> {
+  limits_value(&Limits {
+    max_calls: Some(limits.max_calls),
+    max_frame: Some(limits.max_frame),
+    max_subs: Some(limits.max_subs),
+    max_dgram: Some(limits.max_dgram),
+    window: limits.window,
+  })
 }
 
 pub fn auth_value(auth: &Auth) -> Value<'_> {

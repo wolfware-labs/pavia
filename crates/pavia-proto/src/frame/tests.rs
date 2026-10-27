@@ -222,6 +222,51 @@ fn reports_a_malformed_header() {
   assert_eq!(typed(&raw), Err(FrameError::MalformedHeader));
 }
 
+fn welcome_with_limits(limits: Vec<(Value<'static>, Value<'static>)>) -> RawFrame {
+  let entries = [
+    (u(key::VERSION), u(1)),
+    (u(key::CODEC), Value::Text("cbor")),
+    (u(key::CAPS), Value::Array(vec![])),
+    (u(key::SESSION), Value::Text("s")),
+    (u(key::LIMITS), Value::Map(limits)),
+    (u(key::HB), u(15_000)),
+    (u(key::IDLE), u(45_000)),
+  ];
+  raw(0x02, &entries, &[])
+}
+
+#[test]
+fn accepts_welcome_limits_without_the_websocket_window() {
+  let limits = vec![
+    (u(key::MAX_CALLS), u(100)),
+    (u(key::MAX_FRAME), u(65_536)),
+    (u(key::MAX_SUBS), u(10)),
+    (u(key::MAX_DGRAM), u(1_200)),
+  ];
+  let Ok(Frame::Welcome(welcome)) = typed(&welcome_with_limits(limits)) else {
+    panic!("expected WELCOME");
+  };
+  assert_eq!(welcome.limits.window, None);
+}
+
+#[test]
+fn rejects_welcome_limits_missing_a_required_entry() {
+  let required = [key::MAX_CALLS, key::MAX_FRAME, key::MAX_SUBS, key::MAX_DGRAM];
+  for missing in required {
+    let limits = required
+      .iter()
+      .filter(|&&entry| entry != missing)
+      .map(|&entry| (u(entry), u(65_536)))
+      .collect();
+    let error = field_error(&welcome_with_limits(limits));
+    assert_eq!(
+      (error.key, error.problem),
+      (key::LIMITS, FieldProblem::WrongType),
+      "{missing}"
+    );
+  }
+}
+
 #[test]
 fn accepts_heartbeats_up_to_eight_bytes() {
   for frame_type in [0x04, 0x05] {
@@ -372,6 +417,18 @@ fn any_limits() -> impl Strategy<Value = Limits> {
   })
 }
 
+fn any_server_limits() -> impl Strategy<Value = ServerLimits> {
+  (prop::array::uniform4(small_uint()), prop::option::of(small_uint())).prop_map(
+    |([max_calls, max_frame, max_subs, max_dgram], window)| ServerLimits {
+      max_calls,
+      max_frame,
+      max_subs,
+      max_dgram,
+      window,
+    },
+  )
+}
+
 fn any_auth() -> impl Strategy<Value = Auth> {
   (small_text(), any_token()).prop_map(|(scheme, token)| Auth { scheme, token })
 }
@@ -423,7 +480,7 @@ fn any_welcome() -> BoxedStrategy<Frame> {
       texts(),
       small_text(),
       prop::option::of(any_token()),
-      any_limits(),
+      any_server_limits(),
     ),
     (
       small_uint(),
@@ -646,8 +703,21 @@ fn any_channel_frame() -> BoxedStrategy<Frame> {
   .boxed()
 }
 
+fn any_extension() -> BoxedStrategy<Frame> {
+  (0x80u8..=0xFF, any_bytes(), any_bytes())
+    .prop_map(|(frame_type, header, data)| {
+      Frame::Extension(Extension {
+        frame_type,
+        header,
+        data,
+      })
+    })
+    .boxed()
+}
+
 fn any_frame() -> BoxedStrategy<Frame> {
   prop_oneof![
+    any_extension(),
     any_hello(),
     any_welcome(),
     any_control_frame(),

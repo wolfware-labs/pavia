@@ -321,7 +321,7 @@ impl From<Heartbeat> for Bytes {
   }
 }
 
-/// The `limits` map (key 21, §7.2). Every entry is optional.
+/// The `limits` map of HELLO (key 21, §7.1). Every entry is optional.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Limits {
   /// `max_calls` (key 48).
@@ -332,6 +332,22 @@ pub struct Limits {
   pub max_subs: Option<u64>,
   /// `max_dgram` (key 51), in bytes.
   pub max_dgram: Option<u64>,
+  /// `window` (key 40), the initial per-stream WebSocket credit in bytes.
+  pub window: Option<u64>,
+}
+
+/// The `limits` map of WELCOME (key 21, §7.2). Only `window` is optional, because it applies to
+/// WebSocket alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerLimits {
+  /// `max_calls` (key 48): concurrent call streams the client may open.
+  pub max_calls: u64,
+  /// `max_frame` (key 49), in bytes.
+  pub max_frame: u64,
+  /// `max_subs` (key 50).
+  pub max_subs: u64,
+  /// `max_dgram` (key 51), in bytes.
+  pub max_dgram: u64,
   /// `window` (key 40), the initial per-stream WebSocket credit in bytes.
   pub window: Option<u64>,
 }
@@ -420,7 +436,7 @@ pub struct Welcome {
   /// `token` (key 13).
   pub token: Option<Token>,
   /// `limits` (key 21).
-  pub limits: Limits,
+  pub limits: ServerLimits,
   /// `hb` (key 22), the heartbeat interval in ms.
   pub hb: u64,
   /// `idle` (key 23), the idle timeout in ms.
