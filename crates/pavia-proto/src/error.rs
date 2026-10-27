@@ -145,6 +145,12 @@ pub enum Outcome {
     /// Whether the call never reached the peer, so no handler ran and a retry is safe (§8.4).
     nx: bool,
   },
+  /// Fail only the operation that produced the frame, such as sending one ITEM. Nothing is sent
+  /// and the call stays open (§6.4).
+  ReportToProducer {
+    /// The status the producing code sees.
+    status: ErrorStatus,
+  },
   /// Ignore the frame. `event` is true when the application gets a local error event (§8.10).
   Dropped {
     /// Whether to surface a local error event.
@@ -201,10 +207,8 @@ impl ProtocolError {
         cancel: false,
         nx: true,
       },
-      Self::LocalItemTooLarge => Outcome::Local {
+      Self::LocalItemTooLarge => Outcome::ReportToProducer {
         status: ErrorStatus(StatusCode::ResourceExhausted),
-        cancel: false,
-        nx: false,
       },
       Self::InvalidControlRequestField { rid } => Outcome::PerRequest {
         status: ErrorStatus(StatusCode::InvalidArgument),
@@ -311,13 +315,11 @@ mod tests {
   }
 
   #[test]
-  fn reports_an_oversized_local_item_without_cancelling() {
+  fn reports_an_oversized_local_item_to_its_producer_and_keeps_the_call_open() {
     assert_eq!(
       ProtocolError::LocalItemTooLarge.outcome(),
-      Outcome::Local {
+      Outcome::ReportToProducer {
         status: ErrorStatus(StatusCode::ResourceExhausted),
-        cancel: false,
-        nx: false
       }
     );
   }
