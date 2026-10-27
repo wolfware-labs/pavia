@@ -118,8 +118,8 @@ impl FrameDecoder {
         let (byte, rest) = chunk.split_at(1);
         self.buffer.extend_from_slice(byte);
         chunk = rest;
-        if let Some((prefix_length, payload_length)) = read_prefix(&self.buffer[self.checked..], self.max_frame)? {
-          self.checked += prefix_length + payload_length;
+        if let Some((_, frame_length)) = read_prefix(&self.buffer[self.checked..], self.max_frame)? {
+          self.checked = self.checked.checked_add(frame_length).ok_or(ProtocolError::FrameTooLarge)?;
         }
       }
     }
@@ -136,10 +136,9 @@ impl FrameDecoder {
   /// Returns [`ProtocolError::MalformedHeader`] if HeaderLength does not fit in the payload
   /// (§5.4.1). This ends the session, so the decoder is not meant to be used after an error.
   pub fn next_frame(&mut self) -> Result<Option<Frame>, ProtocolError> {
-    let Some((prefix_length, payload_length)) = read_prefix(&self.buffer, self.max_frame)? else {
+    let Some((prefix_length, frame_length)) = read_prefix(&self.buffer, self.max_frame)? else {
       return Ok(None);
     };
-    let frame_length = prefix_length + payload_length;
     if self.buffer.len() < frame_length {
       return Ok(None);
     }
@@ -165,8 +164,8 @@ impl FrameDecoder {
   }
 }
 
-/// Reads Type, Flags and Length. Returns the prefix and payload lengths, or `None` if the prefix
-/// is incomplete.
+/// Reads Type, Flags and Length. Returns the prefix length and the whole frame's length, or `None`
+/// if the prefix is incomplete.
 fn read_prefix(bytes: &[u8], max_frame: u64) -> Result<Option<(usize, usize)>, ProtocolError> {
   let Some(length_bytes) = bytes.get(2..) else {
     return Ok(None);
@@ -174,11 +173,20 @@ fn read_prefix(bytes: &[u8], max_frame: u64) -> Result<Option<(usize, usize)>, P
   match varint::decode(length_bytes, max_frame) {
     Ok(DecodeValue::NeedMoreBytes) => Ok(None),
     Ok(DecodeValue::Value { value, consumed_length }) => {
-      let payload_length = usize::try_from(value).map_err(|_| ProtocolError::FrameTooLarge)?;
-      Ok(Some((2 + consumed_length, payload_length)))
+      let prefix_length = 2 + consumed_length;
+      Ok(Some((prefix_length, frame_length(prefix_length, value)?)))
     }
     Err(varint::DecodeError::AboveMax { .. }) => Err(ProtocolError::FrameTooLarge),
   }
+}
+
+/// The prefix plus `payload_length`, or [`ProtocolError::FrameTooLarge`] if that does not fit in
+/// a `usize`, which a Length below `max_frame` can still do on a 32-bit target.
+fn frame_length(prefix_length: usize, payload_length: u64) -> Result<usize, ProtocolError> {
+  usize::try_from(payload_length)
+    .ok()
+    .and_then(|length| length.checked_add(prefix_length))
+    .ok_or(ProtocolError::FrameTooLarge)
 }
 
 /// Splits a payload into header and data at HeaderLength.
@@ -388,6 +396,14 @@ mod tests {
     let mut decoder = FrameDecoder::new(100);
     assert!(matches!(decoder.feed(&bytes), Err(ProtocolError::FrameTooLarge)));
     assert_eq!(decoder.buffer.len(), 8);
+  }
+
+  #[test]
+  fn rejects_a_frame_length_that_does_not_fit_in_usize() {
+    let largest = u64::try_from(usize::MAX).unwrap();
+    assert!(matches!(frame_length(10, largest), Err(ProtocolError::FrameTooLarge)));
+    assert!(matches!(frame_length(2, largest - 1), Err(ProtocolError::FrameTooLarge)));
+    assert_eq!(frame_length(2, largest - 2).unwrap(), usize::MAX);
   }
 
   #[test]
