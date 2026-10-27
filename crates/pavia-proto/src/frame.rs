@@ -2,7 +2,8 @@
 //! the header fields of §5.7 as typed members.
 //!
 //! Inside the crate, `Frame::from_raw` turns a raw frame from the wire codec into a typed one and
-//! checks the fields that every frame of its type must carry, and `Frame::to_raw` goes back.
+//! checks the fields that every frame of its type must carry, and `Frame::encode` writes one
+//! straight to bytes without allocating.
 //! Fields that only some sessions require, such as `seq` when resumption is granted, are optional
 //! here and checked by the session.
 //!

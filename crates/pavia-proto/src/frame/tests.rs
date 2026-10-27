@@ -63,7 +63,7 @@ fn decodes_the_minimal_hello_vector() {
 fn writes_the_minimal_hello_vector_back() {
   let bytes = hex_bytes("01 00 14 13 a3 0e 81 01 10 81 64 63 62 6f 72 12 81 65 63 61 6c 6c 73");
   let mut out = Vec::new();
-  decode_wire(&bytes).to_raw().encode(&mut out).unwrap();
+  decode_wire(&bytes).encode(&mut out).unwrap();
   assert_eq!(out, bytes);
 }
 
@@ -746,14 +746,49 @@ fn any_frame() -> BoxedStrategy<Frame> {
   .boxed()
 }
 
+fn encoded(frame: &Frame) -> Vec<u8> {
+  let mut bytes = Vec::new();
+  frame.encode(&mut bytes).unwrap();
+  bytes
+}
+
+fn raw_frame(bytes: &[u8]) -> RawFrame {
+  let mut decoder = FrameDecoder::new(65_536);
+  decoder.feed(bytes).unwrap();
+  decoder.next_frame().unwrap().unwrap()
+}
+
+#[test]
+fn sorts_metadata_names_by_length_then_bytes() {
+  let meta: Meta = ["ab", "b", "a"]
+    .into_iter()
+    .map(|name| (name.to_owned(), MetaValue::Text(String::new())))
+    .collect();
+  let header = raw_frame(&encoded(&Frame::End(End { meta: Some(meta) }))).header;
+  assert_eq!(
+    header.as_ref(),
+    hex_bytes("a1 03 a3 61 61 60 61 62 60 62 61 62 60").as_slice()
+  );
+}
+
 proptest! {
   #[test]
   fn decodes_what_it_encodes(frame in any_frame()) {
-    let raw = frame.to_raw();
-    prop_assert_eq!(raw.flags, 0);
-    let mut bytes = Vec::new();
-    raw.encode(&mut bytes).unwrap();
+    let bytes = encoded(&frame);
     prop_assert_eq!(bytes[1], 0);
     prop_assert_eq!(decode_wire(&bytes), frame);
+  }
+
+  #[test]
+  fn writes_the_same_header_bytes_as_the_deterministic_encoder(frame in any_frame()) {
+    prop_assume!(!matches!(frame, Frame::Extension(_)));
+    let header = raw_frame(&encoded(&frame)).header;
+    if let Some(entries) = header::decode(&header, &DecodeLimits::default()).unwrap() {
+      let mut reference = Vec::new();
+      header::encode(&entries, &mut reference).unwrap();
+      prop_assert_eq!(header.as_ref(), reference.as_slice());
+    } else {
+      prop_assert!(header.is_empty());
+    }
   }
 }

@@ -4,12 +4,9 @@ use half::f16;
 use std::cmp::Ordering;
 use thiserror::Error;
 
-const UNSIGNED: u8 = 0;
+use super::write::{ARRAY, BYTES, MAP, Out, Sink, TEXT, UNSIGNED};
+
 const NEGATIVE: u8 = 1;
-const BYTES: u8 = 2;
-const TEXT: u8 = 3;
-const ARRAY: u8 = 4;
-const MAP: u8 = 5;
 const SIMPLE: u8 = 7;
 
 /// Error returned by [`encode`].
@@ -67,26 +64,7 @@ fn write_value(value: &Value<'_>, buffer: &mut impl BufMut) -> Result<(), Encode
 }
 
 fn write_head(major_type: u8, argument: u64, buffer: &mut impl BufMut) {
-  let major_type = major_type << 5;
-  match argument {
-    0..24 => buffer.put_u8(major_type | argument as u8),
-    24..0x100 => {
-      buffer.put_u8(major_type | 24);
-      buffer.put_u8(argument as u8);
-    }
-    0x100..0x1_0000 => {
-      buffer.put_u8(major_type | 25);
-      buffer.put_u16(argument as u16);
-    }
-    0x1_0000..0x1_0000_0000 => {
-      buffer.put_u8(major_type | 26);
-      buffer.put_u32(argument as u32);
-    }
-    _ => {
-      buffer.put_u8(major_type | 27);
-      buffer.put_u64(argument);
-    }
-  }
+  Out(buffer).head(major_type, argument);
 }
 
 fn write_float(x: f64, buffer: &mut impl BufMut) {

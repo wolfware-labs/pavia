@@ -1,11 +1,11 @@
-//! Conversion between typed frames and raw frames from the wire codec.
+//! Decoding typed frames from raw frames of the wire codec, and encoding them straight to bytes.
 
-use bytes::Bytes;
+use bytes::{BufMut, Bytes};
 
-use super::fields::{self, Bad, Fields, Problem, Writer};
+use super::fields::{self, Bad, Entries, Fields, MapBody, Problem, encode_map, entry_count};
 use super::*;
-use crate::wire::frame::Frame as RawFrame;
-use crate::wire::header::{self, DecodeLimits};
+use crate::wire::frame::{EncodeError, Frame as RawFrame, put_prefix};
+use crate::wire::header::{self, DecodeLimits, Measure, Out, Sink};
 
 impl Frame {
   /// Builds a typed frame from a raw one. Unknown header keys are ignored (§5.4.1) and so are the
@@ -49,27 +49,52 @@ impl Frame {
     })
   }
 
-  /// Turns the frame into a raw one with flags 0, ready for the wire codec.
-  pub(crate) fn to_raw(&self) -> RawFrame {
-    let mut writer = Writer::default();
-    let mut data = Bytes::new();
-    let frame_type = match self {
-      Self::Extension(extension) => {
-        return RawFrame {
-          frame_type: extension.frame_type,
-          flags: 0,
-          header: extension.header.clone(),
-          data: extension.data.clone(),
-        };
-      }
-      _ => self.frame_type().expect("every other variant is registered"),
+  /// Writes the frame to `out` with flags 0: the prefix, then the header straight from the typed
+  /// fields in deterministic encoding (§5.4.1), then the data section. Nothing is allocated.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`EncodeError::PayloadTooLarge`] if the payload is above 2^62 − 1 bytes. Nothing is
+  /// written to `out` in that case.
+  pub(crate) fn encode(&self, out: &mut impl BufMut) -> Result<(), EncodeError> {
+    if let Self::Extension(extension) = self {
+      put_prefix(extension.frame_type, 0, extension.header.len(), extension.data.len(), out)?;
+      out.put_slice(&extension.header);
+      out.put_slice(&extension.data);
+      return Ok(());
+    }
+    let frame_type = self.frame_type().expect("every other variant is registered");
+    let header_length = if entry_count(self) == 0 {
+      0
+    } else {
+      let mut measure = Measure::default();
+      encode_map(self, &mut measure);
+      measure.0
     };
-    encode_typed(self, &mut writer, &mut data);
-    RawFrame {
-      frame_type: frame_type.into(),
-      flags: 0,
-      header: writer.finish(),
-      data,
+    let data = self.data();
+    put_prefix(frame_type.into(), 0, header_length, data.len(), out)?;
+    if header_length > 0 {
+      encode_map(self, &mut Out(out));
+    }
+    out.put_slice(data);
+    Ok(())
+  }
+
+  fn data(&self) -> &[u8] {
+    match self {
+      Self::Ping { data } | Self::Pong { data } => data.as_bytes(),
+      Self::Call(Call { data, .. })
+      | Self::Item(Item { data, .. })
+      | Self::Result(CallResult { data, .. })
+      | Self::Error(CallError { data, .. })
+      | Self::Notify(Notify { data, .. })
+      | Self::Subscribe(Subscribe { data, .. })
+      | Self::Subscribed(Subscribed { data, .. })
+      | Self::Publication(Publication { data, .. })
+      | Self::Presence(Presence { data, .. })
+      | Self::Datagram(Datagram { data, .. })
+      | Self::Extension(Extension { data, .. }) => data,
+      _ => &[],
     }
   }
 }
@@ -263,170 +288,160 @@ fn decode_typed(frame_type: FrameType, f: &Fields<'_, '_>, data: Bytes) -> Resul
   })
 }
 
-fn put_sequencing<'a>(w: &mut Writer<'a>, sequencing: &'a Sequencing) {
-  w.put_some(key::SEQ, sequencing.seq.as_ref(), fields::uint_value);
-  w.put_some(key::ACK, sequencing.ack.as_ref(), fields::ack_map_value);
-}
-
-fn encode_typed<'a>(frame: &'a Frame, w: &mut Writer<'a>, data: &mut Bytes) {
-  use fields::{
-    ack_map_value, auth_value, bool_value, client_value, fingerprint_value, limits_value, meta_value, resume_value,
-    server_limits_value, since_value, text_array_value, text_value, token_value, uint_array_value, uint_value,
-  };
-  match frame {
-    Frame::Hello(hello) => {
-      w.put(key::VERSIONS, uint_array_value(&hello.versions));
-      w.put(key::CODECS, text_array_value(&hello.codecs));
-      w.put_some(key::CAPS, hello.caps.as_deref(), text_array_value);
-      w.put_some(key::LIMITS, hello.limits.as_ref(), limits_value);
-      w.put_some(key::CONTRACT, hello.contract.as_ref(), fingerprint_value);
-      w.put_some(key::AUTH, hello.auth.as_ref(), auth_value);
-      w.put_some(key::RESUME, hello.resume.as_ref(), resume_value);
-      w.put_some(key::CLIENT, hello.client.as_ref(), client_value);
-    }
-    Frame::Welcome(welcome) => {
-      w.put(key::VERSION, uint_value(&welcome.version));
-      w.put(key::CODEC, text_value(&welcome.codec));
-      w.put(key::CAPS, text_array_value(&welcome.caps));
-      w.put(key::SESSION, text_value(&welcome.session));
-      w.put_some(key::TOKEN, welcome.token.as_ref(), token_value);
-      w.put(key::LIMITS, server_limits_value(&welcome.limits));
-      w.put(key::HB, uint_value(&welcome.hb));
-      w.put(key::IDLE, uint_value(&welcome.idle));
-      w.put_some(key::RESUME_WINDOW, welcome.resume_window.as_ref(), uint_value);
-      w.put_some(key::CONTRACT, welcome.contract.as_ref(), fingerprint_value);
-      w.put_some(key::USER, welcome.user.as_deref(), text_value);
-      w.put_some(key::RESUMED, welcome.resumed.as_ref(), bool_value);
-      w.put_some(key::ACK, welcome.ack.as_ref(), ack_map_value);
-      w.put_some(key::LOST, welcome.lost.as_deref(), uint_array_value);
-      w.put_some(key::TRANSPORTS, welcome.transports.as_deref(), text_array_value);
-    }
-    Frame::Reject(reject) => {
-      w.put(key::CODE, uint_value(&reject.code));
-      w.put(key::MSG, text_value(&reject.msg));
-      w.put_some(key::RETRY, reject.retry.as_ref(), uint_value);
-    }
-    Frame::Ping { data: payload } | Frame::Pong { data: payload } => *data = payload.as_bytes().clone(),
-    Frame::Goaway(goaway) => {
-      w.put(key::CODE, uint_value(&goaway.code));
-      w.put(key::MSG, text_value(&goaway.msg));
-      w.put_some(key::URL, goaway.url.as_deref(), text_value);
-      w.put_some(key::RETRY, goaway.retry.as_ref(), uint_value);
-    }
-    Frame::Close(close) => {
-      w.put(key::CODE, uint_value(&close.code));
-      w.put_some(key::MSG, close.msg.as_deref(), text_value);
-    }
-    Frame::AuthRefresh(refresh) => {
-      w.put(key::RID, uint_value(&refresh.rid));
-      w.put(key::AUTH, auth_value(&refresh.auth));
-      put_sequencing(w, &refresh.sequencing);
-    }
-    Frame::AuthResult(result) => {
-      w.put(key::RID, uint_value(&result.rid));
-      w.put(key::CODE, uint_value(&result.code));
-      w.put_some(key::EXPIRES, result.expires.as_ref(), uint_value);
-      put_sequencing(w, &result.sequencing);
-    }
-    Frame::Ack { ack } => w.put(key::ACK, ack_map_value(ack)),
-    Frame::AuthExpiring(expiring) => {
-      w.put(key::EXPIRES, uint_value(&expiring.expires));
-      put_sequencing(w, &expiring.sequencing);
-    }
-    Frame::RequestError(error) => {
-      w.put(key::RID, uint_value(&error.rid));
-      w.put(key::CODE, uint_value(&error.code));
-      w.put(key::MSG, text_value(&error.msg));
-      put_sequencing(w, &error.sequencing);
-    }
-    Frame::Call(call) => {
-      w.put(key::METHOD, text_value(&call.method));
-      w.put(key::SHAPE, uint_value(&call.shape));
-      w.put_some(key::DEADLINE, call.deadline.as_ref(), uint_value);
-      w.put_some(key::META, call.meta.as_ref(), meta_value);
-      *data = call.data.clone();
-    }
-    Frame::Item(item) => {
-      w.put_some(key::META, item.meta.as_ref(), meta_value);
-      *data = item.data.clone();
-    }
-    Frame::End(end) => w.put_some(key::META, end.meta.as_ref(), meta_value),
-    Frame::Result(result) => {
-      w.put_some(key::META, result.meta.as_ref(), meta_value);
-      *data = result.data.clone();
-    }
-    Frame::Error(error) => {
-      w.put(key::CODE, uint_value(&error.code));
-      w.put(key::MSG, text_value(&error.msg));
-      w.put_some(key::NX, error.nx.as_ref(), bool_value);
-      w.put_some(key::META, error.meta.as_ref(), meta_value);
-      *data = error.data.clone();
-    }
-    Frame::Cancel(cancel) => w.put_some(key::MSG, cancel.msg.as_deref(), text_value),
-    Frame::Credit(credit) => w.put(key::CREDIT, uint_value(&credit.credit)),
-    Frame::Notify(notify) => {
-      w.put(key::METHOD, text_value(&notify.method));
-      w.put_some(key::META, notify.meta.as_ref(), meta_value);
-      put_sequencing(w, &notify.sequencing);
-      *data = notify.data.clone();
-    }
-    Frame::LaneOpen(open) => w.put(key::LANE, uint_value(&open.lane)),
-    Frame::Subscribe(subscribe) => {
-      w.put(key::RID, uint_value(&subscribe.rid));
-      w.put(key::CHANNEL, text_value(&subscribe.channel));
-      w.put_some(key::SINCE, subscribe.since.as_ref(), since_value);
-      w.put_some(key::PRESENCE, subscribe.presence.as_ref(), bool_value);
-      w.put_some(key::META, subscribe.meta.as_ref(), meta_value);
-      put_sequencing(w, &subscribe.sequencing);
-      *data = subscribe.data.clone();
-    }
-    Frame::Subscribed(subscribed) => {
-      w.put(key::RID, uint_value(&subscribed.rid));
-      w.put(key::CHANNEL, text_value(&subscribed.channel));
-      w.put(key::EPOCH, text_value(&subscribed.epoch));
-      w.put(key::OFFSET, uint_value(&subscribed.offset));
-      w.put_some(key::RECOVERED, subscribed.recovered.as_ref(), bool_value);
-      put_sequencing(w, &subscribed.sequencing);
-      *data = subscribed.data.clone();
-    }
-    Frame::Unsubscribe(unsubscribe) => {
-      w.put(key::RID, uint_value(&unsubscribe.rid));
-      w.put(key::CHANNEL, text_value(&unsubscribe.channel));
-      put_sequencing(w, &unsubscribe.sequencing);
-    }
-    Frame::Unsubscribed(unsubscribed) => {
-      w.put(key::CHANNEL, text_value(&unsubscribed.channel));
-      match &unsubscribed.form {
-        UnsubscribedForm::Reply { rid } => w.put(key::RID, uint_value(rid)),
-        UnsubscribedForm::Notice { code, msg } => {
-          w.put(key::CODE, uint_value(code));
-          w.put(key::MSG, text_value(msg));
-        }
+impl MapBody for Frame {
+  fn entries<S: Sink>(&self, e: &mut Entries<'_, S>) {
+    match self {
+      Frame::Hello(hello) => {
+        e.put(key::VERSIONS, &hello.versions);
+        e.put(key::CODECS, &hello.codecs);
+        e.put_some(key::CAPS, hello.caps.as_ref());
+        e.put_some(key::RESUME, hello.resume.as_ref());
+        e.put_some(key::LIMITS, hello.limits.as_ref());
+        e.put_some(key::CONTRACT, hello.contract.as_ref());
+        e.put_some(key::AUTH, hello.auth.as_ref());
+        e.put_some(key::CLIENT, hello.client.as_ref());
       }
-      put_sequencing(w, &unsubscribed.sequencing);
+      Frame::Welcome(welcome) => {
+        e.put_some(key::TOKEN, welcome.token.as_ref());
+        e.put(key::VERSION, &welcome.version);
+        e.put(key::CODEC, &welcome.codec);
+        e.put(key::CAPS, &welcome.caps);
+        e.put(key::SESSION, &welcome.session);
+        e.put(key::LIMITS, &welcome.limits);
+        e.put(key::HB, &welcome.hb);
+        e.put(key::IDLE, &welcome.idle);
+        e.put_some(key::CONTRACT, welcome.contract.as_ref());
+        e.put_some(key::USER, welcome.user.as_ref());
+        e.put_some(key::RESUME_WINDOW, welcome.resume_window.as_ref());
+        e.put_some(key::RESUMED, welcome.resumed.as_ref());
+        e.put_some(key::ACK, welcome.ack.as_ref());
+        e.put_some(key::TRANSPORTS, welcome.transports.as_ref());
+        e.put_some(key::LOST, welcome.lost.as_ref());
+      }
+      Frame::Reject(reject) => {
+        e.put(key::CODE, &reject.code);
+        e.put(key::MSG, &reject.msg);
+        e.put_some(key::RETRY, reject.retry.as_ref());
+      }
+      Frame::Ping { .. } | Frame::Pong { .. } | Frame::Extension(_) => {}
+      Frame::Goaway(goaway) => {
+        e.put(key::CODE, &goaway.code);
+        e.put(key::MSG, &goaway.msg);
+        e.put_some(key::RETRY, goaway.retry.as_ref());
+        e.put_some(key::URL, goaway.url.as_ref());
+      }
+      Frame::Close(close) => {
+        e.put(key::CODE, &close.code);
+        e.put_some(key::MSG, close.msg.as_ref());
+      }
+      Frame::AuthRefresh(refresh) => {
+        e.put(key::RID, &refresh.rid);
+        e.put_some(key::SEQ, refresh.sequencing.seq.as_ref());
+        e.put(key::AUTH, &refresh.auth);
+        e.put_some(key::ACK, refresh.sequencing.ack.as_ref());
+      }
+      Frame::AuthResult(result) => {
+        e.put(key::RID, &result.rid);
+        e.put(key::CODE, &result.code);
+        e.put_some(key::SEQ, result.sequencing.seq.as_ref());
+        e.put_some(key::EXPIRES, result.expires.as_ref());
+        e.put_some(key::ACK, result.sequencing.ack.as_ref());
+      }
+      Frame::Ack { ack } => e.put(key::ACK, ack),
+      Frame::AuthExpiring(expiring) => {
+        e.put_some(key::SEQ, expiring.sequencing.seq.as_ref());
+        e.put(key::EXPIRES, &expiring.expires);
+        e.put_some(key::ACK, expiring.sequencing.ack.as_ref());
+      }
+      Frame::RequestError(error) => {
+        e.put(key::RID, &error.rid);
+        e.put(key::CODE, &error.code);
+        e.put(key::MSG, &error.msg);
+        e.put_some(key::SEQ, error.sequencing.seq.as_ref());
+        e.put_some(key::ACK, error.sequencing.ack.as_ref());
+      }
+      Frame::Call(call) => {
+        e.put(key::METHOD, &call.method);
+        e.put_some(key::META, call.meta.as_ref());
+        e.put_some(key::DEADLINE, call.deadline.as_ref());
+        e.put(key::SHAPE, &call.shape);
+      }
+      Frame::Item(Item { meta, .. }) | Frame::End(End { meta }) | Frame::Result(CallResult { meta, .. }) => {
+        e.put_some(key::META, meta.as_ref());
+      }
+      Frame::Error(error) => {
+        e.put_some(key::META, error.meta.as_ref());
+        e.put(key::CODE, &error.code);
+        e.put(key::MSG, &error.msg);
+        e.put_some(key::NX, error.nx.as_ref());
+      }
+      Frame::Cancel(cancel) => e.put_some(key::MSG, cancel.msg.as_ref()),
+      Frame::Credit(credit) => e.put(key::CREDIT, &credit.credit),
+      Frame::Notify(notify) => {
+        e.put(key::METHOD, &notify.method);
+        e.put_some(key::META, notify.meta.as_ref());
+        e.put_some(key::SEQ, notify.sequencing.seq.as_ref());
+        e.put_some(key::ACK, notify.sequencing.ack.as_ref());
+      }
+      Frame::LaneOpen(open) => e.put(key::LANE, &open.lane),
+      Frame::Subscribe(subscribe) => {
+        e.put(key::RID, &subscribe.rid);
+        e.put_some(key::META, subscribe.meta.as_ref());
+        e.put(key::CHANNEL, &subscribe.channel);
+        e.put_some(key::SEQ, subscribe.sequencing.seq.as_ref());
+        e.put_some(key::PRESENCE, subscribe.presence.as_ref());
+        e.put_some(key::SINCE, subscribe.since.as_ref());
+        e.put_some(key::ACK, subscribe.sequencing.ack.as_ref());
+      }
+      Frame::Subscribed(subscribed) => {
+        e.put(key::RID, &subscribed.rid);
+        e.put(key::CHANNEL, &subscribed.channel);
+        e.put(key::EPOCH, &subscribed.epoch);
+        e.put(key::OFFSET, &subscribed.offset);
+        e.put_some(key::SEQ, subscribed.sequencing.seq.as_ref());
+        e.put_some(key::RECOVERED, subscribed.recovered.as_ref());
+        e.put_some(key::ACK, subscribed.sequencing.ack.as_ref());
+      }
+      Frame::Unsubscribe(unsubscribe) => {
+        e.put(key::RID, &unsubscribe.rid);
+        e.put(key::CHANNEL, &unsubscribe.channel);
+        e.put_some(key::SEQ, unsubscribe.sequencing.seq.as_ref());
+        e.put_some(key::ACK, unsubscribe.sequencing.ack.as_ref());
+      }
+      Frame::Unsubscribed(unsubscribed) => {
+        match &unsubscribed.form {
+          UnsubscribedForm::Reply { rid } => e.put(key::RID, rid),
+          UnsubscribedForm::Notice { code, msg } => {
+            e.put(key::CODE, code);
+            e.put(key::MSG, msg);
+          }
+        }
+        e.put(key::CHANNEL, &unsubscribed.channel);
+        e.put_some(key::SEQ, unsubscribed.sequencing.seq.as_ref());
+        e.put_some(key::ACK, unsubscribed.sequencing.ack.as_ref());
+      }
+      Frame::Publication(publication) => {
+        e.put(key::CHANNEL, &publication.channel);
+        e.put(key::OFFSET, &publication.offset);
+        e.put_some(key::SEQ, publication.sequencing.seq.as_ref());
+        e.put_some(key::ACK, publication.sequencing.ack.as_ref());
+      }
+      Frame::Presence(presence) => {
+        e.put(key::CHANNEL, &presence.channel);
+        e.put_some(key::SEQ, presence.sequencing.seq.as_ref());
+        e.put(key::KIND, &presence.kind);
+        e.put_some(key::ACK, presence.sequencing.ack.as_ref());
+      }
+      Frame::Datagram(datagram) => {
+        e.put(key::SEQ, &datagram.seq);
+        e.put(key::KEY, &datagram.key);
+      }
+      Frame::DgramBind(bind) => {
+        e.put_some(key::SEQ, bind.sequencing.seq.as_ref());
+        e.put(key::KEY, &bind.key);
+        e.put(key::NAME, &bind.name);
+        e.put_some(key::ACK, bind.sequencing.ack.as_ref());
+      }
     }
-    Frame::Publication(publication) => {
-      w.put(key::CHANNEL, text_value(&publication.channel));
-      w.put(key::OFFSET, uint_value(&publication.offset));
-      put_sequencing(w, &publication.sequencing);
-      *data = publication.data.clone();
-    }
-    Frame::Presence(presence) => {
-      w.put(key::CHANNEL, text_value(&presence.channel));
-      w.put(key::KIND, uint_value(&presence.kind));
-      put_sequencing(w, &presence.sequencing);
-      *data = presence.data.clone();
-    }
-    Frame::Datagram(datagram) => {
-      w.put(key::KEY, uint_value(&datagram.key));
-      w.put(key::SEQ, uint_value(&datagram.seq));
-      *data = datagram.data.clone();
-    }
-    Frame::DgramBind(bind) => {
-      w.put(key::KEY, uint_value(&bind.key));
-      w.put(key::NAME, text_value(&bind.name));
-      put_sequencing(w, &bind.sequencing);
-    }
-    Frame::Extension(_) => {}
   }
 }

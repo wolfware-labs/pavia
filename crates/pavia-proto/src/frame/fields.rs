@@ -3,12 +3,10 @@
 //! Readers return `None` for a value of the wrong CBOR type; [`Fields`] turns that into a
 //! [`Bad`] that names the key. A nested map with a bad entry is a bad value of its outer key.
 
-use std::collections::BTreeMap;
-
 use bytes::Bytes;
 
 use super::{AckMap, Auth, ClientInfo, Limits, Meta, MetaValue, Resume, ServerLimits, Since, Token, key};
-use crate::wire::header::{self, Value};
+use crate::wire::header::{Measure, Sink, Value};
 
 /// What is wrong with a header field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,143 +213,204 @@ pub fn since(value: &Value<'_>) -> Option<Since> {
   })
 }
 
-/// Collects header entries and writes them as a header section.
-#[derive(Default)]
-pub struct Writer<'a> {
-  entries: Vec<(Value<'a>, Value<'a>)>,
+/// A field value that writes itself as one CBOR item.
+pub trait Encode {
+  fn encode(&self, sink: &mut impl Sink);
 }
 
-impl<'a> Writer<'a> {
-  pub fn put(&mut self, key: u64, value: Value<'a>) {
-    self.entries.push((Value::Unsigned(key), value));
+/// A map whose entries are written in ascending key order, which for unsigned keys is the
+/// deterministic order of §5.4.1.
+pub trait MapBody {
+  fn entries<S: Sink>(&self, entries: &mut Entries<'_, S>);
+}
+
+/// Receives the entries of a [`MapBody`]: counts them, or writes them.
+pub struct Entries<'s, S: Sink> {
+  sink: Option<&'s mut S>,
+  count: u64,
+  last: Option<u64>,
+}
+
+impl<S: Sink> Entries<'_, S> {
+  pub fn put<T: Encode + ?Sized>(&mut self, key: u64, value: &T) {
+    debug_assert!(self.last.is_none_or(|last| last < key), "key {key} out of order");
+    self.last = Some(key);
+    self.count += 1;
+    if let Some(sink) = self.sink.as_deref_mut() {
+      sink.uint(key);
+      value.encode(sink);
+    }
   }
 
-  pub fn put_some<T>(&mut self, key: u64, value: Option<T>, write: impl Fn(T) -> Value<'a>) {
+  pub fn put_some<T: Encode + ?Sized>(&mut self, key: u64, value: Option<&T>) {
     if let Some(value) = value {
-      self.put(key, write(value));
+      self.put(key, value);
     }
   }
+}
 
-  /// The header bytes: nothing for an empty header, which is HeaderLength 0 (§5.2).
-  pub fn finish(self) -> Bytes {
-    if self.entries.is_empty() {
-      return Bytes::new();
+/// How many entries `body` writes.
+pub fn entry_count(body: &impl MapBody) -> u64 {
+  let mut entries = Entries::<Measure> {
+    sink: None,
+    count: 0,
+    last: None,
+  };
+  body.entries(&mut entries);
+  entries.count
+}
+
+/// Writes `body` as a map: its size, then its entries.
+pub fn encode_map(body: &impl MapBody, sink: &mut impl Sink) {
+  sink.map(entry_count(body));
+  body.entries(&mut Entries {
+    sink: Some(sink),
+    count: 0,
+    last: None,
+  });
+}
+
+impl Encode for u64 {
+  fn encode(&self, sink: &mut impl Sink) {
+    sink.uint(*self);
+  }
+}
+
+impl Encode for bool {
+  fn encode(&self, sink: &mut impl Sink) {
+    sink.bool(*self);
+  }
+}
+
+impl Encode for str {
+  fn encode(&self, sink: &mut impl Sink) {
+    sink.text(self);
+  }
+}
+
+impl Encode for String {
+  fn encode(&self, sink: &mut impl Sink) {
+    sink.text(self);
+  }
+}
+
+impl Encode for [u8; 32] {
+  fn encode(&self, sink: &mut impl Sink) {
+    sink.bytes(self);
+  }
+}
+
+impl<T: Encode> Encode for [T] {
+  fn encode(&self, sink: &mut impl Sink) {
+    sink.array(self.len() as u64);
+    for item in self {
+      item.encode(sink);
     }
-    let mut out = Vec::new();
-    header::encode(&self.entries, &mut out).expect("typed headers have unique keys and no simple values");
-    Bytes::from(out)
   }
 }
 
-pub fn uint_value<'a>(n: &u64) -> Value<'a> {
-  Value::Unsigned(*n)
-}
-
-pub fn text_value(text: &str) -> Value<'_> {
-  Value::Text(text)
-}
-
-pub fn bool_value<'a>(b: &bool) -> Value<'a> {
-  Value::Bool(*b)
-}
-
-pub fn token_value(token: &Token) -> Value<'_> {
-  match token {
-    Token::Bytes(bytes) => Value::Bytes(bytes),
-    Token::Text(text) => Value::Text(text),
+impl<T: Encode> Encode for Vec<T> {
+  fn encode(&self, sink: &mut impl Sink) {
+    self.as_slice().encode(sink);
   }
 }
 
-pub fn fingerprint_value(fingerprint: &[u8; 32]) -> Value<'_> {
-  Value::Bytes(fingerprint)
+impl Encode for Token {
+  fn encode(&self, sink: &mut impl Sink) {
+    match self {
+      Token::Bytes(bytes) => sink.bytes(bytes),
+      Token::Text(text) => sink.text(text),
+    }
+  }
 }
 
-pub fn uint_array_value<'a>(items: &[u64]) -> Value<'a> {
-  Value::Array(items.iter().map(uint_value).collect())
+impl Encode for AckMap {
+  fn encode(&self, sink: &mut impl Sink) {
+    sink.map(self.len() as u64);
+    for (lane, seq) in self {
+      sink.uint(*lane);
+      sink.uint(*seq);
+    }
+  }
 }
 
-pub fn text_array_value(items: &[String]) -> Value<'_> {
-  Value::Array(items.iter().map(|item| Value::Text(item)).collect())
+impl Encode for Meta {
+  /// Text keys sort by length first, then bytewise (§5.4.1), so the names are written one length
+  /// at a time; within a length the map's own order is already bytewise.
+  fn encode(&self, sink: &mut impl Sink) {
+    sink.map(self.len() as u64);
+    let mut length = self.keys().map(String::len).min();
+    while let Some(current) = length {
+      for (name, value) in self.iter().filter(|(name, _)| name.len() == current) {
+        sink.text(name);
+        match value {
+          MetaValue::Text(text) => sink.text(text),
+          MetaValue::Bytes(bytes) => sink.bytes(bytes),
+        }
+      }
+      length = self.keys().map(String::len).filter(|&len| len > current).min();
+    }
+  }
 }
 
-pub fn ack_map_value<'a>(ack: &AckMap) -> Value<'a> {
-  Value::Map(
-    ack
-      .iter()
-      .map(|(lane, seq)| (Value::Unsigned(*lane), Value::Unsigned(*seq)))
-      .collect(),
-  )
+impl MapBody for Limits {
+  fn entries<S: Sink>(&self, entries: &mut Entries<'_, S>) {
+    entries.put_some(key::WINDOW, self.window.as_ref());
+    entries.put_some(key::MAX_CALLS, self.max_calls.as_ref());
+    entries.put_some(key::MAX_FRAME, self.max_frame.as_ref());
+    entries.put_some(key::MAX_SUBS, self.max_subs.as_ref());
+    entries.put_some(key::MAX_DGRAM, self.max_dgram.as_ref());
+  }
 }
 
-pub fn meta_value(meta: &Meta) -> Value<'_> {
-  Value::Map(
-    meta
-      .iter()
-      .map(|(name, value)| {
-        let value = match value {
-          MetaValue::Text(text) => Value::Text(text),
-          MetaValue::Bytes(bytes) => Value::Bytes(bytes),
-        };
-        (Value::Text(name), value)
-      })
-      .collect(),
-  )
+impl MapBody for ServerLimits {
+  fn entries<S: Sink>(&self, entries: &mut Entries<'_, S>) {
+    entries.put_some(key::WINDOW, self.window.as_ref());
+    entries.put(key::MAX_CALLS, &self.max_calls);
+    entries.put(key::MAX_FRAME, &self.max_frame);
+    entries.put(key::MAX_SUBS, &self.max_subs);
+    entries.put(key::MAX_DGRAM, &self.max_dgram);
+  }
 }
 
-fn nested<'a>(write: impl FnOnce(&mut Writer<'a>)) -> Value<'a> {
-  let mut writer = Writer::default();
-  write(&mut writer);
-  Value::Map(writer.entries)
+impl MapBody for Auth {
+  fn entries<S: Sink>(&self, entries: &mut Entries<'_, S>) {
+    entries.put(key::TOKEN, &self.token);
+    entries.put(key::SCHEME, &self.scheme);
+  }
 }
 
-pub fn limits_value<'a>(limits: &Limits) -> Value<'a> {
-  let entries = [
-    (key::MAX_CALLS, limits.max_calls),
-    (key::MAX_FRAME, limits.max_frame),
-    (key::MAX_SUBS, limits.max_subs),
-    (key::MAX_DGRAM, limits.max_dgram),
-    (key::WINDOW, limits.window),
-  ];
-  let map: BTreeMap<u64, u64> = entries.into_iter().filter_map(|(key, value)| Some((key, value?))).collect();
-  ack_map_value(&map)
+impl MapBody for Resume {
+  fn entries<S: Sink>(&self, entries: &mut Entries<'_, S>) {
+    entries.put(key::TOKEN, &self.token);
+    entries.put(key::SESSION, &self.session);
+    entries.put(key::ACK, &self.ack);
+    entries.put_some(key::LOST, self.lost.as_ref());
+  }
 }
 
-pub fn server_limits_value<'a>(limits: &ServerLimits) -> Value<'a> {
-  limits_value(&Limits {
-    max_calls: Some(limits.max_calls),
-    max_frame: Some(limits.max_frame),
-    max_subs: Some(limits.max_subs),
-    max_dgram: Some(limits.max_dgram),
-    window: limits.window,
-  })
+impl MapBody for ClientInfo {
+  fn entries<S: Sink>(&self, entries: &mut Entries<'_, S>) {
+    entries.put_some(key::NAME, self.name.as_ref());
+    entries.put_some(key::CLIENT_VERSION, self.version.as_ref());
+  }
 }
 
-pub fn auth_value(auth: &Auth) -> Value<'_> {
-  nested(|writer| {
-    writer.put(key::SCHEME, Value::Text(&auth.scheme));
-    writer.put(key::TOKEN, token_value(&auth.token));
-  })
+impl MapBody for Since {
+  fn entries<S: Sink>(&self, entries: &mut Entries<'_, S>) {
+    entries.put(key::EPOCH, &self.epoch);
+    entries.put(key::OFFSET, &self.offset);
+  }
 }
 
-pub fn resume_value(resume: &Resume) -> Value<'_> {
-  nested(|writer| {
-    writer.put(key::TOKEN, token_value(&resume.token));
-    writer.put(key::SESSION, Value::Text(&resume.session));
-    writer.put(key::ACK, ack_map_value(&resume.ack));
-    writer.put_some(key::LOST, resume.lost.as_deref(), uint_array_value);
-  })
+macro_rules! encode_as_map {
+  ($($type:ty),*) => {
+    $(impl Encode for $type {
+      fn encode(&self, sink: &mut impl Sink) {
+        encode_map(self, sink);
+      }
+    })*
+  };
 }
 
-pub fn client_value(client: &ClientInfo) -> Value<'_> {
-  nested(|writer| {
-    writer.put_some(key::NAME, client.name.as_deref(), text_value);
-    writer.put_some(key::CLIENT_VERSION, client.version.as_deref(), text_value);
-  })
-}
-
-pub fn since_value(since: &Since) -> Value<'_> {
-  nested(|writer| {
-    writer.put(key::EPOCH, Value::Text(&since.epoch));
-    writer.put(key::OFFSET, Value::Unsigned(since.offset));
-  })
-}
+encode_as_map!(Limits, ServerLimits, Auth, Resume, ClientInfo, Since);

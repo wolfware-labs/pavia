@@ -1,7 +1,8 @@
 //! Header sections: CBOR maps (RFC 8949) checked against spec §5.4.1.
 //!
 //! [`decode()`] validates a header and returns its entries. [`encode()`] writes entries in
-//! core deterministic encoding. Both work on [`Value`].
+//! core deterministic encoding. Both work on [`Value`]. A [`Sink`] writes items one at a time
+//! instead, for encoders that already hold their fields in key order.
 //!
 //! # CBOR item heads
 //!
@@ -42,14 +43,20 @@
 //! float that keeps the exact value, and the keys of every map sorted by their encoded bytes.
 
 mod decode;
+#[cfg_attr(
+  not(any(test, fuzzing)),
+  expect(
+    dead_code,
+    reason = "typed frames write headers through Sink; this encoder serves the vectors, the fuzz target and the determinism tests"
+  )
+)]
 mod encode;
+mod write;
 
+pub use self::write::{Measure, Out, Sink};
 #[cfg_attr(
   not(fuzzing),
-  expect(
-    unused_imports,
-    reason = "used by the frame codec and the typed header model from #10 and #13"
-  )
+  expect(unused_imports, reason = "the typed frame model uses the module paths directly")
 )]
 pub use self::{
   decode::{DecodeError, DecodeLimits, decode},
