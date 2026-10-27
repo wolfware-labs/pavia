@@ -61,7 +61,10 @@ pub enum ProtocolError {
   /// A missing or ill-typed header field in a control request this side received: AUTH_REFRESH,
   /// SUBSCRIBE or UNSUBSCRIBE (§7.9). `rid` is the request's ID, answered with REQUEST_ERROR.
   #[error("invalid control request field")]
-  InvalidControlRequestField { rid: u64 },
+  InvalidControlRequestField {
+    /// The `rid` of the request, which the REQUEST_ERROR answers.
+    rid: u64,
+  },
   /// A missing or ill-typed header field in any other frame, including a reply that carries a
   /// `rid`. Nothing can be answered, so the session ends.
   #[error("invalid header field")]
@@ -78,7 +81,10 @@ pub enum DataSection {
   /// CALL arguments, decoded by the callee before the handler runs (§8.2).
   CallArguments,
   /// An ITEM. `at_caller` is true when the caller decoded it and false when the callee did.
-  Item { at_caller: bool },
+  Item {
+    /// True when the caller decoded the ITEM, false when the callee did.
+    at_caller: bool,
+  },
   /// A RESULT, decoded by the caller.
   Result,
   /// The detail of an ERROR, decoded by the caller.
