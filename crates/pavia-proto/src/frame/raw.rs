@@ -213,20 +213,22 @@ fn decode_typed(frame_type: FrameType, f: &Fields<'_, '_>, data: Bytes) -> Resul
       sequencing: sequencing(f)?,
     }),
     FrameType::Unsubscribed => {
-      let channel = f.required(key::CHANNEL, text)?;
-      let rid = f.optional(key::RID, uint)?;
-      let code = f.optional(key::CODE, uint)?;
-      if rid.is_none() && code.is_none() {
-        return Err(Bad {
-          key: key::CODE,
-          problem: Problem::Missing,
-        });
-      }
+      let bad = |key, problem| Bad { key, problem };
+      let form = match (
+        f.optional(key::RID, uint)?,
+        f.optional(key::CODE, uint)?,
+        f.optional(key::MSG, text)?,
+      ) {
+        (Some(rid), None, None) => UnsubscribedForm::Reply { rid },
+        (None, Some(code), Some(msg)) => UnsubscribedForm::Notice { code, msg },
+        (None, Some(_), None) => return Err(bad(key::MSG, Problem::Missing)),
+        (None, None, _) => return Err(bad(key::CODE, Problem::Missing)),
+        (Some(_), Some(_), _) => return Err(bad(key::CODE, Problem::Unexpected)),
+        (Some(_), None, Some(_)) => return Err(bad(key::MSG, Problem::Unexpected)),
+      };
       Frame::Unsubscribed(Unsubscribed {
-        channel,
-        rid,
-        code,
-        msg: f.optional(key::MSG, text)?,
+        channel: f.required(key::CHANNEL, text)?,
+        form,
         sequencing: sequencing(f)?,
       })
     }
@@ -388,9 +390,13 @@ fn encode_typed<'a>(frame: &'a Frame, w: &mut Writer<'a>, data: &mut Bytes) {
     }
     Frame::Unsubscribed(unsubscribed) => {
       w.put(key::CHANNEL, text_value(&unsubscribed.channel));
-      w.put_some(key::RID, unsubscribed.rid.as_ref(), uint_value);
-      w.put_some(key::CODE, unsubscribed.code.as_ref(), uint_value);
-      w.put_some(key::MSG, unsubscribed.msg.as_deref(), text_value);
+      match &unsubscribed.form {
+        UnsubscribedForm::Reply { rid } => w.put(key::RID, uint_value(rid)),
+        UnsubscribedForm::Notice { code, msg } => {
+          w.put(key::CODE, uint_value(code));
+          w.put(key::MSG, text_value(msg));
+        }
+      }
       put_sequencing(w, &unsubscribed.sequencing);
     }
     Frame::Publication(publication) => {

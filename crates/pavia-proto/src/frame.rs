@@ -135,34 +135,63 @@ pub mod key {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum FrameType {
+  /// HELLO (0x01).
   Hello = 0x01,
+  /// WELCOME (0x02).
   Welcome = 0x02,
+  /// REJECT (0x03).
   Reject = 0x03,
+  /// PING (0x04).
   Ping = 0x04,
+  /// PONG (0x05).
   Pong = 0x05,
+  /// GOAWAY (0x06).
   Goaway = 0x06,
+  /// CLOSE (0x07).
   Close = 0x07,
+  /// AUTH_REFRESH (0x08).
   AuthRefresh = 0x08,
+  /// AUTH_RESULT (0x09).
   AuthResult = 0x09,
+  /// ACK (0x0A).
   Ack = 0x0A,
+  /// AUTH_EXPIRING (0x0B).
   AuthExpiring = 0x0B,
+  /// REQUEST_ERROR (0x0C).
   RequestError = 0x0C,
+  /// CALL (0x10).
   Call = 0x10,
+  /// ITEM (0x11).
   Item = 0x11,
+  /// END (0x12).
   End = 0x12,
+  /// RESULT (0x13).
   Result = 0x13,
+  /// ERROR (0x14).
   Error = 0x14,
+  /// CANCEL (0x15).
   Cancel = 0x15,
+  /// CREDIT (0x16).
   Credit = 0x16,
+  /// NOTIFY (0x20).
   Notify = 0x20,
+  /// LANE_OPEN (0x21).
   LaneOpen = 0x21,
+  /// SUBSCRIBE (0x30).
   Subscribe = 0x30,
+  /// SUBSCRIBED (0x31).
   Subscribed = 0x31,
+  /// UNSUBSCRIBE (0x32).
   Unsubscribe = 0x32,
+  /// UNSUBSCRIBED (0x33).
   Unsubscribed = 0x33,
+  /// PUBLICATION (0x34).
   Publication = 0x34,
+  /// PRESENCE (0x35).
   Presence = 0x35,
+  /// DATAGRAM (0x40).
   Datagram = 0x40,
+  /// DGRAM_BIND (0x41).
   DgramBind = 0x41,
 }
 
@@ -250,40 +279,55 @@ pub enum Token {
 /// The `limits` map (key 21, §7.2). Every entry is optional.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Limits {
+  /// `max_calls` (key 48).
   pub max_calls: Option<u64>,
+  /// `max_frame` (key 49), in bytes.
   pub max_frame: Option<u64>,
+  /// `max_subs` (key 50).
   pub max_subs: Option<u64>,
+  /// `max_dgram` (key 51), in bytes.
   pub max_dgram: Option<u64>,
+  /// `window` (key 40), the initial per-stream WebSocket credit in bytes.
   pub window: Option<u64>,
 }
 
 /// The `auth` map (key 33, §7.1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Auth {
+  /// `scheme` (key 35), such as `"bearer"`.
   pub scheme: String,
+  /// `token` (key 13).
   pub token: Token,
 }
 
 /// The `resume` map of HELLO (key 20, §7.8).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resume {
+  /// `token` (key 13).
   pub token: Token,
+  /// `session` (key 19), the session ID.
   pub session: String,
+  /// `ack` (key 44).
   pub ack: AckMap,
+  /// `lost` (key 53): lanes with a gap.
   pub lost: Option<Vec<u64>>,
 }
 
 /// The `client` map of HELLO (key 34).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ClientInfo {
+  /// `name` (key 30).
   pub name: Option<String>,
+  /// `version` (key 52), the client library version.
   pub version: Option<String>,
 }
 
 /// The `since` map of SUBSCRIBE (key 41, §10.5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Since {
+  /// `epoch` (key 10).
   pub epoch: String,
+  /// `offset` (key 11).
   pub offset: u64,
 }
 
@@ -299,276 +343,435 @@ pub struct Sequencing {
 /// HELLO (§7.1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hello {
+  /// `versions` (key 14): protocol major versions, in preference order.
   pub versions: Vec<u64>,
+  /// `codecs` (key 16), in preference order.
   pub codecs: Vec<String>,
+  /// `caps` (key 18): capabilities requested or granted.
   pub caps: Option<Vec<String>>,
+  /// `limits` (key 21).
   pub limits: Option<Limits>,
+  /// `contract` (key 24), the SHA-256 manifest fingerprint.
   pub contract: Option<[u8; 32]>,
+  /// `auth` (key 33).
   pub auth: Option<Auth>,
+  /// `resume` (key 20).
   pub resume: Option<Resume>,
+  /// `client` (key 34).
   pub client: Option<ClientInfo>,
 }
 
 /// WELCOME (§7.2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Welcome {
+  /// `version` (key 15).
   pub version: u64,
+  /// `codec` (key 17).
   pub codec: String,
+  /// `caps` (key 18): capabilities requested or granted.
   pub caps: Vec<String>,
+  /// `session` (key 19), the session ID.
   pub session: String,
+  /// `token` (key 13).
   pub token: Option<Token>,
+  /// `limits` (key 21).
   pub limits: Limits,
+  /// `hb` (key 22), the heartbeat interval in ms.
   pub hb: u64,
+  /// `idle` (key 23), the idle timeout in ms.
   pub idle: u64,
+  /// `resume_window` (key 37), in ms.
   pub resume_window: Option<u64>,
+  /// `contract` (key 24), the SHA-256 manifest fingerprint.
   pub contract: Option<[u8; 32]>,
+  /// `user` (key 36), the authenticated user ID.
   pub user: Option<String>,
+  /// `resumed` (key 43).
   pub resumed: Option<bool>,
+  /// `ack` (key 44).
   pub ack: Option<AckMap>,
+  /// `lost` (key 53): lanes with a gap.
   pub lost: Option<Vec<u64>>,
+  /// `transports` (key 46): bindings offered on this endpoint.
   pub transports: Option<Vec<String>>,
 }
 
 /// REJECT (§7.3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reject {
+  /// `code` (key 6).
   pub code: u64,
+  /// `msg` (key 7).
   pub msg: String,
+  /// `retry` (key 31), the minimum delay in ms before reconnecting.
   pub retry: Option<u64>,
 }
 
 /// GOAWAY (§7.6).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Goaway {
+  /// `code` (key 6).
   pub code: u64,
+  /// `msg` (key 7).
   pub msg: String,
+  /// `url` (key 32), the endpoint to reconnect to.
   pub url: Option<String>,
+  /// `retry` (key 31), the minimum delay in ms before reconnecting.
   pub retry: Option<u64>,
 }
 
 /// CLOSE (§7.7).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Close {
+  /// `code` (key 6).
   pub code: u64,
+  /// `msg` (key 7).
   pub msg: Option<String>,
 }
 
 /// AUTH_REFRESH (§7.5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthRefresh {
+  /// `rid` (key 1), the control request ID.
   pub rid: u64,
+  /// `auth` (key 33).
   pub auth: Auth,
+  /// `seq` and a piggybacked `ack` (§7.8).
   pub sequencing: Sequencing,
 }
 
 /// AUTH_RESULT (§7.5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthResult {
+  /// `rid` (key 1), the control request ID.
   pub rid: u64,
+  /// `code` (key 6).
   pub code: u64,
+  /// `expires` (key 38), ms until the credential expires.
   pub expires: Option<u64>,
+  /// `seq` and a piggybacked `ack` (§7.8).
   pub sequencing: Sequencing,
 }
 
 /// AUTH_EXPIRING (§7.5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthExpiring {
+  /// `expires` (key 38), ms until the credential expires.
   pub expires: u64,
+  /// `seq` and a piggybacked `ack` (§7.8).
   pub sequencing: Sequencing,
 }
 
 /// REQUEST_ERROR (§7.9).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestError {
+  /// `rid` (key 1), the control request ID.
   pub rid: u64,
+  /// `code` (key 6).
   pub code: u64,
+  /// `msg` (key 7).
   pub msg: String,
+  /// `seq` and a piggybacked `ack` (§7.8).
   pub sequencing: Sequencing,
 }
 
 /// CALL (§8.2). The data section holds the arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Call {
+  /// `method` (key 2).
   pub method: String,
+  /// `shape` (key 5).
   pub shape: u64,
+  /// `deadline` (key 4), in ms from the moment the callee receives the CALL.
   pub deadline: Option<u64>,
+  /// `meta` (key 3).
   pub meta: Option<Meta>,
+  /// The data section.
   pub data: Bytes,
 }
 
 /// ITEM (§8.3). The data section holds one stream element.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Item {
+  /// `meta` (key 3).
   pub meta: Option<Meta>,
+  /// The data section.
   pub data: Bytes,
 }
 
 /// END (§8.3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct End {
+  /// `meta` (key 3).
   pub meta: Option<Meta>,
 }
 
 /// RESULT (§8.4). The data section holds the return value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallResult {
+  /// `meta` (key 3).
   pub meta: Option<Meta>,
+  /// The data section.
   pub data: Bytes,
 }
 
 /// ERROR (§8.4). The data section holds the typed error detail, if any.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallError {
+  /// `code` (key 6).
   pub code: u64,
+  /// `msg` (key 7).
   pub msg: String,
+  /// `nx` (key 45): the handler never ran.
   pub nx: Option<bool>,
+  /// `meta` (key 3).
   pub meta: Option<Meta>,
+  /// The data section.
   pub data: Bytes,
 }
 
 /// CANCEL (§8.5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cancel {
+  /// `msg` (key 7).
   pub msg: Option<String>,
 }
 
 /// CREDIT (§6.4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Credit {
+  /// `credit` (key 25), the window increment in bytes.
   pub credit: u64,
 }
 
 /// NOTIFY (§9.1). The data section holds the arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Notify {
+  /// `method` (key 2).
   pub method: String,
+  /// `meta` (key 3).
   pub meta: Option<Meta>,
+  /// `seq` and a piggybacked `ack` (§7.8).
   pub sequencing: Sequencing,
+  /// The data section.
   pub data: Bytes,
 }
 
 /// LANE_OPEN (§9.2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaneOpen {
+  /// `lane` (key 8).
   pub lane: u64,
 }
 
 /// SUBSCRIBE (§10.2). The data section holds optional subscription parameters.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Subscribe {
+  /// `rid` (key 1), the control request ID.
   pub rid: u64,
+  /// `channel` (key 9).
   pub channel: String,
+  /// `since` (key 41).
   pub since: Option<Since>,
+  /// `presence` (key 27).
   pub presence: Option<bool>,
+  /// `meta` (key 3).
   pub meta: Option<Meta>,
+  /// `seq` and a piggybacked `ack` (§7.8).
   pub sequencing: Sequencing,
+  /// The data section.
   pub data: Bytes,
 }
 
 /// SUBSCRIBED (§10.2). The data section holds the snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Subscribed {
+  /// `rid` (key 1), the control request ID.
   pub rid: u64,
+  /// `channel` (key 9).
   pub channel: String,
+  /// `epoch` (key 10).
   pub epoch: String,
+  /// `offset` (key 11).
   pub offset: u64,
+  /// `recovered` (key 26).
   pub recovered: Option<bool>,
+  /// `seq` and a piggybacked `ack` (§7.8).
   pub sequencing: Sequencing,
+  /// The data section.
   pub data: Bytes,
 }
 
 /// UNSUBSCRIBE (§10.3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unsubscribe {
+  /// `rid` (key 1), the control request ID.
   pub rid: u64,
+  /// `channel` (key 9).
   pub channel: String,
+  /// `seq` and a piggybacked `ack` (§7.8).
   pub sequencing: Sequencing,
 }
 
-/// UNSUBSCRIBED (§10.3): a reply with `rid`, or a server-initiated notice with `code` and `msg`.
+/// UNSUBSCRIBED (§10.3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unsubscribed {
+  /// `channel` (key 9).
   pub channel: String,
-  pub rid: Option<u64>,
-  pub code: Option<u64>,
-  pub msg: Option<String>,
+  /// Which of the two forms this is.
+  pub form: UnsubscribedForm,
+  /// `seq` and a piggybacked `ack` (§7.8).
   pub sequencing: Sequencing,
+}
+
+/// The two forms of UNSUBSCRIBED (§10.3). Each forbids the other's fields.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnsubscribedForm {
+  /// The reply to an UNSUBSCRIBE: `{1: rid, 9: channel}`.
+  Reply {
+    /// `rid` (key 1) of the UNSUBSCRIBE being answered.
+    rid: u64,
+  },
+  /// A server-initiated notice: `{9: channel, 6: code, 7: msg}`, with an unsubscribe reason
+  /// (§15.3) as the code.
+  Notice {
+    /// `code` (key 6), an unsubscribe reason.
+    code: u64,
+    /// `msg` (key 7).
+    msg: String,
+  },
 }
 
 /// PUBLICATION (§10.4). The data section holds the published value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Publication {
+  /// `channel` (key 9).
   pub channel: String,
+  /// `offset` (key 11).
   pub offset: u64,
+  /// `seq` and a piggybacked `ack` (§7.8).
   pub sequencing: Sequencing,
+  /// The data section.
   pub data: Bytes,
 }
 
 /// PRESENCE (§10.6). The data section holds the entries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Presence {
+  /// `channel` (key 9).
   pub channel: String,
+  /// `kind` (key 28): 0 snapshot, 1 join, 2 leave, 3 update.
   pub kind: u64,
+  /// `seq` and a piggybacked `ack` (§7.8).
   pub sequencing: Sequencing,
+  /// The data section.
   pub data: Bytes,
 }
 
 /// DATAGRAM on the WebSocket control stream (§11.4). The data section holds the value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Datagram {
+  /// `key` (key 29), the datagram key.
   pub key: u64,
+  /// `seq` (key 12).
   pub seq: u64,
+  /// The data section.
   pub data: Bytes,
 }
 
 /// DGRAM_BIND (§11.2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DgramBind {
+  /// `key` (key 29), the datagram key.
   pub key: u64,
+  /// `name` (key 30).
   pub name: String,
+  /// `seq` and a piggybacked `ack` (§7.8).
   pub sequencing: Sequencing,
 }
 
 /// A frame with an extension type (`0x80` to `0xFF`), kept as received so the caller can drop it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Extension {
+  /// The frame type byte.
   pub frame_type: u8,
+  /// The header section, unparsed.
   pub header: Bytes,
+  /// The data section.
   pub data: Bytes,
 }
 
 /// One typed frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Frame {
+  /// HELLO.
   Hello(Hello),
+  /// WELCOME.
   Welcome(Welcome),
+  /// REJECT.
   Reject(Reject),
-  Ping { data: Bytes },
-  Pong { data: Bytes },
+  /// PING; the data section holds up to 8 opaque bytes (§7.4).
+  Ping {
+    /// The data section, echoed by PONG.
+    data: Bytes,
+  },
+  /// PONG; the data section holds up to 8 opaque bytes (§7.4).
+  Pong {
+    /// The data section of the PING being answered.
+    data: Bytes,
+  },
+  /// GOAWAY.
   Goaway(Goaway),
+  /// CLOSE.
   Close(Close),
+  /// AUTH_REFRESH.
   AuthRefresh(AuthRefresh),
+  /// AUTH_RESULT.
   AuthResult(AuthResult),
-  Ack { ack: AckMap },
+  /// ACK, with the `ack` map (key 44, §7.8).
+  Ack {
+    /// `ack` (key 44).
+    ack: AckMap,
+  },
+  /// AUTH_EXPIRING.
   AuthExpiring(AuthExpiring),
+  /// REQUEST_ERROR.
   RequestError(RequestError),
+  /// CALL.
   Call(Call),
+  /// ITEM.
   Item(Item),
+  /// END.
   End(End),
+  /// RESULT.
   Result(CallResult),
+  /// ERROR.
   Error(CallError),
+  /// CANCEL.
   Cancel(Cancel),
+  /// CREDIT.
   Credit(Credit),
+  /// NOTIFY.
   Notify(Notify),
+  /// LANE_OPEN.
   LaneOpen(LaneOpen),
+  /// SUBSCRIBE.
   Subscribe(Subscribe),
+  /// SUBSCRIBED.
   Subscribed(Subscribed),
+  /// UNSUBSCRIBE.
   Unsubscribe(Unsubscribe),
+  /// UNSUBSCRIBED.
   Unsubscribed(Unsubscribed),
+  /// PUBLICATION.
   Publication(Publication),
+  /// PRESENCE.
   Presence(Presence),
+  /// DATAGRAM.
   Datagram(Datagram),
+  /// DGRAM_BIND.
   DgramBind(DgramBind),
+  /// A frame with an extension type, to be dropped by the caller.
   Extension(Extension),
 }
 

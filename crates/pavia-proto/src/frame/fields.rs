@@ -17,6 +17,8 @@ pub enum Problem {
   Missing,
   /// The field is present but has the wrong CBOR type or shape.
   WrongType,
+  /// The field is present but the frame's form forbids it.
+  Unexpected,
 }
 
 /// A field problem at `key`, before the frame type and `rid` are attached.

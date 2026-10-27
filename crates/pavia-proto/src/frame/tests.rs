@@ -223,12 +223,46 @@ fn reports_a_malformed_header() {
 }
 
 #[test]
-fn requires_rid_or_code_on_unsubscribed() {
-  let error = field_error(&raw(0x33, &[(u(9), Value::Text("c"))], &[]));
-  assert_eq!((error.key, error.problem), (key::CODE, FieldProblem::Missing));
-  assert!(typed(&raw(0x33, &[(u(9), Value::Text("c")), (u(1), u(4))], &[])).is_ok());
+fn accepts_both_forms_of_unsubscribed() {
+  let reply = [(u(9), Value::Text("c")), (u(1), u(4))];
+  let Ok(Frame::Unsubscribed(unsubscribed)) = typed(&raw(0x33, &reply, &[])) else {
+    panic!("not an UNSUBSCRIBED");
+  };
+  assert_eq!(unsubscribed.form, UnsubscribedForm::Reply { rid: 4 });
   let notice = [(u(9), Value::Text("c")), (u(6), u(2)), (u(7), Value::Text("resync"))];
-  assert!(typed(&raw(0x33, &notice, &[])).is_ok());
+  let Ok(Frame::Unsubscribed(unsubscribed)) = typed(&raw(0x33, &notice, &[])) else {
+    panic!("not an UNSUBSCRIBED");
+  };
+  assert_eq!(
+    unsubscribed.form,
+    UnsubscribedForm::Notice {
+      code: 2,
+      msg: "resync".to_owned()
+    }
+  );
+}
+
+#[test]
+fn rejects_unsubscribed_that_mixes_or_lacks_its_forms() {
+  let c = || (u(9), Value::Text("c"));
+  let cases = [
+    (vec![c()], key::CODE, FieldProblem::Missing),
+    (vec![c(), (u(6), u(2))], key::MSG, FieldProblem::Missing),
+    (
+      vec![c(), (u(1), u(4)), (u(6), u(2)), (u(7), Value::Text("m"))],
+      key::CODE,
+      FieldProblem::Unexpected,
+    ),
+    (
+      vec![c(), (u(1), u(4)), (u(7), Value::Text("m"))],
+      key::MSG,
+      FieldProblem::Unexpected,
+    ),
+  ];
+  for (entries, key, problem) in cases {
+    let error = field_error(&raw(0x33, &entries, &[]));
+    assert_eq!((error.key, error.problem), (key, problem), "{entries:?}");
+  }
 }
 
 #[test]
@@ -527,21 +561,16 @@ fn any_channel_frame() -> BoxedStrategy<Frame> {
     (
       small_text(),
       prop_oneof![
-        small_uint().prop_map(|rid| (Some(rid), None)),
-        small_uint().prop_map(|code| (None, Some(code)))
+        small_uint().prop_map(|rid| UnsubscribedForm::Reply { rid }),
+        (small_uint(), small_text()).prop_map(|(code, msg)| UnsubscribedForm::Notice { code, msg })
       ],
-      prop::option::of(small_text()),
       any_sequencing()
     )
-      .prop_map(|(channel, (rid, code), msg, sequencing)| {
-        Frame::Unsubscribed(Unsubscribed {
-          channel,
-          rid,
-          code,
-          msg,
-          sequencing,
-        })
-      }),
+      .prop_map(|(channel, form, sequencing)| Frame::Unsubscribed(Unsubscribed {
+        channel,
+        form,
+        sequencing
+      })),
     (small_text(), small_uint(), any_sequencing(), any_bytes()).prop_map(|(channel, offset, sequencing, data)| {
       Frame::Publication(Publication {
         channel,
