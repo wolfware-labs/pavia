@@ -103,6 +103,22 @@ impl Frame {
   }
 }
 
+/// HELLO `limits`, rejecting a `max_frame` or `window` below the 64 KiB floor (§4.1, §7.1).
+fn hello_limits(f: &Fields<'_, '_>) -> Result<Option<Limits>, Bad> {
+  let limits = f.optional(key::LIMITS, fields::limits)?;
+  let below_floor = |value: Option<u64>| value.is_some_and(|value| value < Limits::FLOOR);
+  if limits
+    .as_ref()
+    .is_some_and(|limits| below_floor(limits.max_frame) || below_floor(limits.window))
+  {
+    return Err(Bad {
+      key: key::LIMITS,
+      problem: Problem::OutOfRange,
+    });
+  }
+  Ok(limits)
+}
+
 fn sequencing(fields: &Fields<'_, '_>) -> Result<Sequencing, Bad> {
   Ok(Sequencing {
     seq: fields.optional(key::SEQ, fields::uint)?,
@@ -112,15 +128,14 @@ fn sequencing(fields: &Fields<'_, '_>) -> Result<Sequencing, Bad> {
 
 fn decode_typed(frame_type: FrameType, f: &Fields<'_, '_>, data: Bytes) -> Result<Frame, Bad> {
   use fields::{
-    ack_map, auth, boolean, client, fingerprint, limits, meta, resume, server_limits, since, text, text_array, token, uint,
-    uint_array,
+    ack_map, auth, boolean, client, fingerprint, meta, resume, server_limits, since, text, text_array, token, uint, uint_array,
   };
   Ok(match frame_type {
     FrameType::Hello => Frame::Hello(Hello {
       versions: f.required(key::VERSIONS, uint_array)?,
       codecs: f.required(key::CODECS, text_array)?,
       caps: f.optional(key::CAPS, text_array)?,
-      limits: f.optional(key::LIMITS, limits)?,
+      limits: hello_limits(f)?,
       contract: f.optional(key::CONTRACT, fingerprint)?,
       auth: f.optional(key::AUTH, auth)?,
       resume: f.optional(key::RESUME, resume)?,

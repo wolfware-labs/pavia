@@ -5,7 +5,7 @@
 
 use bytes::Bytes;
 
-use super::{AckMap, Auth, ClientInfo, Limits, Meta, MetaValue, Resume, ServerLimits, Since, Token, key};
+use super::{AckMap, Auth, ClientInfo, Limits, Meta, MetaName, MetaValue, Resume, ServerLimits, Since, Token, key};
 use crate::wire::header::{Measure, Sink, Value};
 
 /// What is wrong with a header field.
@@ -17,6 +17,8 @@ pub enum Problem {
   WrongType,
   /// The field is present but the frame's form forbids it.
   Unexpected,
+  /// The field has the right type but a value the spec forbids.
+  OutOfRange,
 }
 
 /// A field problem at `key`, before the frame type and `rid` are attached.
@@ -142,19 +144,12 @@ pub fn meta(value: &Value<'_>) -> Option<Meta> {
         Value::Bytes(bytes) => MetaValue::Bytes(Bytes::copy_from_slice(bytes)),
         _ => return None,
       };
-      Some((meta_name(name)?, value))
+      let Value::Text(name) = name else {
+        return None;
+      };
+      Some((MetaName::try_from(*name).ok()?, value))
     })
     .collect()
-}
-
-/// A metadata name: non-empty lowercase ASCII `[a-z0-9-]` (§8.7).
-fn meta_name(value: &Value<'_>) -> Option<String> {
-  text(value).filter(|name| {
-    !name.is_empty()
-      && name
-        .bytes()
-        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-  })
 }
 
 pub fn limits(value: &Value<'_>) -> Option<Limits> {
@@ -335,20 +330,14 @@ impl Encode for AckMap {
 }
 
 impl Encode for Meta {
-  /// Text keys sort by length first, then bytewise (§5.4.1), so the names are written one length
-  /// at a time; within a length the map's own order is already bytewise.
   fn encode(&self, sink: &mut impl Sink) {
     sink.map(self.len() as u64);
-    let mut length = self.keys().map(String::len).min();
-    while let Some(current) = length {
-      for (name, value) in self.iter().filter(|(name, _)| name.len() == current) {
-        sink.text(name);
-        match value {
-          MetaValue::Text(text) => sink.text(text),
-          MetaValue::Bytes(bytes) => sink.bytes(bytes),
-        }
+    for (name, value) in self {
+      sink.text(name.as_str());
+      match value {
+        MetaValue::Text(text) => sink.text(text),
+        MetaValue::Bytes(bytes) => sink.bytes(bytes),
       }
-      length = self.keys().map(String::len).filter(|&len| len > current).min();
     }
   }
 }

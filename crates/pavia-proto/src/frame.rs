@@ -273,8 +273,78 @@ impl TryFrom<u8> for FrameType {
 /// A lane-to-seq map (key 44): the highest contiguous seq received per lane (§7.8).
 pub type AckMap = BTreeMap<u64, u64>;
 
-/// Call metadata (key 3): text keys to text or bytes (§8.7).
-pub type Meta = BTreeMap<String, MetaValue>;
+/// Call metadata (key 3): names to text or bytes (§8.7).
+pub type Meta = BTreeMap<MetaName, MetaValue>;
+
+/// A metadata name: non-empty lowercase ASCII `[a-z0-9-]` (§8.7).
+///
+/// Names order by length, then bytewise, which is the deterministic order of CBOR text keys
+/// (§5.4.1), so a [`Meta`] iterates in the order its header writes it.
+///
+/// ```
+/// use pavia_proto::frame::MetaName;
+///
+/// assert!(MetaName::try_from("traceparent").is_ok());
+/// assert!(MetaName::try_from("Trace").is_err());
+/// assert!(MetaName::try_from("b").unwrap() < MetaName::try_from("ab").unwrap());
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MetaName(String);
+
+impl MetaName {
+  /// The name.
+  pub fn as_str(&self) -> &str {
+    &self.0
+  }
+
+  fn is_valid(name: &str) -> bool {
+    !name.is_empty()
+      && name
+        .bytes()
+        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+  }
+}
+
+/// The error for [`MetaName::try_from`] given a name outside `[a-z0-9-]`.
+#[derive(Debug, Error, Copy, Clone, Eq, PartialEq)]
+#[error("metadata name outside [a-z0-9-]")]
+pub struct InvalidMetaName;
+
+impl TryFrom<String> for MetaName {
+  type Error = InvalidMetaName;
+
+  fn try_from(value: String) -> Result<Self, Self::Error> {
+    if Self::is_valid(&value) {
+      Ok(Self(value))
+    } else {
+      Err(InvalidMetaName)
+    }
+  }
+}
+
+impl TryFrom<&str> for MetaName {
+  type Error = InvalidMetaName;
+
+  fn try_from(value: &str) -> Result<Self, Self::Error> {
+    if Self::is_valid(value) {
+      Ok(Self(value.to_owned()))
+    } else {
+      Err(InvalidMetaName)
+    }
+  }
+}
+
+impl Ord for MetaName {
+  fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    (self.0.len(), self.0.as_bytes()).cmp(&(other.0.len(), other.0.as_bytes()))
+  }
+}
+
+impl PartialOrd for MetaName {
+  fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    Some(self.cmp(other))
+  }
+}
 
 /// One metadata value.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -352,6 +422,11 @@ pub struct Limits {
   pub max_dgram: Option<u64>,
   /// `window` (key 40), the initial per-stream WebSocket credit in bytes.
   pub window: Option<u64>,
+}
+
+impl Limits {
+  /// The lowest `max_frame` and `window` a HELLO may advertise (§4.1).
+  pub const FLOOR: u64 = 65_536;
 }
 
 /// The `limits` map of WELCOME (key 21, §7.2). Only `window` is optional, because it applies to

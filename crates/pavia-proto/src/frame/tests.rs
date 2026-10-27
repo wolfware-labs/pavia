@@ -1,7 +1,8 @@
 use proptest::prelude::*;
 
 use super::*;
-use crate::error::ProtocolError;
+use crate::error::{Outcome, ProtocolError};
+use crate::registry::CloseCode;
 use crate::wire::frame::Frame as RawFrame;
 use crate::wire::frame::FrameDecoder;
 use crate::wire::header::{self, DecodeLimits, Value};
@@ -296,6 +297,29 @@ fn ends_the_session_for_data_on_a_frame_type_without_any() {
   }
 }
 
+fn hello_with_limits(limits: Vec<(Value<'static>, Value<'static>)>) -> RawFrame {
+  let entries = [
+    (u(key::VERSIONS), Value::Array(vec![u(1)])),
+    (u(key::CODECS), Value::Array(vec![Value::Text("cbor")])),
+    (u(key::LIMITS), Value::Map(limits)),
+  ];
+  raw(0x01, &entries, &[])
+}
+
+#[test]
+fn accepts_hello_limits_at_the_floor() {
+  let limits = vec![(u(key::MAX_FRAME), u(Limits::FLOOR)), (u(key::WINDOW), u(Limits::FLOOR))];
+  assert!(matches!(typed(&hello_with_limits(limits)), Ok(Frame::Hello(_))));
+}
+
+#[test]
+fn rejects_hello_limits_below_the_floor() {
+  for limit in [key::MAX_FRAME, key::WINDOW] {
+    let error = field_error(&hello_with_limits(vec![(u(limit), u(Limits::FLOOR - 1))]));
+    assert_eq!((error.key, error.problem), (key::LIMITS, FieldProblem::OutOfRange), "{limit}");
+  }
+}
+
 #[test]
 fn accepts_heartbeats_up_to_eight_bytes() {
   for frame_type in [0x04, 0x05] {
@@ -422,7 +446,7 @@ fn any_heartbeat() -> impl Strategy<Value = Heartbeat> {
 
 fn any_meta() -> impl Strategy<Value = Option<Meta>> {
   prop::option::of(prop::collection::btree_map(
-    "[a-z0-9-]{1,8}",
+    "[a-z0-9-]{1,8}".prop_map(MetaName),
     prop_oneof![small_text().prop_map(MetaValue::Text), any_bytes().prop_map(MetaValue::Bytes)],
     0..3,
   ))
@@ -436,14 +460,22 @@ fn any_sequencing() -> impl Strategy<Value = Sequencing> {
   (prop::option::of(small_uint()), prop::option::of(any_ack())).prop_map(|(seq, ack)| Sequencing { seq, ack })
 }
 
+fn above_floor() -> impl Strategy<Value = u64> {
+  prop_oneof![Just(Limits::FLOOR), Limits::FLOOR..]
+}
+
 fn any_limits() -> impl Strategy<Value = Limits> {
-  prop::array::uniform5(prop::option::of(small_uint())).prop_map(|[max_calls, max_frame, max_subs, max_dgram, window]| Limits {
-    max_calls,
-    max_frame,
-    max_subs,
-    max_dgram,
-    window,
-  })
+  (
+    prop::array::uniform3(prop::option::of(small_uint())),
+    prop::array::uniform2(prop::option::of(above_floor())),
+  )
+    .prop_map(|([max_calls, max_subs, max_dgram], [max_frame, window])| Limits {
+      max_calls,
+      max_frame,
+      max_subs,
+      max_dgram,
+      window,
+    })
 }
 
 fn any_server_limits() -> impl Strategy<Value = ServerLimits> {
@@ -772,13 +804,73 @@ fn raw_frame(bytes: &[u8]) -> RawFrame {
 fn sorts_metadata_names_by_length_then_bytes() {
   let meta: Meta = ["ab", "b", "a"]
     .into_iter()
-    .map(|name| (name.to_owned(), MetaValue::Text(String::new())))
+    .map(|name| (MetaName::try_from(name).unwrap(), MetaValue::Text(String::new())))
     .collect();
   let header = raw_frame(&encoded(&Frame::End(End { meta: Some(meta) }))).header;
   assert_eq!(
     header.as_ref(),
     hex_bytes("a1 03 a3 61 61 60 61 62 60 62 61 62 60").as_slice()
   );
+}
+
+#[test]
+fn matches_the_webtransport_frame_vectors() {
+  for file in [
+    include_str!("../../../../vectors/frames/handshake.json"),
+    include_str!("../../../../vectors/frames/invalid.json"),
+    include_str!("../../../../vectors/frames/typed.json"),
+  ] {
+    let doc: serde_json::Value = serde_json::from_str(file).unwrap();
+    for case in doc["cases"].as_array().unwrap() {
+      if case["binding"] != "wt" || case["fin"] == true {
+        continue;
+      }
+      let id = case["id"].as_str().unwrap();
+      let bytes = hex_bytes(case["hex"].as_str().unwrap());
+      let mut decoder = FrameDecoder::new(65_536);
+      if let Err(error) = decoder.feed(&bytes) {
+        panic!("{id}: {error}");
+      }
+      let Some(raw) = decoder.next_frame().unwrap() else {
+        assert_eq!(case["frames"].as_array().map(Vec::len), Some(0), "{id}");
+        continue;
+      };
+      let decoded = typed(&raw);
+      match case["error"]["code"].as_str() {
+        Some("PROTOCOL_ERROR") => {
+          let error = decoded.expect_err(id);
+          assert_eq!(
+            ProtocolError::from(error).outcome(),
+            Outcome::SessionFatal(CloseCode::ProtocolError),
+            "{id}"
+          );
+        }
+        Some(other) => panic!("{id}: no typed check for {other}"),
+        None => {
+          let frame = decoded.unwrap_or_else(|e| panic!("{id}: {e}"));
+          let want = &case["frames"][0];
+          assert_eq!(
+            frame.frame_type().map(|frame_type| u64::from(u8::from(frame_type))),
+            want["type"].as_u64(),
+            "{id}"
+          );
+          if let Some(data) = want["data_hex"].as_str() {
+            let Frame::Ping { data: heartbeat } = &frame else {
+              panic!("{id}: data_hex on a frame other than PING");
+            };
+            assert_eq!(heartbeat.as_bytes().as_ref(), hex_bytes(data).as_slice(), "{id}");
+          }
+          let mut out = Vec::new();
+          frame.encode(&mut out).unwrap();
+          if case["direction"] == "both" {
+            assert_eq!(out, bytes, "{id}: encoder output");
+          } else {
+            assert_eq!(out[1], 0, "{id}: encoders write flags 0");
+          }
+        }
+      }
+    }
+  }
 }
 
 proptest! {
