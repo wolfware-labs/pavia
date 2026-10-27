@@ -1,6 +1,7 @@
 use proptest::prelude::*;
 
 use super::*;
+use crate::error::ProtocolError;
 use crate::wire::frame::Frame as RawFrame;
 use crate::wire::frame::FrameDecoder;
 use crate::wire::header::{self, DecodeLimits, Value};
@@ -284,6 +285,15 @@ fn reports_a_text_key_in_a_nested_integer_map_as_its_outer_key() {
   ];
   let error = field_error(&welcome_with_limits(limits));
   assert_eq!((error.key, error.problem), (key::LIMITS, FieldProblem::WrongType));
+}
+
+#[test]
+fn ends_the_session_for_data_on_a_frame_type_without_any() {
+  for frame_type in FrameType::ALL.into_iter().filter(|frame_type| !frame_type.carries_data()) {
+    let error = typed(&raw(frame_type.into(), &[], b"x")).unwrap_err();
+    assert_eq!(error, FrameError::UnexpectedData, "{frame_type:?}");
+    assert!(matches!(ProtocolError::from(error), ProtocolError::UnexpectedDataSection));
+  }
 }
 
 #[test]

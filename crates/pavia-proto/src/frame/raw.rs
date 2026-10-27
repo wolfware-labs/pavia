@@ -16,6 +16,7 @@ impl Frame {
   /// - [`FrameError::UnknownType`] for an unregistered type from `0x00` to `0x7F`.
   /// - [`FrameError::MalformedHeader`] if the header is not a valid CBOR map with unsigned
   ///   integer keys.
+  /// - [`FrameError::UnexpectedData`] for a data section on a type without one.
   /// - [`FrameError::HeartbeatTooLarge`] for a PING or PONG data section over 8 bytes.
   /// - [`FrameError::Field`] for a missing or ill-typed field.
   ///
@@ -32,6 +33,9 @@ impl Frame {
         Err(FrameError::UnknownType(raw.frame_type))
       };
     };
+    if !frame_type.carries_data() && !raw.data.is_empty() {
+      return Err(FrameError::UnexpectedData);
+    }
     if matches!(frame_type, FrameType::Ping | FrameType::Pong) {
       Heartbeat::try_from(raw.data.clone())?;
     }

@@ -21,8 +21,6 @@ use std::collections::BTreeMap;
 use bytes::Bytes;
 use thiserror::Error;
 
-use crate::error::ProtocolError;
-
 pub use self::fields::Problem as FieldProblem;
 
 /// The flag bits reserved in v1: all of them (§5.2). Senders write 0 and receivers ignore them.
@@ -229,6 +227,25 @@ impl FrameType {
     Self::Datagram,
     Self::DgramBind,
   ];
+
+  /// Whether frames of this type have a data section. The others must send it empty.
+  pub fn carries_data(self) -> bool {
+    matches!(
+      self,
+      Self::Ping
+        | Self::Pong
+        | Self::Call
+        | Self::Item
+        | Self::Result
+        | Self::Error
+        | Self::Notify
+        | Self::Subscribe
+        | Self::Subscribed
+        | Self::Publication
+        | Self::Presence
+        | Self::Datagram
+    )
+  }
 
   /// Whether this is a control request that a REQUEST_ERROR can answer (§7.9).
   pub fn is_control_request(self) -> bool {
@@ -860,28 +877,15 @@ pub enum FrameError {
   /// The header section is not valid deterministic CBOR (§5.4.1).
   #[error("malformed header section")]
   MalformedHeader,
+  /// A non-empty data section on a frame type without one, such as END (§8.3).
+  #[error("data section on a frame type without one")]
+  UnexpectedData,
   /// A PING or PONG data section longer than 8 bytes (§7.4).
   #[error(transparent)]
   HeartbeatTooLarge(#[from] HeartbeatTooLarge),
   /// A field is missing or has the wrong type.
   #[error(transparent)]
   Field(#[from] FieldError),
-}
-
-impl From<FrameError> for ProtocolError {
-  fn from(error: FrameError) -> Self {
-    match error {
-      FrameError::UnknownType(_) => Self::FrameTypeNotAllowed,
-      FrameError::MalformedHeader => Self::MalformedHeader,
-      FrameError::HeartbeatTooLarge(_) => Self::HeartbeatTooLarge,
-      FrameError::Field(FieldError {
-        frame_type,
-        rid: Some(rid),
-        ..
-      }) if frame_type.is_control_request() => Self::InvalidControlRequestField { rid },
-      FrameError::Field(_) => Self::InvalidHeaderField,
-    }
-  }
 }
 
 impl Frame {
