@@ -14,7 +14,8 @@ impl Frame {
   /// # Errors
   ///
   /// - [`FrameError::UnknownType`] for an unregistered type from `0x00` to `0x7F`.
-  /// - [`FrameError::MalformedHeader`] if the header is not a valid CBOR map.
+  /// - [`FrameError::MalformedHeader`] if the header is not a valid CBOR map with unsigned
+  ///   integer keys.
   /// - [`FrameError::HeartbeatTooLarge`] for a PING or PONG data section over 8 bytes.
   /// - [`FrameError::Field`] for a missing or ill-typed field.
   ///
@@ -37,7 +38,7 @@ impl Frame {
     let entries = header::decode(&raw.header, limits)
       .map_err(|_| FrameError::MalformedHeader)?
       .unwrap_or_default();
-    let fields = Fields::new(&entries);
+    let fields = Fields::new(&entries).ok_or(FrameError::MalformedHeader)?;
     decode_typed(frame_type, &fields, raw.data.clone()).map_err(|bad| {
       FrameError::Field(FieldError {
         frame_type,

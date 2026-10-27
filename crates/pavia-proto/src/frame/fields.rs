@@ -28,14 +28,19 @@ pub struct Bad {
   pub problem: Problem,
 }
 
-/// The entries of one header map, looked up by integer key. Other keys are ignored (§5.4.1).
+/// The entries of one header map, looked up by integer key. Keys the frame does not read are
+/// ignored (§5.4.1).
 pub struct Fields<'h, 'a> {
   entries: &'h [(Value<'a>, Value<'a>)],
 }
 
 impl<'h, 'a> Fields<'h, 'a> {
-  pub fn new(entries: &'h [(Value<'a>, Value<'a>)]) -> Self {
-    Self { entries }
+  /// `None` when a key is not an unsigned integer, which only `meta` allows (§5.4.1).
+  pub fn new(entries: &'h [(Value<'a>, Value<'a>)]) -> Option<Self> {
+    entries
+      .iter()
+      .all(|(key, _)| matches!(key, Value::Unsigned(_)))
+      .then_some(Self { entries })
   }
 
   fn get(&self, key: u64) -> Option<&'h Value<'a>> {
@@ -155,7 +160,7 @@ fn meta_name(value: &Value<'_>) -> Option<String> {
 }
 
 pub fn limits(value: &Value<'_>) -> Option<Limits> {
-  let fields = Fields::new(map(value)?);
+  let fields = Fields::new(map(value)?)?;
   Some(Limits {
     max_calls: fields.optional(key::MAX_CALLS, uint).ok()?,
     max_frame: fields.optional(key::MAX_FRAME, uint).ok()?,
@@ -166,7 +171,7 @@ pub fn limits(value: &Value<'_>) -> Option<Limits> {
 }
 
 pub fn server_limits(value: &Value<'_>) -> Option<ServerLimits> {
-  let fields = Fields::new(map(value)?);
+  let fields = Fields::new(map(value)?)?;
   Some(ServerLimits {
     max_calls: fields.required(key::MAX_CALLS, uint).ok()?,
     max_frame: fields.required(key::MAX_FRAME, uint).ok()?,
@@ -177,7 +182,7 @@ pub fn server_limits(value: &Value<'_>) -> Option<ServerLimits> {
 }
 
 pub fn auth(value: &Value<'_>) -> Option<Auth> {
-  let fields = Fields::new(map(value)?);
+  let fields = Fields::new(map(value)?)?;
   Some(Auth {
     scheme: fields.required(key::SCHEME, text).ok()?,
     token: fields.required(key::TOKEN, token).ok()?,
@@ -185,7 +190,7 @@ pub fn auth(value: &Value<'_>) -> Option<Auth> {
 }
 
 pub fn resume(value: &Value<'_>) -> Option<Resume> {
-  let fields = Fields::new(map(value)?);
+  let fields = Fields::new(map(value)?)?;
   Some(Resume {
     token: fields.required(key::TOKEN, token).ok()?,
     session: fields.required(key::SESSION, text).ok()?,
@@ -195,7 +200,7 @@ pub fn resume(value: &Value<'_>) -> Option<Resume> {
 }
 
 pub fn client(value: &Value<'_>) -> Option<ClientInfo> {
-  let fields = Fields::new(map(value)?);
+  let fields = Fields::new(map(value)?)?;
   Some(ClientInfo {
     name: fields.optional(key::NAME, text).ok()?,
     version: fields.optional(key::CLIENT_VERSION, text).ok()?,
@@ -203,7 +208,7 @@ pub fn client(value: &Value<'_>) -> Option<ClientInfo> {
 }
 
 pub fn since(value: &Value<'_>) -> Option<Since> {
-  let fields = Fields::new(map(value)?);
+  let fields = Fields::new(map(value)?)?;
   Some(Since {
     epoch: fields.required(key::EPOCH, text).ok()?,
     offset: fields.required(key::OFFSET, uint).ok()?,

@@ -268,6 +268,25 @@ fn rejects_welcome_limits_missing_a_required_entry() {
 }
 
 #[test]
+fn rejects_a_text_key_in_the_header_map() {
+  let entries = [(Value::Text("bad"), u(1)), (u(2), Value::Text("m")), (u(5), u(0))];
+  assert_eq!(typed(&raw(0x10, &entries, &[])), Err(FrameError::MalformedHeader));
+}
+
+#[test]
+fn reports_a_text_key_in_a_nested_integer_map_as_its_outer_key() {
+  let limits = vec![
+    (u(key::MAX_CALLS), u(100)),
+    (u(key::MAX_FRAME), u(65_536)),
+    (u(key::MAX_SUBS), u(10)),
+    (u(key::MAX_DGRAM), u(1_200)),
+    (Value::Text("window"), u(65_536)),
+  ];
+  let error = field_error(&welcome_with_limits(limits));
+  assert_eq!((error.key, error.problem), (key::LIMITS, FieldProblem::WrongType));
+}
+
+#[test]
 fn accepts_heartbeats_up_to_eight_bytes() {
   for frame_type in [0x04, 0x05] {
     let frame = typed(&raw(frame_type, &[], b"12345678")).unwrap();
