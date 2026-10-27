@@ -123,4 +123,4 @@ jobs:
         run: cargo +nightly-2026-10-01 fuzz run --target x86_64-unknown-linux-gnu header_decode -- -max_total_time=600 -rss_limit_mb=8192 -malloc_limit_mb=512
       - name: Fuzz the frame decoder for 10 minutes
         working-directory: crates/pavia-proto
-        run: cargo +nightly-2026-10-01 fuzz run --target x86_64-unknown-linux-gnu frame_decode -- -max_total_time=600
+        run: cargo +nightly-2026-10-01 fuzz run --target x86_64-unknown-linux-gnu frame_decode -- -max_total_time=600 -rss_limit_mb=8192 -malloc_limit_mb=512
