@@ -150,13 +150,15 @@ impl FrameDecoder {
     split_payload(frame_type, flags, bytes).map(Some)
   }
 
-  /// Checks the end of the stream: it is an error if part of a frame is still buffered.
+  /// Checks the end of the stream: it is an error if a frame was cut off. Complete frames that
+  /// are still buffered are fine and can still be taken with [`next_frame`](Self::next_frame).
   ///
   /// # Errors
   ///
-  /// Returns [`ProtocolError::StreamEndedMidFrame`] if any bytes are left (§5.3).
+  /// Returns [`ProtocolError::StreamEndedMidFrame`] if the last buffered frame is incomplete
+  /// (§5.3).
   pub fn finish(&self) -> Result<(), ProtocolError> {
-    if self.buffer.is_empty() {
+    if self.buffer.len() == self.checked {
       Ok(())
     } else {
       Err(ProtocolError::StreamEndedMidFrame)
@@ -404,6 +406,28 @@ mod tests {
     assert!(matches!(frame_length(10, largest), Err(ProtocolError::FrameTooLarge)));
     assert!(matches!(frame_length(2, largest - 1), Err(ProtocolError::FrameTooLarge)));
     assert_eq!(frame_length(2, largest - 2).unwrap(), usize::MAX);
+  }
+
+  #[test]
+  fn ends_cleanly_with_complete_frames_still_buffered() {
+    let frames = [frame(0x04, 0, &[], &[]), frame(0x10, 0, &[0xa0], &[0x01])];
+    let mut decoder = FrameDecoder::new(MAX_FRAME);
+    decoder.feed(&encoded(&frames)).unwrap();
+    decoder.finish().unwrap();
+    assert_eq!(drain(&mut decoder).unwrap(), frames);
+  }
+
+  #[test]
+  fn reports_a_cut_frame_after_complete_ones_at_the_end_of_the_stream() {
+    let bytes = encoded(&[frame(0x04, 0, &[], &[]), frame(0x10, 0, &[0xa0], &[0x01])]);
+    for cut in [5, bytes.len() - 1] {
+      let mut decoder = FrameDecoder::new(MAX_FRAME);
+      decoder.feed(&bytes[..cut]).unwrap();
+      assert!(
+        matches!(decoder.finish(), Err(ProtocolError::StreamEndedMidFrame)),
+        "cut at {cut}"
+      );
+    }
   }
 
   #[test]
