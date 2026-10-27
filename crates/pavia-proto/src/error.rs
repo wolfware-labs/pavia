@@ -18,6 +18,9 @@ pub enum ProtocolError {
   /// A WebTransport stream that ends (FIN) in the middle of a frame (§5.3).
   #[error("stream ended in the middle of a frame")]
   StreamEndedMidFrame,
+  /// A WebSocket message above `2 × max_frame` bytes (§4.3).
+  #[error("WebSocket message above 2 x max_frame")]
+  MessageTooLarge,
   /// Bytes after the last complete frame of a WebSocket message (§5.4).
   #[error("bytes left over after the last frame in a message")]
   LeftoverBytes,
@@ -194,6 +197,7 @@ impl ProtocolError {
       Self::FrameTooLarge => Outcome::SessionFatal(CloseCode::FrameTooLarge),
       Self::MalformedMessage
       | Self::StreamEndedMidFrame
+      | Self::MessageTooLarge
       | Self::LeftoverBytes
       | Self::MalformedHeader
       | Self::FrameTypeNotAllowed
@@ -260,6 +264,7 @@ mod tests {
       (ProtocolError::FrameTooLarge, CloseCode::FrameTooLarge),
       (ProtocolError::MalformedMessage, CloseCode::ProtocolError),
       (ProtocolError::StreamEndedMidFrame, CloseCode::ProtocolError),
+      (ProtocolError::MessageTooLarge, CloseCode::ProtocolError),
       (ProtocolError::LeftoverBytes, CloseCode::ProtocolError),
       (ProtocolError::MalformedHeader, CloseCode::ProtocolError),
       (ProtocolError::FrameTypeNotAllowed, CloseCode::ProtocolError),

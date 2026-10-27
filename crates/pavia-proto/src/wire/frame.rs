@@ -36,6 +36,22 @@ pub enum EncodeError {
 }
 
 impl Frame {
+  /// The Length this frame is written with: HeaderLength varint, header and data (§5.2). This is
+  /// what the peer checks against its `max_frame`.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`EncodeError::PayloadTooLarge`] if the payload is above 2^62 − 1 bytes.
+  pub fn payload_length(&self) -> Result<u64, EncodeError> {
+    let header_length = u64::try_from(self.header.len()).map_err(|_| EncodeError::PayloadTooLarge)?;
+    let data_length = u64::try_from(self.data.len()).map_err(|_| EncodeError::PayloadTooLarge)?;
+    varint_length(header_length)
+      .checked_add(header_length)
+      .and_then(|length| length.checked_add(data_length))
+      .filter(|length| *length <= MAX_VARINT)
+      .ok_or(EncodeError::PayloadTooLarge)
+  }
+
   /// Writes the frame to `out`: Type, Flags, Length, HeaderLength, header, data.
   ///
   /// The caller checks the payload against the peer's `max_frame` first; this only fails when
@@ -46,13 +62,8 @@ impl Frame {
   /// Returns [`EncodeError::PayloadTooLarge`] if the payload is above 2^62 − 1 bytes. Nothing is
   /// written to `out` in that case.
   pub fn encode(&self, out: &mut impl BufMut) -> Result<(), EncodeError> {
+    let payload_length = self.payload_length()?;
     let header_length = u64::try_from(self.header.len()).map_err(|_| EncodeError::PayloadTooLarge)?;
-    let data_length = u64::try_from(self.data.len()).map_err(|_| EncodeError::PayloadTooLarge)?;
-    let payload_length = varint_length(header_length)
-      .checked_add(header_length)
-      .and_then(|length| length.checked_add(data_length))
-      .filter(|length| *length <= MAX_VARINT)
-      .ok_or(EncodeError::PayloadTooLarge)?;
 
     out.put_u8(self.frame_type);
     out.put_u8(self.flags);
@@ -136,7 +147,7 @@ impl FrameDecoder {
   /// Returns [`ProtocolError::MalformedHeader`] if HeaderLength does not fit in the payload
   /// (§5.4.1). This ends the session, so the decoder is not meant to be used after an error.
   pub fn next_frame(&mut self) -> Result<Option<Frame>, ProtocolError> {
-    let Some((prefix_length, frame_length)) = read_prefix(&self.buffer, self.max_frame)? else {
+    let Some((_, frame_length)) = read_prefix(&self.buffer, self.max_frame)? else {
       return Ok(None);
     };
     if self.buffer.len() < frame_length {
@@ -144,10 +155,7 @@ impl FrameDecoder {
     }
     let mut bytes = self.buffer.split_to(frame_length).freeze();
     self.checked -= frame_length;
-    let frame_type = bytes.get_u8();
-    let flags = bytes.get_u8();
-    bytes.advance(prefix_length - 2);
-    split_payload(frame_type, flags, bytes).map(Some)
+    take_frame(&mut bytes, self.max_frame)
   }
 
   /// Checks the end of the stream: it is an error if a frame was cut off. Complete frames that
@@ -164,6 +172,27 @@ impl FrameDecoder {
       Err(ProtocolError::StreamEndedMidFrame)
     }
   }
+}
+
+/// Takes one frame off the front of `bytes`, a buffer that already holds whole frames such as a
+/// WebSocket message. Returns `None`, leaving `bytes` as it was, if the frame is incomplete.
+///
+/// # Errors
+///
+/// [`ProtocolError::FrameTooLarge`] for a Length above `max_frame`, and
+/// [`ProtocolError::MalformedHeader`] if HeaderLength does not fit in the payload.
+pub fn take_frame(bytes: &mut Bytes, max_frame: u64) -> Result<Option<Frame>, ProtocolError> {
+  let Some((prefix_length, frame_length)) = read_prefix(bytes, max_frame)? else {
+    return Ok(None);
+  };
+  if bytes.len() < frame_length {
+    return Ok(None);
+  }
+  let mut frame = bytes.split_to(frame_length);
+  let frame_type = frame.get_u8();
+  let flags = frame.get_u8();
+  frame.advance(prefix_length - 2);
+  split_payload(frame_type, flags, frame).map(Some)
 }
 
 /// Reads Type, Flags and Length. Returns the prefix length and the whole frame's length, or `None`
