@@ -855,6 +855,28 @@ pub struct Extension {
   pub data: Bytes,
 }
 
+/// Error returned when a typed frame cannot be written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum EncodeError {
+  /// The payload is above 2^62 − 1 bytes, so no Length varint can hold it.
+  #[error("frame payload is above 2^62 - 1 bytes")]
+  PayloadTooLarge,
+  /// An [`Extension`] whose type byte is below `0x80`, the range of registered types (§5.6).
+  #[error("extension frame type {0:#04x} is below 0x80")]
+  NotAnExtensionType(u8),
+  /// HELLO or WELCOME `limits` with `max_frame` or `window` below [`Limits::FLOOR`] (§4.1).
+  #[error("limits below the 64 KiB floor")]
+  LimitsBelowFloor,
+}
+
+impl From<crate::wire::frame::EncodeError> for EncodeError {
+  fn from(error: crate::wire::frame::EncodeError) -> Self {
+    match error {
+      crate::wire::frame::EncodeError::PayloadTooLarge => Self::PayloadTooLarge,
+    }
+  }
+}
+
 /// One typed frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Frame {

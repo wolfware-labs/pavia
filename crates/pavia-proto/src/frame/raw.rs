@@ -4,7 +4,7 @@ use bytes::{BufMut, Bytes};
 
 use super::fields::{self, Bad, Entries, Fields, MapBody, Problem, encode_map, entry_count};
 use super::*;
-use crate::wire::frame::{EncodeError, Frame as RawFrame, put_prefix};
+use crate::wire::frame::{Frame as RawFrame, put_prefix};
 use crate::wire::header::{self, DecodeLimits, Measure, Out, Sink};
 
 impl Frame {
@@ -58,9 +58,13 @@ impl Frame {
   ///
   /// # Errors
   ///
-  /// Returns [`EncodeError::PayloadTooLarge`] if the payload is above 2^62 − 1 bytes. Nothing is
-  /// written to `out` in that case.
+  /// Nothing is written to `out` when an error is returned.
+  ///
+  /// - [`EncodeError::PayloadTooLarge`] if the payload is above 2^62 − 1 bytes.
+  /// - [`EncodeError::NotAnExtensionType`] for an [`Extension`] with a type below `0x80`.
+  /// - [`EncodeError::LimitsBelowFloor`] for HELLO or WELCOME limits that `from_raw` would reject.
   pub(crate) fn encode(&self, out: &mut impl BufMut) -> Result<(), EncodeError> {
+    self.check()?;
     if let Self::Extension(extension) = self {
       put_prefix(extension.frame_type, 0, extension.header.len(), extension.data.len(), out)?;
       out.put_slice(&extension.header);
@@ -82,6 +86,21 @@ impl Frame {
     }
     out.put_slice(data);
     Ok(())
+  }
+
+  /// The rules `from_raw` enforces that the field types alone do not.
+  fn check(&self) -> Result<(), EncodeError> {
+    let below_floor = |value: Option<u64>| value.is_some_and(|value| value < Limits::FLOOR);
+    match self {
+      Self::Extension(extension) if extension.frame_type < 0x80 => Err(EncodeError::NotAnExtensionType(extension.frame_type)),
+      Self::Hello(Hello {
+        limits: Some(limits), ..
+      }) if below_floor(limits.max_frame) || below_floor(limits.window) => Err(EncodeError::LimitsBelowFloor),
+      Self::Welcome(Welcome { limits, .. }) if below_floor(Some(limits.max_frame)) || below_floor(limits.window) => {
+        Err(EncodeError::LimitsBelowFloor)
+      }
+      _ => Ok(()),
+    }
   }
 
   fn data(&self) -> &[u8] {

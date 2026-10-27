@@ -337,6 +337,36 @@ fn rejects_hello_limits_below_the_floor() {
 }
 
 #[test]
+fn refuses_to_encode_what_the_decoder_rejects() {
+  let extension = Frame::Extension(Extension {
+    frame_type: 0x01,
+    header: Bytes::new(),
+    data: Bytes::new(),
+  });
+  let hello = Frame::Hello(Hello {
+    versions: vec![1],
+    codecs: vec!["cbor".to_owned()],
+    caps: None,
+    limits: Some(Limits {
+      max_frame: Some(1_024),
+      ..Limits::default()
+    }),
+    contract: None,
+    auth: None,
+    resume: None,
+    client: None,
+  });
+  for (frame, expected) in [
+    (extension, EncodeError::NotAnExtensionType(0x01)),
+    (hello, EncodeError::LimitsBelowFloor),
+  ] {
+    let mut out = Vec::new();
+    assert_eq!(frame.encode(&mut out), Err(expected));
+    assert!(out.is_empty());
+  }
+}
+
+#[test]
 fn accepts_heartbeats_up_to_eight_bytes() {
   for frame_type in [0x04, 0x05] {
     let frame = typed(&raw(frame_type, &[], b"12345678")).unwrap();
