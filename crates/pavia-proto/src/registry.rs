@@ -118,12 +118,16 @@ pub enum PresenceKind {
 /// Each variant names the registry and carries the rejected number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum UnknownCode {
+  /// A number outside the session close codes (§15.1).
   #[error("unknown close code {0}")]
   Close(u16),
+  /// A number outside the call status codes (§15.2).
   #[error("unknown status code {0}")]
   Status(u16),
+  /// A number outside the unsubscribe reasons (§15.3).
   #[error("unknown unsubscribe reason {0}")]
   UnsubscribeReason(u16),
+  /// A number outside the presence kinds (§15.4).
   #[error("unknown presence kind {0}")]
   PresenceKind(u16),
 }

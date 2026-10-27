@@ -14,6 +14,9 @@ pub enum ProtocolError {
   /// A WebSocket message that does not parse as frames, such as a truncated frame (§5.4).
   #[error("malformed WebSocket message")]
   MalformedMessage,
+  /// A WebTransport stream that ends (FIN) in the middle of a frame (§5.3).
+  #[error("stream ended in the middle of a frame")]
+  StreamEndedMidFrame,
   /// Bytes after the last complete frame of a WebSocket message (§5.4).
   #[error("bytes left over after the last frame in a message")]
   LeftoverBytes,
@@ -45,9 +48,12 @@ pub enum ProtocolError {
   /// A frame that arrives after the call completed locally.
   #[error("frame after the call completed")]
   FrameAfterCallCompleted,
-  /// A CALL beyond the advertised `max_calls` (§6.5).
+  /// A CALL received beyond the `max_calls` this side advertised (§6.5).
   #[error("CALL above max_calls")]
   CallAboveMaxCalls,
+  /// A call this side was about to start beyond the peer's `max_calls` (§6.5). Nothing is sent.
+  #[error("local CALL above the peer's max_calls")]
+  LocalCallAboveMaxCalls,
   /// An ITEM this side was about to send that exceeds the peer's `max_frame`.
   #[error("ITEM larger than max_frame")]
   LocalItemTooLarge,
@@ -131,6 +137,8 @@ pub enum Outcome {
     status: ErrorStatus,
     /// Whether to send CANCEL because the call is still open.
     cancel: bool,
+    /// Whether the call never reached the peer, so no handler ran and a retry is safe (§8.4).
+    nx: bool,
   },
   /// Ignore the frame. `event` is true when the application gets a local error event (§8.10).
   Dropped {
@@ -168,6 +176,7 @@ impl ProtocolError {
     match self {
       Self::FrameTooLarge => Outcome::SessionFatal(CloseCode::FrameTooLarge),
       Self::MalformedMessage
+      | Self::StreamEndedMidFrame
       | Self::LeftoverBytes
       | Self::MalformedHeader
       | Self::FrameTypeNotAllowed
@@ -182,9 +191,15 @@ impl ProtocolError {
         status: ErrorStatus(StatusCode::ResourceExhausted),
         nx: true,
       },
+      Self::LocalCallAboveMaxCalls => Outcome::Local {
+        status: ErrorStatus(StatusCode::ResourceExhausted),
+        cancel: false,
+        nx: true,
+      },
       Self::LocalItemTooLarge => Outcome::Local {
         status: ErrorStatus(StatusCode::ResourceExhausted),
         cancel: false,
+        nx: false,
       },
       Self::InvalidControlRequestField { rid } => Outcome::PerRequest {
         status: ErrorStatus(StatusCode::InvalidArgument),
@@ -203,10 +218,12 @@ impl ProtocolError {
         DataSection::Item { at_caller: true } => Outcome::Local {
           status: ErrorStatus(StatusCode::Internal),
           cancel: true,
+          nx: false,
         },
         DataSection::Result | DataSection::ErrorDetail => Outcome::Local {
           status: ErrorStatus(StatusCode::Internal),
           cancel: false,
+          nx: false,
         },
         DataSection::Publication
         | DataSection::PresenceEntry
@@ -227,6 +244,7 @@ mod tests {
     let cases = [
       (ProtocolError::FrameTooLarge, CloseCode::FrameTooLarge),
       (ProtocolError::MalformedMessage, CloseCode::ProtocolError),
+      (ProtocolError::StreamEndedMidFrame, CloseCode::ProtocolError),
       (ProtocolError::LeftoverBytes, CloseCode::ProtocolError),
       (ProtocolError::MalformedHeader, CloseCode::ProtocolError),
       (ProtocolError::FrameTypeNotAllowed, CloseCode::ProtocolError),
@@ -276,12 +294,25 @@ mod tests {
   }
 
   #[test]
+  fn fails_a_local_call_above_the_peer_max_calls_as_never_sent() {
+    assert_eq!(
+      ProtocolError::LocalCallAboveMaxCalls.outcome(),
+      Outcome::Local {
+        status: ErrorStatus(StatusCode::ResourceExhausted),
+        cancel: false,
+        nx: true
+      }
+    );
+  }
+
+  #[test]
   fn reports_an_oversized_local_item_without_cancelling() {
     assert_eq!(
       ProtocolError::LocalItemTooLarge.outcome(),
       Outcome::Local {
         status: ErrorStatus(StatusCode::ResourceExhausted),
-        cancel: false
+        cancel: false,
+        nx: false
       }
     );
   }
@@ -337,7 +368,8 @@ mod tests {
         undecodable(section),
         Outcome::Local {
           status: ErrorStatus(StatusCode::Internal),
-          cancel: false
+          cancel: false,
+          nx: false
         },
         "{section:?}"
       );
@@ -350,7 +382,8 @@ mod tests {
       undecodable(DataSection::Item { at_caller: true }),
       Outcome::Local {
         status: ErrorStatus(StatusCode::Internal),
-        cancel: true
+        cancel: true,
+        nx: false
       }
     );
   }
