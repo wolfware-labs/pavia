@@ -252,6 +252,22 @@ fn accepts_welcome_limits_without_the_websocket_window() {
 }
 
 #[test]
+fn rejects_welcome_limits_below_the_floor() {
+  for (limit, value) in [(key::MAX_FRAME, 1), (key::WINDOW, Limits::FLOOR - 1)] {
+    let mut limits = vec![
+      (u(key::MAX_CALLS), u(100)),
+      (u(key::MAX_FRAME), u(Limits::FLOOR)),
+      (u(key::MAX_SUBS), u(10)),
+      (u(key::MAX_DGRAM), u(1_200)),
+    ];
+    limits.retain(|(key, _)| *key != u(limit));
+    limits.push((u(limit), u(value)));
+    let error = field_error(&welcome_with_limits(limits));
+    assert_eq!((error.key, error.problem), (key::LIMITS, FieldProblem::OutOfRange), "{limit}");
+  }
+}
+
+#[test]
 fn rejects_welcome_limits_missing_a_required_entry() {
   let required = [key::MAX_CALLS, key::MAX_FRAME, key::MAX_SUBS, key::MAX_DGRAM];
   for missing in required {
@@ -479,15 +495,18 @@ fn any_limits() -> impl Strategy<Value = Limits> {
 }
 
 fn any_server_limits() -> impl Strategy<Value = ServerLimits> {
-  (prop::array::uniform4(small_uint()), prop::option::of(small_uint())).prop_map(
-    |([max_calls, max_frame, max_subs, max_dgram], window)| ServerLimits {
+  (
+    prop::array::uniform3(small_uint()),
+    above_floor(),
+    prop::option::of(above_floor()),
+  )
+    .prop_map(|([max_calls, max_subs, max_dgram], max_frame, window)| ServerLimits {
       max_calls,
       max_frame,
       max_subs,
       max_dgram,
       window,
-    },
-  )
+    })
 }
 
 fn any_auth() -> impl Strategy<Value = Auth> {

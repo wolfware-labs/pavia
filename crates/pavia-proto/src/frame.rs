@@ -425,7 +425,7 @@ pub struct Limits {
 }
 
 impl Limits {
-  /// The lowest `max_frame` and `window` a HELLO may advertise (§4.1).
+  /// The lowest `max_frame` and `window` either peer may advertise, in HELLO or WELCOME (§4.1).
   pub const FLOOR: u64 = 65_536;
 }
 

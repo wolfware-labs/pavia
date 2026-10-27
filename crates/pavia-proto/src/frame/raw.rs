@@ -106,17 +106,30 @@ impl Frame {
 /// HELLO `limits`, rejecting a `max_frame` or `window` below the 64 KiB floor (§4.1, §7.1).
 fn hello_limits(f: &Fields<'_, '_>) -> Result<Option<Limits>, Bad> {
   let limits = f.optional(key::LIMITS, fields::limits)?;
-  let below_floor = |value: Option<u64>| value.is_some_and(|value| value < Limits::FLOOR);
-  if limits
-    .as_ref()
-    .is_some_and(|limits| below_floor(limits.max_frame) || below_floor(limits.window))
-  {
-    return Err(Bad {
-      key: key::LIMITS,
-      problem: Problem::OutOfRange,
-    });
+  if let Some(limits) = &limits {
+    check_floor(limits.max_frame)?;
+    check_floor(limits.window)?;
   }
   Ok(limits)
+}
+
+/// WELCOME `limits`, with the same floor as HELLO: a server never advertises less (§4.1).
+fn welcome_limits(f: &Fields<'_, '_>) -> Result<ServerLimits, Bad> {
+  let limits = f.required(key::LIMITS, fields::server_limits)?;
+  check_floor(Some(limits.max_frame))?;
+  check_floor(limits.window)?;
+  Ok(limits)
+}
+
+fn check_floor(value: Option<u64>) -> Result<(), Bad> {
+  if value.is_some_and(|value| value < Limits::FLOOR) {
+    Err(Bad {
+      key: key::LIMITS,
+      problem: Problem::OutOfRange,
+    })
+  } else {
+    Ok(())
+  }
 }
 
 fn sequencing(fields: &Fields<'_, '_>) -> Result<Sequencing, Bad> {
@@ -127,9 +140,7 @@ fn sequencing(fields: &Fields<'_, '_>) -> Result<Sequencing, Bad> {
 }
 
 fn decode_typed(frame_type: FrameType, f: &Fields<'_, '_>, data: Bytes) -> Result<Frame, Bad> {
-  use fields::{
-    ack_map, auth, boolean, client, fingerprint, meta, resume, server_limits, since, text, text_array, token, uint, uint_array,
-  };
+  use fields::{ack_map, auth, boolean, client, fingerprint, meta, resume, since, text, text_array, token, uint, uint_array};
   Ok(match frame_type {
     FrameType::Hello => Frame::Hello(Hello {
       versions: f.required(key::VERSIONS, uint_array)?,
@@ -147,7 +158,7 @@ fn decode_typed(frame_type: FrameType, f: &Fields<'_, '_>, data: Bytes) -> Resul
       caps: f.required(key::CAPS, text_array)?,
       session: f.required(key::SESSION, text)?,
       token: f.optional(key::TOKEN, token)?,
-      limits: f.required(key::LIMITS, server_limits)?,
+      limits: welcome_limits(f)?,
       hb: f.required(key::HB, uint)?,
       idle: f.required(key::IDLE, uint)?,
       resume_window: f.optional(key::RESUME_WINDOW, uint)?,
