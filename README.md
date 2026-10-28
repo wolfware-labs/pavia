@@ -1,5 +1,7 @@
 # Pavia
 
+[![Coverage](https://img.shields.io/codecov/c/github/wolfware-labs/pavia?logo=codecov&label=coverage)](https://codecov.io/gh/wolfware-labs/pavia)
+
 Pavia is a real-time RPC and messaging protocol between browsers or apps and servers, with a Rust server implementation and generated clients. One persistent session carries calls in both directions and lets the server target sessions, users and groups. On top of that:
 
 - Typed contracts in both directions, described by a machine-readable manifest that client generators consume.
