@@ -2,14 +2,13 @@
 //!
 //! [`allowed`] answers whether a type may ever appear on a stream. Whether it may appear now, such
 //! as ITEM after END, is the call state machine's question; capabilities and the handshake are
-//! session checks. [`StreamIds`] tracks WebSocket stream IDs (§6.1).
+//! session checks.
 
 use crate::error::ProtocolError;
 use crate::frame::FrameType;
 
-mod ids;
-
-pub use self::ids::{Admitted, StreamIds};
+#[cfg_attr(not(test), expect(dead_code, reason = "used by the WebSocket session from #24 onwards"))]
+pub(crate) mod ids;
 
 /// The transport a session runs on (§4.2, §4.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -96,12 +95,6 @@ pub const fn check(frame_type: FrameType, origin: Origin, binding: Binding) -> R
   } else {
     Err(ProtocolError::FrameTypeNotAllowed)
   }
-}
-
-/// Whether `frame_type` opens a stream: CALL opens a call stream, LANE_OPEN a lane stream (§6.1).
-#[must_use]
-pub const fn opens_stream(frame_type: FrameType) -> bool {
-  matches!(frame_type, FrameType::Call | FrameType::LaneOpen)
 }
 
 #[cfg(test)]

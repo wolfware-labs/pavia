@@ -1,7 +1,7 @@
-use super::{Admitted, MAX_STREAM_ID, StreamIds};
+use super::{Admitted, MAX_STREAM_ID, StreamIds, opens_stream};
 use crate::error::ProtocolError;
 use crate::frame::FrameType;
-use crate::stream::{Side, opens_stream};
+use crate::stream::Side;
 
 const OPENING: bool = true;
 const FOLLOWING: bool = false;

@@ -5,8 +5,15 @@ use std::collections::HashSet;
 
 use super::Side;
 use crate::error::ProtocolError;
+use crate::frame::FrameType;
 
 const MAX_STREAM_ID: u64 = (1 << 62) - 1;
+
+/// Whether `frame_type` opens a stream: CALL opens a call stream, LANE_OPEN a lane stream (§6.1).
+#[must_use]
+pub const fn opens_stream(frame_type: FrameType) -> bool {
+  matches!(frame_type, FrameType::Call | FrameType::LaneOpen)
+}
 
 /// What [`StreamIds::receive`] found for an incoming frame's stream ID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
