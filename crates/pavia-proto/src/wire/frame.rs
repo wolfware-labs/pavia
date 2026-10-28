@@ -43,13 +43,7 @@ impl Frame {
   ///
   /// Returns [`EncodeError::PayloadTooLarge`] if the payload is above 2^62 − 1 bytes.
   pub fn payload_length(&self) -> Result<u64, EncodeError> {
-    let header_length = u64::try_from(self.header.len()).map_err(|_| EncodeError::PayloadTooLarge)?;
-    let data_length = u64::try_from(self.data.len()).map_err(|_| EncodeError::PayloadTooLarge)?;
-    varint_length(header_length)
-      .checked_add(header_length)
-      .and_then(|length| length.checked_add(data_length))
-      .filter(|length| *length <= MAX_VARINT)
-      .ok_or(EncodeError::PayloadTooLarge)
+    payload_length(self.header.len(), self.data.len())
   }
 
   /// Writes the frame to `out`: Type, Flags, Length, HeaderLength, header, data.
@@ -62,17 +56,45 @@ impl Frame {
   /// Returns [`EncodeError::PayloadTooLarge`] if the payload is above 2^62 − 1 bytes. Nothing is
   /// written to `out` in that case.
   pub fn encode(&self, out: &mut impl BufMut) -> Result<(), EncodeError> {
-    let payload_length = self.payload_length()?;
-    let header_length = u64::try_from(self.header.len()).map_err(|_| EncodeError::PayloadTooLarge)?;
-
-    out.put_u8(self.frame_type);
-    out.put_u8(self.flags);
-    varint::encode(payload_length, out).map_err(|_| EncodeError::PayloadTooLarge)?;
-    varint::encode(header_length, out).map_err(|_| EncodeError::PayloadTooLarge)?;
+    put_prefix(self.frame_type, self.flags, self.header.len(), self.data.len(), out)?;
     out.put_slice(&self.header);
     out.put_slice(&self.data);
     Ok(())
   }
+}
+
+/// Writes Type, Flags, Length and HeaderLength for a payload with these section lengths. The
+/// caller writes the `header_length` header bytes and the `data_length` data bytes next.
+///
+/// # Errors
+///
+/// Returns [`EncodeError::PayloadTooLarge`] if the payload is above 2^62 − 1 bytes. Nothing is
+/// written to `out` in that case.
+pub fn put_prefix(
+  frame_type: u8,
+  flags: u8,
+  header_length: usize,
+  data_length: usize,
+  out: &mut impl BufMut,
+) -> Result<(), EncodeError> {
+  let payload_length = payload_length(header_length, data_length)?;
+  let header_length = u64::try_from(header_length).map_err(|_| EncodeError::PayloadTooLarge)?;
+
+  out.put_u8(frame_type);
+  out.put_u8(flags);
+  varint::encode(payload_length, out).map_err(|_| EncodeError::PayloadTooLarge)?;
+  varint::encode(header_length, out).map_err(|_| EncodeError::PayloadTooLarge)?;
+  Ok(())
+}
+
+fn payload_length(header_length: usize, data_length: usize) -> Result<u64, EncodeError> {
+  let header_length = u64::try_from(header_length).map_err(|_| EncodeError::PayloadTooLarge)?;
+  let data_length = u64::try_from(data_length).map_err(|_| EncodeError::PayloadTooLarge)?;
+  varint_length(header_length)
+    .checked_add(header_length)
+    .and_then(|length| length.checked_add(data_length))
+    .filter(|length| *length <= MAX_VARINT)
+    .ok_or(EncodeError::PayloadTooLarge)
 }
 
 /// How many bytes the shortest varint for `value` takes (§5.1).

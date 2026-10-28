@@ -1,0 +1,113 @@
+{
+  "$schema": "../schema/frames.schema.json",
+  "group": "typed",
+  "note": "Frames checked against the typed frame model: field rules, data section rules and flags.",
+  "cases": [
+    {
+      "id": "ping-data-8-bytes-wt",
+      "spec": ["5.2", "7.4"],
+      "note": "PING carrying the largest data section allowed, 8 opaque bytes.",
+      "binding": "wt",
+      "direction": "both",
+      "hex": "04 00 09 00 01 02 03 04 05 06 07 08",
+      "frames": [
+        {
+          "type": 4,
+          "name": "PING",
+          "flags": 0,
+          "header": null,
+          "data": null,
+          "data_hex": "01 02 03 04 05 06 07 08"
+        }
+      ]
+    },
+    {
+      "id": "ping-flags-01-wt",
+      "spec": ["5.2"],
+      "note": "PING with reserved flag bit 0x01 set. Receivers ignore unknown flag bits and process it as a PING; encoders write 0.",
+      "binding": "wt",
+      "direction": "decode",
+      "hex": "04 01 01 00",
+      "frames": [
+        {
+          "type": 4,
+          "name": "PING",
+          "flags": 1,
+          "header": null,
+          "data": null
+        }
+      ]
+    },
+    {
+      "id": "ping-flags-ff-wt",
+      "spec": ["5.2"],
+      "note": "PING with every flag bit set. Receivers ignore unknown flag bits and process it as a PING; encoders write 0.",
+      "binding": "wt",
+      "direction": "decode",
+      "hex": "04 ff 01 00",
+      "frames": [
+        {
+          "type": 4,
+          "name": "PING",
+          "flags": 255,
+          "header": null,
+          "data": null
+        }
+      ]
+    },
+    {
+      "id": "ping-data-9-bytes-wt",
+      "spec": ["7.4"],
+      "note": "PING whose data section is 9 bytes, one over the limit.",
+      "binding": "wt",
+      "direction": "decode",
+      "hex": "04 00 0a 00 01 02 03 04 05 06 07 08 09",
+      "error": {"code": "PROTOCOL_ERROR", "reason": "heartbeat data over 8 bytes"}
+    },
+    {
+      "id": "end-with-data-wt",
+      "spec": ["8.3"],
+      "note": "END with a one-byte data section. END's data section is empty.",
+      "binding": "wt",
+      "direction": "decode",
+      "hex": "12 00 02 00 01",
+      "error": {"code": "PROTOCOL_ERROR", "reason": "data section on a frame type without one"}
+    },
+    {
+      "id": "call-text-header-key-wt",
+      "spec": ["5.4.1"],
+      "note": "CALL whose header map has the text key \"a\" next to method (2) and shape (5). Only nested meta maps may have text keys.",
+      "binding": "wt",
+      "direction": "decode",
+      "hex": "10 00 0a 09 a3 02 61 6d 05 00 61 61 01",
+      "error": {"code": "PROTOCOL_ERROR", "reason": "text key in header map"}
+    },
+    {
+      "id": "end-meta-name-uppercase-wt",
+      "spec": ["8.7", "5.4.1"],
+      "note": "END carrying meta {\"A\": \"\"}. Metadata names are lowercase ASCII [a-z0-9-].",
+      "binding": "wt",
+      "direction": "decode",
+      "hex": "12 00 07 06 a1 03 a1 61 41 60",
+      "error": {"code": "PROTOCOL_ERROR", "reason": "metadata name outside the grammar"}
+    },
+    {
+      "id": "welcome-limits-without-max-subs-wt",
+      "spec": ["7.2"],
+      "note": "WELCOME whose limits map has max_calls, max_frame and max_dgram but no max_subs (50).",
+      "binding": "wt",
+      "direction": "decode",
+      "hex": "02 00 29 28 a7 0f 01 11 64 63 62 6f 72 12 80 13 61 73 15 a3 18 30 18 64 18 31 1a 00 01 00 00 18 33 19 04 b0 16 19 3a 98 17 19 af c8",
+      "error": {"code": "PROTOCOL_ERROR", "reason": "limits without max_subs"}
+    },
+    {
+      "id": "welcome-max-frame-below-floor-wt",
+      "spec": ["4.1", "7.2"],
+      "note": "WELCOME advertising limits.max_frame (key 49) of 1024 bytes. A server never advertises max_frame or window below 64 KiB.",
+      "binding": "wt",
+      "direction": "decode",
+      "hex": "02 00 2a 29 a7 0f 01 11 64 63 62 6f 72 12 80 13 61 73 15 a4 18 30 18 64 18 31 19 04 00 18 32 0a 18 33 19 04 b0 16 19 3a 98 17 19 af c8",
+      "error": {"code": "PROTOCOL_ERROR", "reason": "max_frame below 64 KiB"}
+    }
+  ]
+}

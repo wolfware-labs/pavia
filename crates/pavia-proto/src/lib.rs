@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod error;
+pub mod frame;
 pub mod registry;
 
 #[cfg(not(fuzzing))]

@@ -2,6 +2,7 @@
 //! the outcome each one calls for: end the session with a close code, fail one call or request
 //! with a status code, or ignore the frame.
 
+use crate::frame::{FieldError, FrameError};
 use crate::registry::{CloseCode, StatusCode};
 use thiserror::Error;
 
@@ -27,6 +28,12 @@ pub enum ProtocolError {
   /// A header section that is not a well-formed map (§5.4.1).
   #[error("malformed header section")]
   MalformedHeader,
+  /// A PING or PONG whose data section is longer than 8 bytes (§7.4).
+  #[error("heartbeat data section longer than 8 bytes")]
+  HeartbeatTooLarge,
+  /// A non-empty data section on a frame type that has none, such as END (§8.3).
+  #[error("data section on a frame type without one")]
+  UnexpectedDataSection,
   /// An unknown must-understand type (`0x00` to `0x7F`), or a known type where it is not allowed (§5.6).
   #[error("frame type not allowed here")]
   FrameTypeNotAllowed,
@@ -190,6 +197,25 @@ impl From<ErrorStatus> for StatusCode {
   }
 }
 
+/// A typed frame that does not decode is a protocol error. A bad field of a control request that
+/// carries a `rid` fails only that request (§7.9); any other bad field ends the session.
+impl From<FrameError> for ProtocolError {
+  fn from(error: FrameError) -> Self {
+    match error {
+      FrameError::UnknownType(_) => Self::FrameTypeNotAllowed,
+      FrameError::MalformedHeader => Self::MalformedHeader,
+      FrameError::UnexpectedData => Self::UnexpectedDataSection,
+      FrameError::HeartbeatTooLarge(_) => Self::HeartbeatTooLarge,
+      FrameError::Field(FieldError {
+        frame_type,
+        rid: Some(rid),
+        ..
+      }) if frame_type.is_control_request() => Self::InvalidControlRequestField { rid },
+      FrameError::Field(_) => Self::InvalidHeaderField,
+    }
+  }
+}
+
 impl ProtocolError {
   /// The outcome the spec prescribes for this error. Classifying only; the driver acts on it.
   pub fn outcome(&self) -> Outcome {
@@ -200,6 +226,8 @@ impl ProtocolError {
       | Self::MessageTooLarge
       | Self::LeftoverBytes
       | Self::MalformedHeader
+      | Self::HeartbeatTooLarge
+      | Self::UnexpectedDataSection
       | Self::FrameTypeNotAllowed
       | Self::StreamIdOutOfOrder
       | Self::FrameAfterTerminalFrame
@@ -267,6 +295,8 @@ mod tests {
       (ProtocolError::MessageTooLarge, CloseCode::ProtocolError),
       (ProtocolError::LeftoverBytes, CloseCode::ProtocolError),
       (ProtocolError::MalformedHeader, CloseCode::ProtocolError),
+      (ProtocolError::HeartbeatTooLarge, CloseCode::ProtocolError),
+      (ProtocolError::UnexpectedDataSection, CloseCode::ProtocolError),
       (ProtocolError::FrameTypeNotAllowed, CloseCode::ProtocolError),
       (ProtocolError::StreamIdOutOfOrder, CloseCode::ProtocolError),
       (ProtocolError::FrameAfterTerminalFrame, CloseCode::ProtocolError),
