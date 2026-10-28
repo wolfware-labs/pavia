@@ -1,4 +1,9 @@
 #[cfg(not(fuzzing))]
+#[cfg_attr(not(test), expect(dead_code, reason = "used by the WebSocket session from #24 onwards"))]
+mod envelope;
+#[cfg(fuzzing)]
+pub mod envelope;
+#[cfg(not(fuzzing))]
 #[cfg_attr(not(test), expect(dead_code, reason = "used by the session from #24 onwards"))]
 mod frame;
 #[cfg(fuzzing)]
