@@ -112,7 +112,7 @@ fn keeps_the_two_initiators_apart() {
   let mut ids = server();
   ids.receive(8, OPENING).unwrap();
   assert_eq!(ids.open_next(), Some(1));
-  assert_eq!(ids.receive(2, OPENING).ok(), None);
+  assert_rejects(&mut ids, 2, OPENING, &ProtocolError::StreamIdOutOfOrder);
   assert_eq!(ids.receive(10, OPENING).ok(), Some(Admitted::Opened));
 }
 

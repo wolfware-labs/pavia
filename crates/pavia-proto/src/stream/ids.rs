@@ -22,8 +22,8 @@ pub enum Admitted {
 /// The stream IDs of one WebSocket transport, seen from one side (§6.1).
 ///
 /// It keeps the highest ID each side opened and the set of streams open now, nothing about
-/// closed or skipped IDs, so its size follows the open streams only. A new transport, including
-/// one that resumes a session, starts with a new tracker (§7.8).
+/// closed or skipped IDs, so its size is bounded by the most streams open at once. A new
+/// transport, including one that resumes a session, starts with a new tracker (§7.8).
 #[derive(Debug, Clone)]
 pub struct StreamIds {
   local: Side,
@@ -67,7 +67,7 @@ impl StreamIds {
   /// - [`ProtocolError::StreamIdOutOfOrder`] for an opening frame at or below the peer's highest
   ///   opened ID, or any other frame above the initiator's highest opened ID.
   /// - [`ProtocolError::FrameOnClosedStream`] for any other frame at or below that ID on a stream
-  ///   that is not open, closed or skipped. The receiver ignores it.
+  ///   that is not open (closed or skipped). The receiver ignores it.
   pub fn receive(&mut self, stream_id: u64, opening: bool) -> Result<Admitted, ProtocolError> {
     if stream_id == 0 {
       return Ok(Admitted::Control);
@@ -116,7 +116,11 @@ const fn first_id(side: Side) -> u64 {
 }
 
 const fn initiator(stream_id: u64) -> Side {
-  if stream_id.is_multiple_of(2) { Side::Client } else { Side::Server }
+  if stream_id.is_multiple_of(2) {
+    Side::Client
+  } else {
+    Side::Server
+  }
 }
 
 #[cfg(test)]
