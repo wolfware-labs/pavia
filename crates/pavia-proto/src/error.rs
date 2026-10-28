@@ -41,6 +41,10 @@ pub enum ProtocolError {
   /// initiator's highest opened ID, or a non-opening frame above it. Gaps between IDs are allowed.
   #[error("stream id out of order")]
   StreamIdOutOfOrder,
+  /// An opening frame from the peer on a stream ID with this side's parity (§6.1): even IDs belong
+  /// to the client, odd IDs to the server.
+  #[error("stream id has the wrong parity for its initiator")]
+  StreamIdWrongParity,
   /// A frame on a half that already sent its terminal frame (§6.3).
   #[error("frame after the terminal frame of its half")]
   FrameAfterTerminalFrame,
@@ -230,6 +234,7 @@ impl ProtocolError {
       | Self::UnexpectedDataSection
       | Self::FrameTypeNotAllowed
       | Self::StreamIdOutOfOrder
+      | Self::StreamIdWrongParity
       | Self::FrameAfterTerminalFrame
       | Self::ItemBeyondCreditWindow => Outcome::SessionFatal(CloseCode::ProtocolError),
       Self::StreamRateExceeded => Outcome::SessionFatal(CloseCode::LimitExceeded),
@@ -299,6 +304,7 @@ mod tests {
       (ProtocolError::UnexpectedDataSection, CloseCode::ProtocolError),
       (ProtocolError::FrameTypeNotAllowed, CloseCode::ProtocolError),
       (ProtocolError::StreamIdOutOfOrder, CloseCode::ProtocolError),
+      (ProtocolError::StreamIdWrongParity, CloseCode::ProtocolError),
       (ProtocolError::FrameAfterTerminalFrame, CloseCode::ProtocolError),
       (ProtocolError::ItemBeyondCreditWindow, CloseCode::ProtocolError),
       (ProtocolError::StreamRateExceeded, CloseCode::LimitExceeded),
