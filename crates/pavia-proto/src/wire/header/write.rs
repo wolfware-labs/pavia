@@ -5,6 +5,7 @@
 //! its Length prefix before the header without buffering it.
 
 use bytes::BufMut;
+use half::f16;
 
 pub(super) const UNSIGNED: u8 = 0;
 pub(super) const BYTES: u8 = 2;
@@ -68,6 +69,29 @@ pub trait Sink {
   /// Writes the head of a map of `len` entries; the keys and values follow, keys sorted.
   fn map(&mut self, len: u64) {
     self.head(MAP, len);
+  }
+
+  /// Writes the shortest of half, single and double precision that keeps `x` exactly, and NaN as
+  /// the half-precision `f9 7e 00` (RFC 8949 §4.2.1, §4.2.2).
+  fn float(&mut self, x: f64) {
+    if x.is_nan() {
+      self.put(&[0xf9, 0x7e, 0x00]);
+      return;
+    }
+    let half = f16::from_f64(x);
+    if half.to_f64().to_bits() == x.to_bits() {
+      self.put(&[0xf9]);
+      self.put(&half.to_bits().to_be_bytes());
+      return;
+    }
+    let single = x as f32;
+    if f64::from(single).to_bits() == x.to_bits() {
+      self.put(&[0xfa]);
+      self.put(&single.to_bits().to_be_bytes());
+      return;
+    }
+    self.put(&[0xfb]);
+    self.put(&x.to_bits().to_be_bytes());
   }
 }
 
