@@ -48,6 +48,10 @@ pub enum ProtocolError {
   /// A frame on a half that already sent its terminal frame (§6.3).
   #[error("frame after the terminal frame of its half")]
   FrameAfterTerminalFrame,
+  /// ITEM, END or RESULT from the callee that the call's shape does not use: RESULT on a
+  /// streaming response, END or ITEM on a unary or client-stream response (§6.3).
+  #[error("frame not allowed for the call shape")]
+  FrameNotAllowedInShape,
   /// An ITEM the sender had no credit for (§6.4).
   #[error("ITEM beyond the credit window")]
   ItemBeyondCreditWindow,
@@ -236,6 +240,7 @@ impl ProtocolError {
       | Self::StreamIdOutOfOrder
       | Self::StreamIdWrongParity
       | Self::FrameAfterTerminalFrame
+      | Self::FrameNotAllowedInShape
       | Self::ItemBeyondCreditWindow => Outcome::SessionFatal(CloseCode::ProtocolError),
       Self::StreamRateExceeded => Outcome::SessionFatal(CloseCode::LimitExceeded),
       Self::UnknownExtensionFrameType | Self::FrameOnClosedStream | Self::FrameAfterCallCompleted => {
@@ -306,6 +311,7 @@ mod tests {
       (ProtocolError::StreamIdOutOfOrder, CloseCode::ProtocolError),
       (ProtocolError::StreamIdWrongParity, CloseCode::ProtocolError),
       (ProtocolError::FrameAfterTerminalFrame, CloseCode::ProtocolError),
+      (ProtocolError::FrameNotAllowedInShape, CloseCode::ProtocolError),
       (ProtocolError::ItemBeyondCreditWindow, CloseCode::ProtocolError),
       (ProtocolError::StreamRateExceeded, CloseCode::LimitExceeded),
     ];
