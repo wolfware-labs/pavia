@@ -1,8 +1,14 @@
 use proptest::prelude::*;
 
-use super::{Codec, DecodeError, EncodeError, MAX_DEPTH, Value, decode, encode};
+use super::{Codec, DecodeError, DecodeLimits, EncodeError, Value, encode};
 use crate::error::{DataSection, ErrorStatus, Outcome, ProtocolError};
 use crate::registry::StatusCode;
+
+const MAX_DEPTH: usize = 16;
+
+fn decode(data: &[u8], codec: Codec) -> Result<Value, DecodeError> {
+  super::decode(data, codec, &DecodeLimits::default())
+}
 
 fn hex(text: &str) -> Vec<u8> {
   text
@@ -223,6 +229,23 @@ fn limits_nesting_depth_in_both_codecs() {
   tags.push(0x00);
   assert_eq!(decode(&tags, Codec::Cbor), Err(DecodeError::TooDeep));
   assert_eq!(decode(&vec![0x81; 100_000], Codec::Cbor), Err(DecodeError::TooDeep));
+  assert_eq!(decode("[".repeat(100_000).as_bytes(), Codec::Json), Err(DecodeError::TooDeep));
+}
+
+#[test]
+fn takes_the_depth_limit_from_the_caller() {
+  let limits = DecodeLimits { max_depth: 2 };
+  assert!(super::decode(&nested_cbor(2), Codec::Cbor, &limits).is_ok());
+  assert_eq!(
+    super::decode(&nested_cbor(3), Codec::Cbor, &limits),
+    Err(DecodeError::TooDeep)
+  );
+  assert!(super::decode(nested_json(2).as_bytes(), Codec::Json, &limits).is_ok());
+  assert_eq!(
+    super::decode(nested_json(3).as_bytes(), Codec::Json, &limits),
+    Err(DecodeError::TooDeep)
+  );
+  assert_eq!(DecodeLimits::default().max_depth, MAX_DEPTH);
 }
 
 #[test]

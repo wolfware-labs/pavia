@@ -2,7 +2,7 @@ use bytes::BufMut;
 use minicbor::Decoder;
 use minicbor::data::Type;
 
-use super::{DecodeError, EncodeError, MAX_DEPTH, Value};
+use super::{DecodeError, EncodeError, Value};
 use crate::wire::header::{Out, Sink};
 
 const NEGATIVE: u8 = 1;
@@ -10,9 +10,9 @@ const TAG: u8 = 6;
 const SIMPLE: u8 = 7;
 const BREAK: u8 = 0xff;
 
-pub(super) fn decode(data: &[u8]) -> Result<Value, DecodeError> {
+pub(super) fn decode(data: &[u8], max_depth: usize) -> Result<Value, DecodeError> {
   let mut decoder = Decoder::new(data);
-  let value = item(&mut decoder, 0)?;
+  let value = item(&mut decoder, 0, max_depth)?;
   if decoder.position() < data.len() {
     return Err(DecodeError::TrailingBytes);
   }
@@ -25,16 +25,16 @@ pub(super) fn encode(value: &Value, out: &mut impl BufMut) -> Result<(), EncodeE
   Ok(())
 }
 
-fn nested(parent: usize) -> Result<usize, DecodeError> {
+fn nested(parent: usize, max_depth: usize) -> Result<usize, DecodeError> {
   let depth = parent + 1;
-  if depth > MAX_DEPTH {
+  if depth > max_depth {
     Err(DecodeError::TooDeep)
   } else {
     Ok(depth)
   }
 }
 
-fn item(decoder: &mut Decoder<'_>, parent: usize) -> Result<Value, DecodeError> {
+fn item(decoder: &mut Decoder<'_>, parent: usize, max_depth: usize) -> Result<Value, DecodeError> {
   let malformed = |_| DecodeError::Malformed;
   match decoder.datatype().map_err(malformed)? {
     Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::Int => {
@@ -70,29 +70,29 @@ fn item(decoder: &mut Decoder<'_>, parent: usize) -> Result<Value, DecodeError> 
       Ok(Value::Text(text))
     }
     Type::Array | Type::ArrayIndef => {
-      let depth = nested(parent)?;
+      let depth = nested(parent, max_depth)?;
       let length = decoder.array().map_err(malformed)?;
       let mut items = Vec::with_capacity(capacity_hint(decoder, length));
       while more(decoder, length, items.len())? {
-        items.push(item(decoder, depth)?);
+        items.push(item(decoder, depth, max_depth)?);
       }
       Ok(Value::Array(items))
     }
     Type::Map | Type::MapIndef => {
-      let depth = nested(parent)?;
+      let depth = nested(parent, max_depth)?;
       let length = decoder.map().map_err(malformed)?;
       let mut entries = Vec::with_capacity(capacity_hint(decoder, length));
       while more(decoder, length, entries.len())? {
-        let key = item(decoder, depth)?;
-        let value = item(decoder, depth)?;
+        let key = item(decoder, depth, max_depth)?;
+        let value = item(decoder, depth, max_depth)?;
         entries.push((key, value));
       }
       Ok(Value::Map(entries))
     }
     Type::Tag => {
-      let depth = nested(parent)?;
+      let depth = nested(parent, max_depth)?;
       let tag = decoder.tag().map_err(malformed)?;
-      Ok(Value::Tag(tag.as_u64(), Box::new(item(decoder, depth)?)))
+      Ok(Value::Tag(tag.as_u64(), Box::new(item(decoder, depth, max_depth)?)))
     }
     Type::Break | Type::Unknown(_) => Err(DecodeError::Malformed),
   }

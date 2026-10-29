@@ -15,9 +15,21 @@ use thiserror::Error;
 mod cbor;
 mod json;
 
-/// How deep a data section may nest (§12.3, the same limit as headers in §5.4.1). The outermost
-/// array, map or tag has depth 1 and every one inside it adds one; other items add nothing.
-pub const MAX_DEPTH: usize = 16;
+/// Limits a data-section decoder enforces on input from the peer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecodeLimits {
+  /// How deep a value may nest (§12.3, the same limit as headers in §5.4.1). The outermost array,
+  /// map or tag has depth 1 and every one inside it adds one; other items add nothing. Tags count
+  /// so that a chain of them cannot recurse without bound.
+  pub max_depth: usize,
+}
+
+impl Default for DecodeLimits {
+  /// A depth of 16, the protocol default.
+  fn default() -> Self {
+    Self { max_depth: 16 }
+  }
+}
 
 /// The session codec, chosen in the handshake (§5.5, §7.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -93,7 +105,7 @@ pub enum DecodeError {
   /// Bytes follow the single item.
   #[error("bytes after the data section's value")]
   TrailingBytes,
-  /// The value nests deeper than [`MAX_DEPTH`].
+  /// The value nests deeper than [`DecodeLimits::max_depth`].
   #[error("data section nests deeper than the depth limit")]
   TooDeep,
   /// A `json` data section that is not valid UTF-8 (§12.3).
@@ -117,16 +129,16 @@ pub enum EncodeError {
   NotJson,
 }
 
-/// Decodes one data section in `codec`.
+/// Decodes one data section in `codec`, within `limits`.
 ///
 /// # Errors
 ///
-/// Returns a [`DecodeError`] for input that is not exactly one value of `codec` within
-/// [`MAX_DEPTH`], or `json` that breaks the rules of §12.3.
-pub fn decode(data: &[u8], codec: Codec) -> Result<Value, DecodeError> {
+/// Returns a [`DecodeError`] for input that is not exactly one value of `codec` within `limits`,
+/// or `json` that breaks the rules of §12.3.
+pub fn decode(data: &[u8], codec: Codec, limits: &DecodeLimits) -> Result<Value, DecodeError> {
   match codec {
-    Codec::Cbor => cbor::decode(data),
-    Codec::Json => json::decode(data),
+    Codec::Cbor => cbor::decode(data, limits.max_depth),
+    Codec::Json => json::decode(data, limits.max_depth),
   }
 }
 
