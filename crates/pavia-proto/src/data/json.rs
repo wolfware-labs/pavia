@@ -28,10 +28,26 @@ pub(super) fn decode(data: &[u8], max_depth: usize) -> Result<Value, DecodeError
 }
 
 pub(super) fn encode(value: &Value, out: &mut impl BufMut) -> Result<(), EncodeError> {
-  let mut text = Vec::new();
-  write(value, &mut text)?;
-  out.put_slice(&text);
-  Ok(())
+  write(value, &mut Discard)?;
+  write(value, &mut Out(out))
+}
+
+trait Text {
+  fn put(&mut self, bytes: &[u8]);
+}
+
+struct Discard;
+
+impl Text for Discard {
+  fn put(&mut self, _: &[u8]) {}
+}
+
+struct Out<'b, B: BufMut>(&'b mut B);
+
+impl<B: BufMut> Text for Out<'_, B> {
+  fn put(&mut self, bytes: &[u8]) {
+    self.0.put_slice(bytes);
+  }
 }
 
 #[derive(Clone, Copy)]
@@ -126,27 +142,27 @@ impl<'de> Visitor<'de> for JsonVisitor {
   }
 }
 
-fn write(value: &Value, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+fn write(value: &Value, out: &mut impl Text) -> Result<(), EncodeError> {
   match value {
-    Value::Null => out.extend_from_slice(b"null"),
-    Value::Bool(b) => out.extend_from_slice(if *b { b"true" } else { b"false" }),
-    Value::Unsigned(n) => out.extend_from_slice(n.to_string().as_bytes()),
-    Value::Negative(n) => out.extend_from_slice(format!("-{}", u128::from(*n) + 1).as_bytes()),
-    Value::Float(x) if x.is_finite() => out.extend_from_slice(ryu_js::Buffer::new().format_finite(*x).as_bytes()),
+    Value::Null => out.put(b"null"),
+    Value::Bool(b) => out.put(if *b { b"true" } else { b"false" }),
+    Value::Unsigned(n) => out.put(n.to_string().as_bytes()),
+    Value::Negative(n) => out.put(format!("-{}", u128::from(*n) + 1).as_bytes()),
+    Value::Float(x) if x.is_finite() => out.put(ryu_js::Buffer::new().format_finite(*x).as_bytes()),
     Value::Text(text) => write_string(text, out),
     Value::Array(items) => {
-      out.push(b'[');
+      out.put(b"[");
       for (index, item) in items.iter().enumerate() {
         if index > 0 {
-          out.push(b',');
+          out.put(b",");
         }
         write(item, out)?;
       }
-      out.push(b']');
+      out.put(b"]");
     }
     Value::Map(entries) => {
       let mut keys = HashSet::new();
-      out.push(b'{');
+      out.put(b"{");
       for (index, (key, value)) in entries.iter().enumerate() {
         let Value::Text(key) = key else {
           return Err(EncodeError::NotJson);
@@ -155,13 +171,13 @@ fn write(value: &Value, out: &mut Vec<u8>) -> Result<(), EncodeError> {
           return Err(EncodeError::NotJson);
         }
         if index > 0 {
-          out.push(b',');
+          out.put(b",");
         }
         write_string(key, out);
-        out.push(b':');
+        out.put(b":");
         write(value, out)?;
       }
-      out.push(b'}');
+      out.put(b"}");
     }
     Value::Float(_) | Value::Undefined | Value::Bytes(_) | Value::Tag(..) | Value::Simple(_) => {
       return Err(EncodeError::NotJson);
@@ -170,25 +186,25 @@ fn write(value: &Value, out: &mut Vec<u8>) -> Result<(), EncodeError> {
   Ok(())
 }
 
-fn write_string(text: &str, out: &mut Vec<u8>) {
-  out.push(b'"');
+fn write_string(text: &str, out: &mut impl Text) {
+  out.put(b"\"");
   for c in text.chars() {
     match c {
-      '"' => out.extend_from_slice(b"\\\""),
-      '\\' => out.extend_from_slice(b"\\\\"),
-      '\u{08}' => out.extend_from_slice(b"\\b"),
-      '\u{09}' => out.extend_from_slice(b"\\t"),
-      '\u{0a}' => out.extend_from_slice(b"\\n"),
-      '\u{0c}' => out.extend_from_slice(b"\\f"),
-      '\u{0d}' => out.extend_from_slice(b"\\r"),
-      '\u{00}'..='\u{1f}' => out.extend_from_slice(format!("\\u{:04x}", u32::from(c)).as_bytes()),
+      '"' => out.put(b"\\\""),
+      '\\' => out.put(b"\\\\"),
+      '\u{08}' => out.put(b"\\b"),
+      '\u{09}' => out.put(b"\\t"),
+      '\u{0a}' => out.put(b"\\n"),
+      '\u{0c}' => out.put(b"\\f"),
+      '\u{0d}' => out.put(b"\\r"),
+      '\u{00}'..='\u{1f}' => out.put(format!("\\u{:04x}", u32::from(c)).as_bytes()),
       _ => {
         let mut buffer = [0; 4];
-        out.extend_from_slice(c.encode_utf8(&mut buffer).as_bytes());
+        out.put(c.encode_utf8(&mut buffer).as_bytes());
       }
     }
   }
-  out.push(b'"');
+  out.put(b"\"");
 }
 
 #[cfg(test)]
