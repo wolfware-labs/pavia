@@ -9,6 +9,7 @@ const NEGATIVE: u8 = 1;
 const TAG: u8 = 6;
 const SIMPLE: u8 = 7;
 const BREAK: u8 = 0xff;
+const MAX_PREALLOCATED: u64 = 1024;
 
 pub(super) fn decode(data: &[u8], max_depth: usize) -> Result<Value, DecodeError> {
   let mut decoder = Decoder::new(data);
@@ -72,7 +73,7 @@ fn item(decoder: &mut Decoder<'_>, parent: usize, max_depth: usize) -> Result<Va
     Type::Array | Type::ArrayIndef => {
       let depth = nested(parent, max_depth)?;
       let length = decoder.array().map_err(malformed)?;
-      let mut items = Vec::with_capacity(capacity_hint(decoder, length));
+      let mut items = Vec::with_capacity(capacity_for(decoder, length, 1)?);
       while more(decoder, length, items.len())? {
         items.push(item(decoder, depth, max_depth)?);
       }
@@ -81,7 +82,7 @@ fn item(decoder: &mut Decoder<'_>, parent: usize, max_depth: usize) -> Result<Va
     Type::Map | Type::MapIndef => {
       let depth = nested(parent, max_depth)?;
       let length = decoder.map().map_err(malformed)?;
-      let mut entries = Vec::with_capacity(capacity_hint(decoder, length));
+      let mut entries = Vec::with_capacity(capacity_for(decoder, length, 2)?);
       while more(decoder, length, entries.len())? {
         let key = item(decoder, depth, max_depth)?;
         let value = item(decoder, depth, max_depth)?;
@@ -122,11 +123,15 @@ fn more(decoder: &mut Decoder<'_>, length: Option<u64>, read: usize) -> Result<b
   }
 }
 
-fn capacity_hint(decoder: &Decoder<'_>, length: Option<u64>) -> usize {
-  let remaining = decoder.input().len() - decoder.position();
-  length.map_or(0, |length| {
-    usize::try_from(length).map_or(remaining, |length| length.min(remaining))
-  })
+fn capacity_for(decoder: &Decoder<'_>, length: Option<u64>, bytes_per_item: u64) -> Result<usize, DecodeError> {
+  let Some(length) = length else {
+    return Ok(0);
+  };
+  let remaining = (decoder.input().len() - decoder.position()) as u64;
+  if length > remaining / bytes_per_item {
+    return Err(DecodeError::Malformed);
+  }
+  Ok(usize::try_from(length.min(MAX_PREALLOCATED)).unwrap_or(0))
 }
 
 fn check(value: &Value) -> Result<(), EncodeError> {

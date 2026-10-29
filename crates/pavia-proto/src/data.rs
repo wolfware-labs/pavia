@@ -124,7 +124,7 @@ pub enum EncodeError {
   #[error("simple value 20 to 31 has another form or none")]
   ReservedSimpleValue,
   /// `json` has no form for byte strings, tags, `undefined`, simple values, map keys that are not
-  /// text, NaN or infinities.
+  /// text or repeat, NaN or infinities.
   #[error("value has no json form")]
   NotJson,
 }

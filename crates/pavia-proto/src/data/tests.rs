@@ -176,6 +176,9 @@ fn rejects_cbor_that_is_not_exactly_one_item() {
     ("9f 01", DecodeError::Malformed),
     ("f8 18", DecodeError::Malformed),
     ("1c", DecodeError::Malformed),
+    ("9b ff ff ff ff ff ff ff ff", DecodeError::Malformed),
+    ("83 01 02", DecodeError::Malformed),
+    ("a2 01 02 03", DecodeError::Malformed),
     ("62 ff fe", DecodeError::Malformed),
   ];
   for (input, expected) in cases {
@@ -193,6 +196,7 @@ fn refuses_values_a_codec_cannot_carry() {
     Value::Float(f64::NAN),
     Value::Float(f64::INFINITY),
     Value::Map(vec![(Value::Unsigned(1), Value::Null)]),
+    Value::Map(vec![(text("a"), Value::Null), (text("a"), Value::Null)]),
   ] {
     let mut out = Vec::new();
     assert_eq!(encode(&value, Codec::Json, &mut out), Err(EncodeError::NotJson), "{value:?}");

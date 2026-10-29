@@ -145,11 +145,15 @@ fn write(value: &Value, out: &mut Vec<u8>) -> Result<(), EncodeError> {
       out.push(b']');
     }
     Value::Map(entries) => {
+      let mut keys = HashSet::new();
       out.push(b'{');
       for (index, (key, value)) in entries.iter().enumerate() {
         let Value::Text(key) = key else {
           return Err(EncodeError::NotJson);
         };
+        if !keys.insert(key.as_str()) {
+          return Err(EncodeError::NotJson);
+        }
         if index > 0 {
           out.push(b',');
         }
