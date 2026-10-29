@@ -1,6 +1,5 @@
 use super::Value;
 use bytes::BufMut;
-use half::f16;
 use std::cmp::Ordering;
 use thiserror::Error;
 
@@ -68,27 +67,7 @@ fn write_head(major_type: u8, argument: u64, buffer: &mut impl BufMut) {
 }
 
 fn write_float(x: f64, buffer: &mut impl BufMut) {
-  if x.is_nan() {
-    buffer.put_slice(&[0xf9, 0x7e, 0x00]);
-    return;
-  }
-
-  let half = f16::from_f64(x);
-  if half.to_f64().to_bits() == x.to_bits() {
-    buffer.put_u8(0xf9);
-    buffer.put_u16(half.to_bits());
-    return;
-  }
-
-  let single = x as f32;
-  if f64::from(single).to_bits() == x.to_bits() {
-    buffer.put_u8(0xfa);
-    buffer.put_u32(single.to_bits());
-    return;
-  }
-
-  buffer.put_u8(0xfb);
-  buffer.put_u64(x.to_bits());
+  Out(buffer).float(x);
 }
 
 fn write_array(items: &[Value<'_>], buffer: &mut impl BufMut) -> Result<(), EncodeError> {
