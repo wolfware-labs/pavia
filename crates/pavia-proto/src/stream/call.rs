@@ -137,6 +137,10 @@ impl CallState {
 
   /// Applies one frame on this stream, sent by `sender`.
   ///
+  /// CANCEL is accepted until the call is complete. On a bidirectional call the caller may cancel
+  /// after the callee's END, which completes the call (§6.3); the callee then has nothing to
+  /// answer, since [`response_open`](Self::response_open) is false (§8.5).
+  ///
   /// # Errors
   ///
   /// - [`ProtocolError::FrameAfterCallCompleted`] once the call is complete; the frame is dropped.
