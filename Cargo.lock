@@ -474,11 +474,14 @@ name = "pavia-server"
 version = "0.1.0-alpha.0"
 dependencies = [
  "bytes",
+ "ciborium",
  "futures-util",
  "http-body-util",
  "hyper",
  "hyper-util",
  "pavia-proto",
+ "pavia-vectors",
+ "serde_json",
  "thiserror",
  "tokio",
  "tokio-tungstenite",

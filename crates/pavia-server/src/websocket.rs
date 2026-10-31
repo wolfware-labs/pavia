@@ -89,6 +89,11 @@ where
     }
   }
 
+  /// The configuration this endpoint was built with.
+  pub fn config(&self) -> &Config {
+    &self.config
+  }
+
   /// Accepts connections on `listener` until accepting fails, serving each on its own task.
   ///
   /// This serves plain `ws://`. Spec §4.1 allows that only on loopback for development; anywhere
