@@ -10,6 +10,9 @@ use crate::frame::FrameType;
 #[cfg_attr(not(test), expect(dead_code, reason = "used by the WebSocket session from #24 onwards"))]
 pub(crate) mod ids;
 
+#[cfg_attr(not(test), expect(dead_code, reason = "used by the session from #24 onwards"))]
+pub(crate) mod call;
+
 /// The transport a session runs on (§4.2, §4.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Binding {
