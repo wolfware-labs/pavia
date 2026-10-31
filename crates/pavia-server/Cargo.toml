@@ -20,4 +20,4 @@ tokio = { workspace = true, features = ["net", "rt"] }
 tokio-tungstenite.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["io-util", "macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["io-util", "macros", "rt-multi-thread", "sync"] }

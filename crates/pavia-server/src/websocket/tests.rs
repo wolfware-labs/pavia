@@ -83,6 +83,10 @@ fn selected(response: &Response) -> Vec<&str> {
 
 async fn raw(request: &str) -> String {
   let mut stream = TcpStream::connect(listen().await).await.unwrap();
+  head(&mut stream, request).await
+}
+
+async fn head(stream: &mut TcpStream, request: &str) -> String {
   stream.write_all(request.as_bytes()).await.unwrap();
   let mut response = Vec::new();
   while !response.ends_with(b"\r\n\r\n") {
@@ -228,4 +232,50 @@ fn checks_the_key_shape() {
   assert!(!is_key(b"dGhlIHNhbXBsZSBub25jZQ="));
   assert!(!is_key(b"dGhlIHNhbXBsZSBub25jZ$=="));
   assert!(!is_key(b"dGhlIHNhbXBsZSBub25jZQ.="));
+}
+
+async fn first_recv(client: impl AsyncFnOnce(SocketAddr)) -> Option<bool> {
+  let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+  let endpoint = Endpoint::new(Config::new(PATH), move |mut transport: Transport| {
+    let sender = sender.clone();
+    async move {
+      let _ = sender.send(transport.recv().await.map(|received| received.is_ok())).await;
+    }
+  });
+  let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+  let address = listener.local_addr().unwrap();
+  tokio::spawn(endpoint.serve(listener));
+  client(address).await;
+  receiver.recv().await.unwrap()
+}
+
+#[tokio::test]
+async fn ends_when_the_peer_closes() {
+  let received = first_recv(async |address| {
+    let stream = TcpStream::connect(address).await.unwrap();
+    let (mut socket, _) = upgrade(stream, PATH, &[SUBPROTOCOL]).await.unwrap();
+    socket.close(None).await.unwrap();
+  })
+  .await;
+  assert_eq!(received, None);
+}
+
+#[tokio::test]
+async fn reports_a_broken_frame_as_an_error() {
+  let received = first_recv(async |address| {
+    let mut stream = TcpStream::connect(address).await.unwrap();
+    let response = head(
+      &mut stream,
+      concat!(
+        "GET /rt HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n",
+        "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n",
+        "Sec-WebSocket-Protocol: pavia.1\r\n\r\n",
+      ),
+    )
+    .await;
+    assert!(response.starts_with("HTTP/1.1 101 "), "{response}");
+    stream.write_all(&[0x82, 0x01, 0x00]).await.unwrap();
+  })
+  .await;
+  assert_eq!(received, Some(false));
 }
