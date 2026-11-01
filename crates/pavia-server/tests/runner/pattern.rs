@@ -28,12 +28,9 @@ pub fn matches(pattern: &Diag, value: &Value, captures: &Captures) -> bool {
     (Diag::Map { entries, open }, Value::Map(values)) => {
       (*open || entries.len() == values.len())
         && entries.iter().all(|(key, item)| {
-          let Ok(key) = resolve(key, captures) else {
-            return false;
-          };
           values
             .iter()
-            .any(|(candidate, value)| *candidate == key && matches(item, value, captures))
+            .any(|(candidate, value)| matches(key, candidate, captures) && matches(item, value, captures))
         })
     }
     _ => false,

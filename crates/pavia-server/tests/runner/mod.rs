@@ -413,7 +413,7 @@ where
         }
       },
     };
-    let message = wire::encode(&frame);
+    let message = wire::encode(&frame)?;
     if self.socket.is_none() {
       self.socket = Some(self.connector.connect().await?);
       self.inbox.clear();
@@ -549,7 +549,7 @@ where
                 frame_type: PONG,
                 ..frame
               };
-              self.write(wire::encode(&pong)).await?;
+              self.write(wire::encode(&pong)?).await?;
             }
             PONG if keep != Some(PONG) => {}
             _ => self.inbox.push_back(frame),

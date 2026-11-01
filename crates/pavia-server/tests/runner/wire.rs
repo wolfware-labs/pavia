@@ -34,26 +34,26 @@ pub fn hex(bytes: &[u8]) -> String {
   bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-pub fn encode(frame: &Frame) -> Vec<u8> {
-  let mut header = Vec::new();
-  if let Some(value) = &frame.header {
-    ciborium::into_writer(value, &mut header).expect("a CBOR value always encodes");
-  }
+pub fn encode(frame: &Frame) -> Result<Vec<u8>, String> {
+  let header = frame.header.as_ref().map(cbor).unwrap_or_default();
   let mut payload = Vec::new();
-  put_varint(header.len() as u64, &mut payload);
+  put_varint(header.len() as u64, &mut payload)?;
   payload.extend_from_slice(&header);
   payload.extend_from_slice(&frame.data);
 
   let mut out = Vec::new();
-  put_varint(frame.stream, &mut out);
+  put_varint(frame.stream, &mut out)?;
   out.push(frame.frame_type);
   out.push(frame.flags);
-  put_varint(payload.len() as u64, &mut out);
+  put_varint(payload.len() as u64, &mut out)?;
   out.extend_from_slice(&payload);
-  out
+  Ok(out)
 }
 
 pub fn decode(mut message: &[u8]) -> Result<Vec<Frame>, String> {
+  if message.is_empty() {
+    return Err("an empty message holds no frame".into());
+  }
   let mut frames = Vec::new();
   while !message.is_empty() {
     let stream = take_varint(&mut message)?;
@@ -73,7 +73,7 @@ pub fn decode(mut message: &[u8]) -> Result<Vec<Frame>, String> {
     let header = if header.is_empty() {
       None
     } else {
-      Some(ciborium::from_reader::<Value, _>(header).map_err(|error| format!("header is not CBOR: {error}"))?)
+      Some(strict_header(header)?)
     };
     frames.push(Frame {
       stream,
@@ -86,13 +86,69 @@ pub fn decode(mut message: &[u8]) -> Result<Vec<Frame>, String> {
   Ok(frames)
 }
 
-fn put_varint(value: u64, out: &mut Vec<u8>) {
+/// Decodes a header the way a strict receiver reads what a sender MUST write (§5.4.1): one map,
+/// no tags, no duplicate keys, and exactly the bytes of its core deterministic encoding, which
+/// rules out indefinite lengths, longer integer and float forms, and keys out of order.
+fn strict_header(bytes: &[u8]) -> Result<Value, String> {
+  let value = ciborium::from_reader::<Value, _>(bytes).map_err(|error| format!("header is not CBOR: {error}"))?;
+  if !matches!(value, Value::Map(_)) {
+    return Err(format!("header is not a map: {value:?}"));
+  }
+  check_header_value(&value)?;
+  if cbor(&deterministic(&value)) != bytes {
+    return Err(format!("header is not in deterministic encoding: {}", hex(bytes)));
+  }
+  Ok(value)
+}
+
+fn check_header_value(value: &Value) -> Result<(), String> {
+  match value {
+    Value::Tag(..) => Err(format!("header holds a tag: {value:?}")),
+    Value::Array(items) => items.iter().try_for_each(check_header_value),
+    Value::Map(entries) => {
+      for (index, (key, item)) in entries.iter().enumerate() {
+        if entries[..index].iter().any(|(earlier, _)| earlier == key) {
+          return Err(format!("header repeats the key {key:?}"));
+        }
+        check_header_value(key)?;
+        check_header_value(item)?;
+      }
+      Ok(())
+    }
+    _ => Ok(()),
+  }
+}
+
+fn deterministic(value: &Value) -> Value {
+  match value {
+    Value::Array(items) => Value::Array(items.iter().map(deterministic).collect()),
+    Value::Map(entries) => {
+      let mut entries: Vec<(Value, Value)> = entries
+        .iter()
+        .map(|(key, item)| (deterministic(key), deterministic(item)))
+        .collect();
+      entries.sort_by_cached_key(|(key, _)| cbor(key));
+      Value::Map(entries)
+    }
+    other => other.clone(),
+  }
+}
+
+fn cbor(value: &Value) -> Vec<u8> {
+  let mut bytes = Vec::new();
+  ciborium::into_writer(value, &mut bytes).expect("a CBOR value always encodes");
+  bytes
+}
+
+fn put_varint(value: u64, out: &mut Vec<u8>) -> Result<(), String> {
   match value {
     0..64 => out.push(value as u8),
     64..16_384 => out.extend_from_slice(&(value as u16 | 0x4000).to_be_bytes()),
     16_384..1_073_741_824 => out.extend_from_slice(&(value as u32 | 0x8000_0000).to_be_bytes()),
-    _ => out.extend_from_slice(&(value | 0xc000_0000_0000_0000).to_be_bytes()),
+    1_073_741_824..0x4000_0000_0000_0000 => out.extend_from_slice(&(value | 0xc000_0000_0000_0000).to_be_bytes()),
+    _ => return Err(format!("{value} is above 2^62 - 1")),
   }
+  Ok(())
 }
 
 fn take_varint(input: &mut &[u8]) -> Result<u64, String> {

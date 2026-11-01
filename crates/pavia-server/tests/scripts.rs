@@ -257,3 +257,63 @@ fn parses_every_vector_script() {
     }
   }
 }
+
+fn message_with_header(header: &[u8]) -> Vec<u8> {
+  let mut message = vec![
+    0x00,
+    0x02,
+    0x00,
+    u8::try_from(header.len() + 1).unwrap(),
+    u8::try_from(header.len()).unwrap(),
+  ];
+  message.extend_from_slice(header);
+  message
+}
+
+#[test]
+fn rejects_an_empty_message() {
+  assert_eq!(runner::wire::decode(&[]), Err("an empty message holds no frame".into()));
+}
+
+#[test]
+fn accepts_a_header_in_deterministic_encoding() {
+  let frames = runner::wire::decode(&message_with_header(&[0xa2, 0x01, 0x01, 0x18, 0x18, 0x61, 0x61])).unwrap();
+  assert_eq!(frames.len(), 1);
+}
+
+#[test]
+fn rejects_headers_a_sender_must_not_write() {
+  let cases: [(&str, &[u8]); 6] = [
+    ("not a map", &[0x01]),
+    ("tag", &[0xa1, 0x01, 0xc1, 0x01]),
+    ("duplicate key", &[0xa2, 0x01, 0x01, 0x01, 0x02]),
+    ("indefinite length", &[0xbf, 0x01, 0x01, 0xff]),
+    ("keys out of order", &[0xa2, 0x02, 0x01, 0x01, 0x01]),
+    ("longer integer", &[0xa1, 0x01, 0x18, 0x01]),
+  ];
+  for (what, header) in cases {
+    assert!(runner::wire::decode(&message_with_header(header)).is_err(), "{what}");
+  }
+}
+
+#[test]
+fn refuses_a_stream_id_no_varint_holds() {
+  let frame = runner::wire::Frame {
+    stream: 1 << 62,
+    frame_type: 16,
+    flags: 0,
+    header: None,
+    data: Vec::new(),
+  };
+  assert_eq!(
+    runner::wire::encode(&frame),
+    Err(format!("{} is above 2^62 - 1", 1_u64 << 62))
+  );
+}
+
+#[test]
+fn matches_a_wildcard_map_key() {
+  let pattern = pavia_vectors::diag::parse("{*: 1}").unwrap();
+  let value = ciborium::Value::Map(vec![(ciborium::Value::Text("a".into()), ciborium::Value::Integer(1.into()))]);
+  assert!(runner::pattern::matches(&pattern, &value, &runner::pattern::Captures::new()));
+}
