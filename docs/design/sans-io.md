@@ -1,10 +1,10 @@
 # Sans-IO core and crate layout
 
-Decision record for roadmap C0.7 (#2). Status: accepted, 2026-09-21.
+Decision record for roadmap C0.7 (#2). Status: accepted, 2026-09-21. Amended 2026-11-01 (#36): `poll_output` returns `None` when drained, and the next deadline comes from `poll_timeout`.
 
 ## Decisions
 
-1. The protocol crate is sans-IO and exposes one driver loop: `handle_input(Input)` then `poll_output()` until it returns `Output::Timeout`.
+1. The protocol crate is sans-IO and exposes one driver loop: `handle_input(Input)` then `poll_output()` until it returns `None`.
 2. The Rust workspace has seven library crates plus the proc-macro crates (`pavia-contract-derive` today, `pavia-macros` planned in #218); dependency rules are enforced by Cargo and checked in CI.
 3. The TypeScript generator is a Rust crate, driven from the `pavia` binary.
 
@@ -79,7 +79,13 @@ pub enum Output {
     Datagram(Bytes),
     CloseTransport { code: CloseCode, reason: String },
     Event(Event),                                             // to the application
-    Timeout(Instant),                                         // terminal: nothing more until then or new input
+    Ended(Ending),                                            // last output, exactly once (§13.4)
+}
+
+impl Session {
+    pub fn handle_input(&mut self, input: Input);
+    pub fn poll_output(&mut self) -> Option<Output>;          // None: nothing more until new input
+    pub fn poll_timeout(&self) -> Option<Instant>;            // the next deadline, if any
 }
 
 pub enum Command {
@@ -98,9 +104,9 @@ pub enum Event {
 
 Rules the driver must keep:
 
-- Drain `poll_output` until `Timeout` after every input. A debug assertion fires if input arrives with outputs still queued.
+- Drain `poll_output` until `None` after every input. A debug assertion fires if input arrives with outputs still queued.
 - Deliver inputs for one stream in order. Streams are independent.
-- Arm exactly one timer, for the last `Timeout(at)` seen. `Session` computes the earliest of heartbeat, idle, handshake, deadlines and ack cadence.
+- Arm exactly one timer, for `poll_timeout()` read after draining, and feed `Input::Timeout` when it fires. `Session` computes the earliest of heartbeat, idle, handshake, deadlines and ack cadence.
 - On WebSocket, one `Transmit` is one binary message: the session already applied the `WsFrame` envelope, batched frames across streams, and respected the `2 x max_frame` cap. The driver never splits or merges.
 - On WebTransport, `Transmit.stream` names a QUIC stream the driver opened on `OpenStream`; the session never writes to a stream before asking for it.
 

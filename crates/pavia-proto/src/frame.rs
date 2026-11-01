@@ -11,9 +11,7 @@
 //! part of the model: every bit is reserved in v1, so a received value is ignored and every typed
 //! frame is written with flags 0 (§5.2).
 
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the session from #24 onwards"))]
 mod fields;
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the session from #24 onwards"))]
 mod raw;
 
 use std::collections::BTreeMap;
