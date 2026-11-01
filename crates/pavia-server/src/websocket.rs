@@ -91,6 +91,10 @@ where
 
   /// Accepts connections on `listener` until accepting fails, serving each on its own task.
   ///
+  /// This serves plain `ws://`. Spec §4.1 allows that only on loopback for development; anywhere
+  /// else, terminate TLS in front of it or pass TLS streams to
+  /// [`serve_connection`](Self::serve_connection).
+  ///
   /// # Errors
   ///
   /// The error from [`TcpListener::accept`].
