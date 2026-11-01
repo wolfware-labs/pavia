@@ -479,3 +479,28 @@ fn keeps_the_resume_map_for_the_capability_step() {
   assert_eq!(drain(&mut session), []);
   assert_eq!(session.hello().and_then(|hello| hello.resume.clone()), Some(resume));
 }
+
+#[test]
+fn honors_a_close_command_or_text_message_after_the_deadline() {
+  let accepted = Instant::now();
+  let late = accepted + Duration::from_secs(11);
+  let mut session = Session::server(&Config::default(), accepted);
+  session.handle_input(
+    Input::Command(Command::Close {
+      code: CloseCode::GoingAway,
+      msg: Some("draining".into()),
+    }),
+    late,
+  );
+  assert_eq!(
+    drain(&mut session).last(),
+    Some(&Output::Ended(Ending::Closed {
+      code: CloseCode::GoingAway,
+      msg: Some("draining".into()),
+      by: Side::Server
+    }))
+  );
+  let mut session = Session::server(&Config::default(), accepted);
+  session.handle_input(Input::TextMessage, late);
+  assert!(ended_with(&mut session, CloseCode::ProtocolError));
+}

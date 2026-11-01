@@ -178,11 +178,11 @@ impl Session {
     let expired = self.poll_timeout().is_some_and(|deadline| now >= deadline);
     match input {
       Input::TransportLost => self.end(Ending::TransportLost),
-      _ if expired => self.close(CloseCode::HandshakeTimeout, None),
-      Input::Message(message) => self.receive(message),
       Input::TextMessage => self.fail(&ProtocolError::TextMessage),
-      Input::Timeout => {}
       Input::Command(Command::Close { code, msg }) => self.close(code, msg),
+      Input::Message(_) | Input::Timeout if expired => self.close(CloseCode::HandshakeTimeout, None),
+      Input::Message(message) => self.receive(message),
+      Input::Timeout => {}
     }
   }
 
