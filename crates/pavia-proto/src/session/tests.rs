@@ -2,7 +2,7 @@ use bytes::{Bytes, BytesMut};
 
 use std::time::{Duration, Instant};
 
-use super::{Command, Config, Ending, Input, Negotiated, Output, Session};
+use super::{Command, Config, Ending, Input, Output, Session};
 use crate::data::Codec;
 use crate::frame::Reject;
 use crate::frame::{Close, Frame, Heartbeat, Hello, Limits, Resume};
@@ -463,10 +463,39 @@ fn checks_the_required_hello_fields_and_the_limit_floor() {
   );
 }
 
+fn hello_with_caps(caps: Option<&[&str]>) -> Session {
+  let mut session = server();
+  session.feed(Input::Message(message(&[(
+    0,
+    Frame::Hello(Hello {
+      caps: caps.map(|names| names.iter().map(|&name| name.to_owned()).collect()),
+      ..hello()
+    }),
+  )])));
+  assert_eq!(drain(&mut session), []);
+  session
+}
+
 #[test]
-fn keeps_the_resume_map_for_the_capability_step() {
+fn grants_calls_and_only_implemented_requested_capabilities() {
+  let requests: [Option<&[&str]>; 5] = [
+    None,
+    Some(&[]),
+    Some(&["calls", "resume"]),
+    Some(&["calls", "teleport"]),
+    Some(&["streams", "channels"]),
+  ];
+  for caps in requests {
+    let session = hello_with_caps(caps);
+    let granted = &session.negotiated().unwrap().caps;
+    assert_eq!(granted.names().collect::<Vec<_>>(), ["calls"], "{caps:?}");
+  }
+}
+
+#[test]
+fn rejects_a_resume_while_resume_is_not_granted() {
   let resume = Resume {
-    token: crate::frame::Token::Bytes(Bytes::from_static(b"\x01\x02")),
+    token: crate::frame::Token::Bytes(Bytes::from_static(b"\x00")),
     session: "s_x".into(),
     ack: [(0, 0)].into(),
     lost: None,
@@ -475,12 +504,33 @@ fn keeps_the_resume_map_for_the_capability_step() {
   session.feed(Input::Message(message(&[(
     0,
     Frame::Hello(Hello {
-      resume: Some(resume.clone()),
+      caps: Some(vec!["resume".into()]),
+      resume: Some(resume),
       ..hello()
     }),
   )])));
-  assert_eq!(drain(&mut session), []);
-  assert_eq!(session.hello().and_then(|hello| hello.resume.clone()), Some(resume));
+  let outputs = drain(&mut session);
+  let [Output::Transmit(sent), close_transport, ended] = outputs.as_slice() else {
+    panic!("{outputs:?}");
+  };
+  assert!(
+    matches!(frames(sent).as_slice(), [(0, Frame::Reject(Reject { code: 11, .. }))]),
+    "{sent:02x?}"
+  );
+  assert!(matches!(
+    close_transport,
+    Output::CloseTransport {
+      code: CloseCode::ResumeFailed,
+      ..
+    }
+  ));
+  assert!(matches!(
+    ended,
+    Output::Ended(Ending::Rejected {
+      code: CloseCode::ResumeFailed,
+      ..
+    })
+  ));
 }
 
 #[test]
@@ -530,13 +580,8 @@ fn negotiating(versions: Vec<u64>, codecs: &[&str]) -> Session {
 fn negotiates_the_highest_version_and_the_client_codec_preference() {
   let mut session = negotiating(vec![1, 2, 3], &["msgpack", "json", "cbor"]);
   assert_eq!(drain(&mut session), []);
-  assert_eq!(
-    session.negotiated(),
-    Some(Negotiated {
-      version: 2,
-      codec: Codec::Json
-    })
-  );
+  let negotiated = session.negotiated().unwrap();
+  assert_eq!((negotiated.version, negotiated.codec), (2, Codec::Json));
 }
 
 #[test]
@@ -598,12 +643,8 @@ fn offers_only_cbor_by_default() {
     }))
   ));
   let mut session = greeted();
-  assert_eq!(
-    session.negotiated(),
-    Some(Negotiated {
-      version: 1,
-      codec: Codec::Cbor
-    })
-  );
+  let negotiated = session.negotiated().unwrap();
+  assert_eq!((negotiated.version, negotiated.codec), (1, Codec::Cbor));
+  assert_eq!(negotiated.caps.names().collect::<Vec<_>>(), ["calls"]);
   assert_eq!(drain(&mut session), []);
 }
