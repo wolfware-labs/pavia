@@ -456,3 +456,21 @@ fn matches_and_reuses_nan() {
     &runner::pattern::Captures::new()
   ));
 }
+
+#[test]
+fn reuses_a_captured_map_in_any_key_order() {
+  let entry = |key: &str, value: i64| (ciborium::Value::Text(key.into()), ciborium::Value::Integer(value.into()));
+  let mut captures = runner::pattern::Captures::new();
+  captures.insert("m".into(), ciborium::Value::Map(vec![entry("a", 1), entry("b", 2)]));
+  let pattern = pavia_vectors::diag::parse("$m").unwrap();
+  assert!(runner::pattern::matches(
+    &pattern,
+    &ciborium::Value::Map(vec![entry("b", 2), entry("a", 1)]),
+    &captures
+  ));
+  assert!(!runner::pattern::matches(
+    &pattern,
+    &ciborium::Value::Map(vec![entry("b", 2), entry("a", 2)]),
+    &captures
+  ));
+}
