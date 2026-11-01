@@ -2,7 +2,9 @@ use bytes::{Bytes, BytesMut};
 
 use std::time::{Duration, Instant};
 
-use super::{Command, Config, Ending, Input, Output, Session};
+use super::{Command, Config, Ending, Input, Negotiated, Output, Session};
+use crate::data::Codec;
+use crate::frame::Reject;
 use crate::frame::{Close, Frame, Heartbeat, Hello, Limits, Resume};
 use crate::registry::CloseCode;
 use crate::stream::Side;
@@ -357,6 +359,7 @@ fn times_out_with_no_bytes_from_accept() {
   let accepted = Instant::now();
   let config = Config {
     handshake_timeout: Duration::from_millis(200),
+    ..Config::default()
   };
   let mut session = Session::server(&config, accepted);
   let deadline = accepted + Duration::from_millis(200);
@@ -503,4 +506,104 @@ fn honors_a_close_command_or_text_message_after_the_deadline() {
   let mut session = Session::server(&Config::default(), accepted);
   session.handle_input(Input::TextMessage, late);
   assert!(ended_with(&mut session, CloseCode::ProtocolError));
+}
+
+fn negotiating(versions: Vec<u64>, codecs: &[&str]) -> Session {
+  let config = Config {
+    versions: vec![1, 2],
+    codecs: vec![Codec::Cbor, Codec::Json],
+    ..Config::default()
+  };
+  let mut session = Session::server(&config, Instant::now());
+  session.feed(Input::Message(message(&[(
+    0,
+    Frame::Hello(Hello {
+      versions,
+      codecs: codecs.iter().map(|&name| name.to_owned()).collect(),
+      ..hello()
+    }),
+  )])));
+  session
+}
+
+#[test]
+fn negotiates_the_highest_version_and_the_client_codec_preference() {
+  let mut session = negotiating(vec![1, 2, 3], &["msgpack", "json", "cbor"]);
+  assert_eq!(drain(&mut session), []);
+  assert_eq!(
+    session.negotiated(),
+    Some(Negotiated {
+      version: 2,
+      codec: Codec::Json
+    })
+  );
+}
+
+#[test]
+fn rejects_a_hello_with_no_common_version_or_codec() {
+  for (versions, codecs) in [(vec![3], &["cbor"][..]), (vec![1], &["msgpack"][..])] {
+    let mut session = negotiating(versions.clone(), codecs);
+    let msg = "no common protocol version or codec";
+    let outputs = drain(&mut session);
+    let [Output::Transmit(sent), close_transport, ended] = outputs.as_slice() else {
+      panic!("{versions:?} {codecs:?}: {outputs:?}");
+    };
+    assert_eq!(
+      frames(sent),
+      [(
+        0,
+        Frame::Reject(Reject {
+          code: 2,
+          msg: msg.into(),
+          retry: None
+        })
+      )]
+    );
+    assert_eq!(
+      *close_transport,
+      Output::CloseTransport {
+        code: CloseCode::UnsupportedVersion,
+        reason: msg.into()
+      }
+    );
+    assert_eq!(
+      *ended,
+      Output::Ended(Ending::Rejected {
+        code: CloseCode::UnsupportedVersion,
+        msg: msg.into()
+      })
+    );
+    assert_eq!(session.negotiated(), None);
+    assert_eq!(session.poll_timeout(), None);
+    session.feed(Input::Message(message(&[(0, Frame::Hello(hello()))])));
+    assert_eq!(drain(&mut session), []);
+  }
+}
+
+#[test]
+fn offers_only_cbor_by_default() {
+  let mut session = server();
+  session.feed(Input::Message(message(&[(
+    0,
+    Frame::Hello(Hello {
+      codecs: vec!["json".into()],
+      ..hello()
+    }),
+  )])));
+  assert!(matches!(
+    drain(&mut session).last(),
+    Some(Output::Ended(Ending::Rejected {
+      code: CloseCode::UnsupportedVersion,
+      ..
+    }))
+  ));
+  let mut session = greeted();
+  assert_eq!(
+    session.negotiated(),
+    Some(Negotiated {
+      version: 1,
+      codec: Codec::Cbor
+    })
+  );
+  assert_eq!(drain(&mut session), []);
 }
