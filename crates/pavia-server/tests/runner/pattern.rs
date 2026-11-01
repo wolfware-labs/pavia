@@ -40,7 +40,12 @@ fn same(a: &Value, b: &Value) -> bool {
     (Value::Tag(x, a), Value::Tag(y, b)) => x == y && same(a, b),
     (Value::Array(a), Value::Array(b)) => a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same(a, b)),
     (Value::Map(a), Value::Map(b)) => {
-      a.len() == b.len() && a.iter().all(|(ka, va)| b.iter().any(|(kb, vb)| same(ka, kb) && same(va, vb)))
+      let mut used = vec![false; b.len()];
+      a.len() == b.len()
+        && a.iter().all(|(ka, va)| {
+          let found = (0..b.len()).find(|&index| !used[index] && same(ka, &b[index].0) && same(va, &b[index].1));
+          found.inspect(|&index| used[index] = true).is_some()
+        })
     }
     _ => a == b,
   }

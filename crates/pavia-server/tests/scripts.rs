@@ -485,4 +485,10 @@ fn reuses_a_captured_map_in_any_key_order() {
     &ciborium::Value::Map(vec![entry("a", 2), entry("a", 1)]),
     &captures
   ));
+  captures.insert("e".into(), ciborium::Value::Map(vec![entry("a", 1), entry("a", 1)]));
+  assert!(!runner::pattern::matches(
+    &pavia_vectors::diag::parse("$e").unwrap(),
+    &ciborium::Value::Map(vec![entry("a", 1), entry("a", 2)]),
+    &captures
+  ));
 }
