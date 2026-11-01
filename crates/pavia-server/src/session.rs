@@ -19,7 +19,7 @@ pub async fn run(mut transport: Transport, mut commands: mpsc::Receiver<Command>
     let input = tokio::select! {
       received = transport.recv() => match received {
         Some(Ok(Received::Binary(message))) => Input::Message(message),
-        Some(Ok(Received::Text)) => continue,
+        Some(Ok(Received::Text)) => Input::TextMessage,
         Some(Err(_)) | None => Input::TransportLost,
       },
       command = commands.recv(), if commands_open => match command {

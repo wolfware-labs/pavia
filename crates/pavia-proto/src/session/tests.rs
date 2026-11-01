@@ -244,3 +244,30 @@ fn names_the_peer() {
   assert_eq!(Side::Client.peer(), Side::Server);
   assert_eq!(Side::Server.peer(), Side::Client);
 }
+
+#[test]
+fn closes_with_protocol_error_on_a_text_message() {
+  let mut session = Session::new(Side::Server);
+  session.handle_input(Input::TextMessage);
+  let outputs = drain(&mut session);
+  let [
+    Output::Transmit(sent),
+    Output::CloseTransport { code, .. },
+    Output::Ended(ending),
+  ] = outputs.as_slice()
+  else {
+    panic!("{outputs:?}");
+  };
+  let [(0, Frame::Close(Close { code: 1, msg: None }))] = frames(sent).as_slice() else {
+    panic!("{outputs:?}");
+  };
+  assert_eq!(*code, CloseCode::ProtocolError);
+  assert!(matches!(
+    ending,
+    Ending::Closed {
+      code: CloseCode::ProtocolError,
+      by: Side::Server,
+      ..
+    }
+  ));
+}

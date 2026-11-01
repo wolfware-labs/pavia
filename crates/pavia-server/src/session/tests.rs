@@ -197,3 +197,23 @@ async fn keeps_running_after_a_message_that_needs_no_answer() {
     }
   ));
 }
+
+#[tokio::test]
+async fn closes_with_protocol_error_on_a_text_message() {
+  for text in ["hello", ""] {
+    let (mut socket, ending) = connect(None).await;
+    socket.send(Message::text(text)).await.unwrap();
+    let (binary, ws_code, _) = closed(&mut socket).await;
+    assert_eq!(binary.len(), 1, "{text:?}");
+    assert_eq!(&binary[0][..2], [0x00, 0x07]);
+    assert_eq!(ws_code, WsCloseCode::from(4001));
+    assert!(matches!(
+      ending.await.unwrap(),
+      Ending::Closed {
+        code: CloseCode::ProtocolError,
+        by: Side::Server,
+        ..
+      }
+    ));
+  }
+}

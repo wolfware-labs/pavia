@@ -16,6 +16,9 @@ pub enum ProtocolError {
   /// A WebSocket message that does not parse as frames, such as a truncated frame (§5.4).
   #[error("malformed WebSocket message")]
   MalformedMessage,
+  /// A text WebSocket message; the binding carries only binary messages (§4.3).
+  #[error("text WebSocket message")]
+  TextMessage,
   /// A WebTransport stream that ends (FIN) in the middle of a frame (§5.3).
   #[error("stream ended in the middle of a frame")]
   StreamEndedMidFrame,
@@ -230,6 +233,7 @@ impl ProtocolError {
     match self {
       Self::FrameTooLarge => Outcome::SessionFatal(CloseCode::FrameTooLarge),
       Self::MalformedMessage
+      | Self::TextMessage
       | Self::StreamEndedMidFrame
       | Self::MessageTooLarge
       | Self::LeftoverBytes
@@ -301,6 +305,7 @@ mod tests {
     let cases = [
       (ProtocolError::FrameTooLarge, CloseCode::FrameTooLarge),
       (ProtocolError::MalformedMessage, CloseCode::ProtocolError),
+      (ProtocolError::TextMessage, CloseCode::ProtocolError),
       (ProtocolError::StreamEndedMidFrame, CloseCode::ProtocolError),
       (ProtocolError::MessageTooLarge, CloseCode::ProtocolError),
       (ProtocolError::LeftoverBytes, CloseCode::ProtocolError),

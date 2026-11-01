@@ -4,7 +4,8 @@
 //! This first part covers how a session ends (§7.7, §13.4): CLOSE in either direction, a
 //! session-fatal error, and transport loss. Every ending yields exactly one [`Output::Ended`], and
 //! after it the session ignores all input. The handshake and the frames it unlocks come next
-//! (#27 onwards); until then the session ignores every frame except CLOSE.
+//! (#27 onwards); until then the session ignores every frame except CLOSE. A text message is a
+//! PROTOCOL_ERROR before the handshake as after it (§4.3).
 //!
 //! ```text
 //!  Command::Close ──▶ Transmit(CLOSE) ─▶ CloseTransport(code) ─▶ Ended(Closed, by us)
@@ -35,6 +36,8 @@ const CONTROL_STREAM: u64 = 0;
 pub enum Input {
   /// One whole binary WebSocket message.
   Message(Bytes),
+  /// A text WebSocket message, which closes the session with PROTOCOL_ERROR at any point (§4.3).
+  TextMessage,
   /// The transport closed or failed without CLOSE.
   TransportLost,
   /// A request from the application.
@@ -125,6 +128,7 @@ impl Session {
     }
     match input {
       Input::Message(message) => self.receive(message),
+      Input::TextMessage => self.fail(&ProtocolError::TextMessage),
       Input::TransportLost => self.end(Ending::TransportLost),
       Input::Command(Command::Close { code, msg }) => self.close(code, msg),
     }
