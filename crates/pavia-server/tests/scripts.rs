@@ -435,3 +435,24 @@ fn rejects_a_send_repeated_zero_times() {
   let error = Script::parse(&json!({"id": "bad", "binding": "ws", "codec": "cbor", "steps": [{"send": send}]})).unwrap_err();
   assert_eq!(error, "bad: step 1: repeat is not a count of at least 1");
 }
+
+#[test]
+fn matches_and_reuses_nan() {
+  let mut nan = frame(2, 16, None, None);
+  nan["data_hex"] = json!("f9 7e 00");
+  let mut expect = frame(2, 16, None, Some("NaN"));
+  expect["capture"] = json!({"n": "data"});
+  let steps = json!([
+    {"send": nan},
+    {"expect": expect},
+    {"send": frame(4, 16, Some("{1: $n}"), None)},
+    {"expect": frame(4, 16, Some("{1: $n}"), None)},
+  ]);
+  assert_eq!(both(&script(steps)), Ok(Verdict::Passed));
+  let zero = pavia_vectors::diag::parse("0.0").unwrap();
+  assert!(!runner::pattern::matches(
+    &zero,
+    &ciborium::Value::Float(-0.0),
+    &runner::pattern::Captures::new()
+  ));
+}

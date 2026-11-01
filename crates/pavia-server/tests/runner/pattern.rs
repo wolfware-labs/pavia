@@ -13,10 +13,10 @@ pub type Captures = HashMap<String, Value>;
 pub fn matches(pattern: &Diag, value: &Value, captures: &Captures) -> bool {
   match (pattern, value) {
     (Diag::Any, _) => true,
-    (Diag::Ref(name), _) => captures.get(name) == Some(value),
+    (Diag::Ref(name), _) => captures.get(name).is_some_and(|captured| same(captured, value)),
     (Diag::Uint(n), Value::Integer(integer)) => i128::from(*integer) == i128::from(*n),
     (Diag::Nint(n), Value::Integer(integer)) => i128::from(*integer) == -1 - i128::from(*n),
-    (Diag::Float(x), Value::Float(y)) => x == y,
+    (Diag::Float(x), Value::Float(y)) => same_float(*x, *y),
     (Diag::Text(x), Value::Text(y)) => x == y,
     (Diag::Bytes(x), Value::Bytes(y)) => x == y,
     (Diag::Bool(x), Value::Bool(y)) => x == y,
@@ -30,6 +30,23 @@ pub fn matches(pattern: &Diag, value: &Value, captures: &Captures) -> bool {
     }
     _ => false,
   }
+}
+
+/// Value equality that holds every NaN equal and tells 0.0 from -0.0, as CBOR encodes them.
+fn same(a: &Value, b: &Value) -> bool {
+  match (a, b) {
+    (Value::Float(x), Value::Float(y)) => same_float(*x, *y),
+    (Value::Tag(x, a), Value::Tag(y, b)) => x == y && same(a, b),
+    (Value::Array(a), Value::Array(b)) => a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same(a, b)),
+    (Value::Map(a), Value::Map(b)) => {
+      a.len() == b.len() && a.iter().zip(b).all(|((ka, va), (kb, vb))| same(ka, kb) && same(va, vb))
+    }
+    _ => a == b,
+  }
+}
+
+fn same_float(x: f64, y: f64) -> bool {
+  x.to_bits() == y.to_bits() || (x.is_nan() && y.is_nan())
 }
 
 /// Whether every pattern entry matches a received entry of its own, trying each free candidate
