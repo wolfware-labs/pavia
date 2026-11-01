@@ -80,7 +80,7 @@ impl Capability {
 pub const IMPLEMENTED: &[Capability] = &[Capability::Calls];
 
 /// A set of capabilities, kept in §7.10 order so it serializes the same way every time.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Caps(BTreeSet<Capability>);
 
 impl Caps {
