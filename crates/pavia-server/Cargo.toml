@@ -10,3 +10,15 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
+bytes.workspace = true
+futures-util.workspace = true
+http-body-util.workspace = true
+hyper = { workspace = true, features = ["http1", "server"] }
+hyper-util = { workspace = true, features = ["tokio"] }
+pavia-proto.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["net", "rt"] }
+tokio-tungstenite.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-util", "macros", "rt-multi-thread", "sync"] }
