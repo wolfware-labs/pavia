@@ -3,6 +3,7 @@ mod runner;
 use std::future::Future;
 use std::pin::Pin;
 
+use pavia_proto::registry::CloseCode;
 use pavia_server::websocket::{Config, Endpoint, Received, Transport};
 use runner::{Failure, Mode, Script, Verdict};
 use serde_json::{Value, json};
@@ -14,7 +15,9 @@ const CLOSE_STREAM: u8 = 9;
 async fn echo(mut transport: Transport) {
   while let Some(Ok(Received::Binary(message))) = transport.recv().await {
     if message.first() == Some(&CLOSE_STREAM) {
-      let _ = transport.close(4000 + u16::from(message[2]), "").await;
+      if let Ok(code) = CloseCode::try_from(u16::from(message[2])) {
+        let _ = transport.close(code, "").await;
+      }
       return;
     }
     if transport.send(message).await.is_err() {
