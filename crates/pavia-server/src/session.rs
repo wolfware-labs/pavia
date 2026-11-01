@@ -12,29 +12,23 @@ use crate::websocket::{Received, Transport};
 
 /// Runs a server session on `transport` until it ends, taking application requests from
 /// `commands`. Dropping every sender of `commands` leaves the session running.
-pub async fn run(transport: Transport, mut commands: mpsc::Receiver<Command>) -> Ending {
+pub async fn run(mut transport: Transport, mut commands: mpsc::Receiver<Command>) -> Ending {
   let mut session = Session::new(Side::Server);
-  let mut transport = Some(transport);
   let mut commands_open = true;
   loop {
-    let Some(open) = transport.as_mut() else {
-      return Ending::TransportLost;
-    };
-    let input = {
-      tokio::select! {
-        received = open.recv() => match received {
-          Some(Ok(Received::Binary(message))) => Input::Message(message),
-          Some(Ok(Received::Text)) => continue,
-          Some(Err(_)) | None => Input::TransportLost,
-        },
-        command = commands.recv(), if commands_open => match command {
-          Some(command) => Input::Command(command),
-          None => {
-            commands_open = false;
-            continue;
-          }
-        },
-      }
+    let input = tokio::select! {
+      received = transport.recv() => match received {
+        Some(Ok(Received::Binary(message))) => Input::Message(message),
+        Some(Ok(Received::Text)) => continue,
+        Some(Err(_)) | None => Input::TransportLost,
+      },
+      command = commands.recv(), if commands_open => match command {
+        Some(command) => Input::Command(command),
+        None => {
+          commands_open = false;
+          continue;
+        }
+      },
     };
     session.handle_input(input);
     if let Some(ending) = carry_out(&mut session, &mut transport).await {
@@ -43,23 +37,16 @@ pub async fn run(transport: Transport, mut commands: mpsc::Receiver<Command>) ->
   }
 }
 
-async fn carry_out(session: &mut Session, transport: &mut Option<Transport>) -> Option<Ending> {
+async fn carry_out(session: &mut Session, transport: &mut Transport) -> Option<Ending> {
   while let Some(output) = session.poll_output() {
     match output {
       Output::Transmit(message) => {
-        let sent = match transport.as_mut() {
-          Some(open) => open.send(message).await.is_ok(),
-          None => false,
-        };
-        if !sent {
-          *transport = None;
+        if transport.send(message).await.is_err() {
           session.handle_input(Input::TransportLost);
         }
       }
       Output::CloseTransport { code, reason } => {
-        if let Some(open) = transport.take() {
-          let _ = open.close(code, &reason).await;
-        }
+        let _ = transport.close(code, &reason).await;
       }
       Output::Ended(ending) => return Some(ending),
       _ => {}

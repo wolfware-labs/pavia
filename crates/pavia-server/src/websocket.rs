@@ -291,7 +291,7 @@ impl Transport {
   /// # Errors
   ///
   /// A [`TransportError`] when the close frame cannot be written.
-  pub async fn close(mut self, code: CloseCode, reason: &str) -> Result<(), TransportError> {
+  pub async fn close(&mut self, code: CloseCode, reason: &str) -> Result<(), TransportError> {
     let frame = CloseFrame {
       code: WsCloseCode::from(CLOSE_CODE_OFFSET + u16::from(code)),
       reason: truncate(reason, MAX_CLOSE_REASON).into(),

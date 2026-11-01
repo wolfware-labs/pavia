@@ -43,8 +43,8 @@ async fn connect(command: Option<Command>) -> (Socket, oneshot::Receiver<Ending>
       if let Some(command) = command {
         commands.send(command).await.unwrap();
       }
-      let ending = run(transport, receiver).await;
       drop(commands);
+      let ending = run(transport, receiver).await;
       if let Some(ended) = ended {
         let _ = ended.send(ending);
       }
@@ -175,6 +175,24 @@ async fn closes_with_protocol_error_on_a_malformed_message() {
     Ending::Closed {
       code: CloseCode::ProtocolError,
       by: Side::Server,
+      ..
+    }
+  ));
+}
+
+#[tokio::test]
+async fn keeps_running_after_a_message_that_needs_no_answer() {
+  let (mut socket, ending) = connect(None).await;
+  socket.send(Message::binary(&b"\x00\x04\x00\x01\x00"[..])).await.unwrap();
+  socket.send(Message::binary(close_frame(0))).await.unwrap();
+  let (binary, ws_code, _) = closed(&mut socket).await;
+  assert!(binary.is_empty());
+  assert_eq!(ws_code, WsCloseCode::from(4000));
+  assert!(matches!(
+    ending.await.unwrap(),
+    Ending::Closed {
+      code: CloseCode::Normal,
+      by: Side::Client,
       ..
     }
   ));
