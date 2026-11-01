@@ -2,36 +2,7 @@
 //! client's HELLO list and what this side supports, and return `None` when nothing overlaps,
 //! which the session answers with REJECT UNSUPPORTED_VERSION (§7.3).
 
-/// A data-section codec (§5.5). The header section is always CBOR.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum Codec {
-  /// `cbor`, which every implementation supports.
-  Cbor,
-  /// `json`, optional and meant for debugging.
-  Json,
-}
-
-impl Codec {
-  /// The name used in HELLO `codecs` and WELCOME `codec`.
-  #[must_use]
-  pub const fn name(self) -> &'static str {
-    match self {
-      Self::Cbor => "cbor",
-      Self::Json => "json",
-    }
-  }
-
-  /// The codec with this name, or `None` for a name this crate does not know.
-  #[must_use]
-  pub fn from_name(name: &str) -> Option<Self> {
-    match name {
-      "cbor" => Some(Self::Cbor),
-      "json" => Some(Self::Json),
-      _ => None,
-    }
-  }
-}
+use crate::data::Codec;
 
 /// The highest protocol version present in both lists.
 ///
@@ -50,7 +21,8 @@ pub fn version(client: &[u64], supported: &[u64]) -> Option<u64> {
 /// Names this crate does not know are skipped.
 ///
 /// ```
-/// use pavia_proto::negotiate::{Codec, codec};
+/// use pavia_proto::data::Codec;
+/// use pavia_proto::negotiate::codec;
 ///
 /// let supported = [Codec::Cbor, Codec::Json];
 /// assert_eq!(codec(&["msgpack", "json", "cbor"], &supported), Some(Codec::Json));

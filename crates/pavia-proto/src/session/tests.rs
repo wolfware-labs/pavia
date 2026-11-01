@@ -3,9 +3,9 @@ use bytes::{Bytes, BytesMut};
 use std::time::{Duration, Instant};
 
 use super::{Command, Config, Ending, Input, Negotiated, Output, Session};
+use crate::data::Codec;
 use crate::frame::Reject;
 use crate::frame::{Close, Frame, Heartbeat, Hello, Limits, Resume};
-use crate::negotiate::Codec;
 use crate::registry::CloseCode;
 use crate::stream::Side;
 use crate::wire::envelope::{self, MAX_FRAME_FLOOR};

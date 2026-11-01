@@ -24,9 +24,10 @@ use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
 
+use crate::data::Codec;
 use crate::error::{Outcome, ProtocolError};
 use crate::frame::{Close, Frame, Hello, Reject};
-use crate::negotiate::{self, Codec};
+use crate::negotiate;
 use crate::registry::CloseCode;
 use crate::stream::Side;
 use crate::wire::envelope::{self, MAX_FRAME_FLOOR};

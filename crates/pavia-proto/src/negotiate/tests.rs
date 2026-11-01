@@ -1,4 +1,5 @@
-use super::{Codec, codec, version};
+use super::{codec, version};
+use crate::data::Codec;
 
 const SERVER_CODECS: [Codec; 2] = [Codec::Cbor, Codec::Json];
 
@@ -36,11 +37,4 @@ fn picks_the_first_supported_codec_in_client_order() {
 fn skips_a_known_codec_this_side_does_not_support() {
   assert_eq!(codec(&["json", "cbor"], &[Codec::Cbor]), Some(Codec::Cbor));
   assert_eq!(codec(&["json"], &[Codec::Cbor]), None);
-}
-
-#[test]
-fn round_trips_codec_names() {
-  for codec in SERVER_CODECS {
-    assert_eq!(Codec::from_name(codec.name()), Some(codec));
-  }
 }
