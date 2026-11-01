@@ -473,4 +473,16 @@ fn reuses_a_captured_map_in_any_key_order() {
     &ciborium::Value::Map(vec![entry("b", 2), entry("a", 2)]),
     &captures
   ));
+  captures.insert("d".into(), ciborium::Value::Map(vec![entry("a", 1), entry("a", 2)]));
+  let duplicate = pavia_vectors::diag::parse("$d").unwrap();
+  assert!(!runner::pattern::matches(
+    &duplicate,
+    &ciborium::Value::Map(vec![entry("a", 1), entry("a", 1)]),
+    &captures
+  ));
+  assert!(runner::pattern::matches(
+    &duplicate,
+    &ciborium::Value::Map(vec![entry("a", 2), entry("a", 1)]),
+    &captures
+  ));
 }
