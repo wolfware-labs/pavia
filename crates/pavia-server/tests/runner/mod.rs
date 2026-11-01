@@ -581,8 +581,13 @@ where
   }
 }
 
-fn decode_data(data: &[u8]) -> Result<ciborium::Value, String> {
-  ciborium::from_reader(data).map_err(|error| error.to_string())
+fn decode_data(mut data: &[u8]) -> Result<ciborium::Value, String> {
+  let value = ciborium::from_reader(&mut data).map_err(|error| error.to_string())?;
+  if data.is_empty() {
+    Ok(value)
+  } else {
+    Err(format!("{} bytes after the data item", data.len()))
+  }
 }
 
 fn describe(code: Option<u16>) -> String {

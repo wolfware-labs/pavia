@@ -412,3 +412,15 @@ fn accepts_shortest_float_widths_in_a_header() {
   }
   assert!(runner::wire::decode(&message_with_header(&[0xa1, 0x01, 0xfa, 0x3f, 0xc0, 0x00, 0x00])).is_err());
 }
+
+#[test]
+fn fails_on_bytes_after_the_cbor_data_item() {
+  let mut trailing = frame(2, 16, None, None);
+  trailing["data_hex"] = json!("01 02");
+  let steps = json!([
+    {"send": trailing},
+    {"expect": frame(2, 16, None, Some("1"))},
+  ]);
+  let failure = both(&script(steps)).unwrap_err();
+  assert!(failure.message.starts_with("data does not match"), "{failure}");
+}
