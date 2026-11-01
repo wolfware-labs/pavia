@@ -97,7 +97,11 @@ fn strict_header(bytes: &[u8]) -> Result<Value, String> {
   if bytes.len() > MAX_HEADER_SIZE {
     return Err(format!("header of {} bytes is above {MAX_HEADER_SIZE}", bytes.len()));
   }
-  let value = ciborium::from_reader::<Value, _>(bytes).map_err(|error| format!("header is not CBOR: {error}"))?;
+  let value =
+    ciborium::de::from_reader_with_recursion_limit::<Value, _>(bytes, MAX_HEADER_DEPTH).map_err(|error| match error {
+      ciborium::de::Error::RecursionLimitExceeded => format!("header nests deeper than {MAX_HEADER_DEPTH}"),
+      error => format!("header is not CBOR: {error}"),
+    })?;
   let Value::Map(entries) = &value else {
     return Err(format!("header is not a map: {value:?}"));
   };
@@ -107,29 +111,11 @@ fn strict_header(bytes: &[u8]) -> Result<Value, String> {
   {
     return Err(format!("header key {key:?} is not an unsigned integer"));
   }
-  if depth(&value) > MAX_HEADER_DEPTH {
-    return Err(format!("header nests deeper than {MAX_HEADER_DEPTH}"));
-  }
   check_header_value(&value)?;
   if cbor(&deterministic(&value)) != bytes {
     return Err(format!("header is not in deterministic encoding: {}", hex(bytes)));
   }
   Ok(value)
-}
-
-fn depth(value: &Value) -> usize {
-  match value {
-    Value::Array(items) => 1 + items.iter().map(depth).max().unwrap_or(0),
-    Value::Map(entries) => {
-      1 + entries
-        .iter()
-        .map(|(key, item)| depth(key).max(depth(item)))
-        .max()
-        .unwrap_or(0)
-    }
-    Value::Tag(_, inner) => depth(inner),
-    _ => 0,
-  }
 }
 
 fn check_header_value(value: &Value) -> Result<(), String> {
