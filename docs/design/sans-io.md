@@ -1,10 +1,10 @@
 # Sans-IO core and crate layout
 
-Decision record for roadmap C0.7 (#2). Status: accepted, 2026-09-21. Amended 2026-11-01 (#36): `poll_output` returns `None` when drained, and the next deadline comes from `poll_timeout`.
+Decision record for roadmap C0.7 (#2). Status: accepted, 2026-09-21. Amended 2026-11-01 (#36): `poll_output` returns `None` when drained, and the next deadline comes from `poll_timeout`. Amended 2026-11-01 (#27): `now` is a `handle_input` argument, not a field of each input.
 
 ## Decisions
 
-1. The protocol crate is sans-IO and exposes one driver loop: `handle_input(Input)` then `poll_output()` until it returns `None`.
+1. The protocol crate is sans-IO and exposes one driver loop: `handle_input(input, now)` then `poll_output()` until it returns `None`.
 2. The Rust workspace has seven library crates plus the proc-macro crates (`pavia-contract-derive` today, `pavia-macros` planned in #218); dependency rules are enforced by Cargo and checked in CI.
 3. The TypeScript generator is a Rust crate, driven from the `pavia` binary.
 
@@ -63,11 +63,11 @@ One type, `Session`, for both roles and both bindings. Sketch, not final signatu
 pub struct Session { /* role, binding, config, state, output queue */ }
 
 pub enum Input<'a> {
-    Bytes { stream: StreamId, data: &'a [u8], fin: bool, now: Instant },
-    StreamReset { stream: StreamId, now: Instant },          // WebTransport RESET_STREAM / STOP_SENDING
-    Datagram { data: &'a [u8], now: Instant },
-    TransportLost { now: Instant },
-    Timeout { now: Instant },
+    Bytes { stream: StreamId, data: &'a [u8], fin: bool },
+    StreamReset { stream: StreamId },                         // WebTransport RESET_STREAM / STOP_SENDING
+    Datagram { data: &'a [u8] },
+    TransportLost,
+    Timeout,
     Command(Command),                                         // from the application
 }
 
@@ -83,7 +83,7 @@ pub enum Output {
 }
 
 impl Session {
-    pub fn handle_input(&mut self, input: Input);
+    pub fn handle_input(&mut self, input: Input, now: Instant);
     pub fn poll_output(&mut self) -> Option<Output>;          // None: nothing more until new input
     pub fn poll_timeout(&self) -> Option<Instant>;            // the next deadline, if any
 }

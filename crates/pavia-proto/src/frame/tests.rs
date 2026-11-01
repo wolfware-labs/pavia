@@ -162,6 +162,26 @@ fn decodes_the_resume_map_with_the_session_in_key_19() {
 }
 
 #[test]
+fn keeps_tokens_out_of_debug_output() {
+  let auth = Auth {
+    scheme: "bearer".to_owned(),
+    token: Token::Text("hunter2-secret".to_owned()),
+  };
+  let resume = Resume {
+    session: "s1".to_owned(),
+    token: Token::Bytes(Bytes::from_static(b"\xde\xad\xbe\xef")),
+    ack: AckMap::new(),
+    lost: None,
+  };
+  let auth = format!("{auth:?}");
+  let resume = format!("{resume:?}");
+  assert!(!auth.contains("hunter2"), "{auth}");
+  assert!(auth.contains("Text(<14 bytes redacted>)"), "{auth}");
+  assert!(!resume.contains("xde"), "{resume}");
+  assert!(resume.contains("Bytes(<4 bytes redacted>)"), "{resume}");
+}
+
+#[test]
 fn reports_a_bad_nested_entry_as_its_outer_key() {
   let resume = Value::Map(vec![(u(13), Value::Bytes(&[0x01])), (u(44), Value::Map(vec![]))]);
   let entries = [

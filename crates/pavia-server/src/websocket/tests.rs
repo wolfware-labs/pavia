@@ -303,3 +303,49 @@ async fn reports_a_broken_frame_as_an_error() {
   .await;
   assert_eq!(received, Some(false));
 }
+
+#[tokio::test]
+async fn drops_a_connection_that_stalls_before_the_request_head() {
+  let mut config = Config::new(PATH);
+  config.header_read_timeout = std::time::Duration::from_millis(200);
+  let endpoint: Endpoint<fn(Transport) -> Session> = Endpoint::new(config, |transport| Box::pin(session(transport)));
+  let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+  let address = listener.local_addr().unwrap();
+  tokio::spawn(endpoint.serve(listener));
+  let started = std::time::Instant::now();
+  let mut stream = TcpStream::connect(address).await.unwrap();
+  stream.write_all(b"GET /rt HTTP/1.1\r\n").await.unwrap();
+  let mut rest = Vec::new();
+  let read = tokio::time::timeout(std::time::Duration::from_secs(5), stream.read_to_end(&mut rest)).await;
+  assert!(read.is_ok(), "the connection stayed open");
+  assert!(started.elapsed() >= std::time::Duration::from_millis(200));
+}
+
+#[tokio::test]
+async fn records_when_the_connection_was_accepted() {
+  let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+  let endpoint = Endpoint::new(Config::new(PATH), move |transport: Transport| {
+    let sender = sender.clone();
+    async move {
+      let _ = sender.send(transport.accepted()).await;
+    }
+  });
+  let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+  let address = listener.local_addr().unwrap();
+  tokio::spawn(endpoint.serve(listener));
+  let mut stream = TcpStream::connect(address).await.unwrap();
+  tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+  let upgraded = tokio::time::Instant::now();
+  let response = head(
+    &mut stream,
+    concat!(
+      "GET /rt HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n",
+      "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n",
+      "Sec-WebSocket-Protocol: pavia.1\r\n\r\n",
+    ),
+  )
+  .await;
+  assert!(response.starts_with("HTTP/1.1 101 "), "{response}");
+  let accepted = receiver.recv().await.unwrap();
+  assert!(upgraded - accepted >= std::time::Duration::from_millis(90));
+}
