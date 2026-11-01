@@ -424,3 +424,11 @@ fn fails_on_bytes_after_the_cbor_data_item() {
   let failure = both(&script(steps)).unwrap_err();
   assert!(failure.message.starts_with("data does not match"), "{failure}");
 }
+
+#[test]
+fn rejects_a_send_repeated_zero_times() {
+  let mut send = frame(0, 4, None, None);
+  send["repeat"] = json!(0);
+  let error = Script::parse(&json!({"id": "bad", "binding": "ws", "codec": "cbor", "steps": [{"send": send}]})).unwrap_err();
+  assert_eq!(error, "bad: step 1: repeat is not a count of at least 1");
+}

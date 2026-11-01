@@ -183,7 +183,8 @@ fn parse_step(step: &Json, codec: &str, captured: &mut HashSet<String>) -> Resul
       let repeat = body
         .get("repeat")
         .map_or(Some(1), Json::as_u64)
-        .ok_or("repeat is not a count")?;
+        .filter(|repeat| *repeat > 0)
+        .ok_or("repeat is not a count of at least 1")?;
       Step::Send { frame, repeat }
     }
     "expect" => {
