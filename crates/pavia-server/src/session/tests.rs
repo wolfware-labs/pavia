@@ -304,7 +304,8 @@ async fn closes_a_slow_hello_with_handshake_timeout() {
     tokio::time::sleep(Duration::from_millis(60)).await;
   }
   let mut rest = Vec::new();
-  let _ = stream.read_to_end(&mut rest).await;
+  let read = tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut rest)).await;
+  assert!(read.is_ok(), "the server never closed the connection");
   let close_4012 = rest.windows(4).any(|window| window[0] == 0x88 && window[2..] == [0x0f, 0xac]);
   assert!(close_4012, "{rest:02x?}");
   assert!(matches!(

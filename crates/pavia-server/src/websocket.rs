@@ -53,6 +53,11 @@ pub struct Config {
   pub path: String,
   /// How long a connection may take to send the request head before it is dropped, so a client
   /// that stalls before the upgrade holds no socket for long (§14). Default 10 s.
+  ///
+  /// This is an HTTP bound, separate from the session's handshake timeout: before the upgrade
+  /// there is no WebSocket to carry CLOSE HANDSHAKE_TIMEOUT, so hyper drops the connection. The
+  /// handshake deadline still counts from accept ([`Transport::accepted`]), so time spent here
+  /// comes out of it; keep this at or below the handshake timeout.
   pub header_read_timeout: Duration,
 }
 
