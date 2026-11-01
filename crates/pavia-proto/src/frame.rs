@@ -15,6 +15,7 @@ mod fields;
 mod raw;
 
 use std::collections::BTreeMap;
+use std::fmt;
 
 use bytes::Bytes;
 use thiserror::Error;
@@ -354,12 +355,32 @@ pub enum MetaValue {
 }
 
 /// A credential or resume token (key 13): bytes or text.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Debug` prints the variant and length, never the value, so a token cannot
+/// reach a log through a frame or session dump.
+///
+/// ```
+/// use pavia_proto::frame::Token;
+///
+/// let token = Token::Text("secret".to_owned());
+/// assert_eq!(format!("{token:?}"), "Text(<6 bytes redacted>)");
+/// ```
+#[derive(Clone, PartialEq, Eq)]
 pub enum Token {
   /// A byte string token.
   Bytes(Bytes),
   /// A text token.
   Text(String),
+}
+
+impl fmt::Debug for Token {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    let (variant, len) = match self {
+      Self::Bytes(bytes) => ("Bytes", bytes.len()),
+      Self::Text(text) => ("Text", text.len()),
+    };
+    write!(f, "{variant}(<{len} bytes redacted>)")
+  }
 }
 
 /// The data section of a PING or PONG: at most 8 opaque bytes (§7.4).
