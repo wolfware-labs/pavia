@@ -492,3 +492,35 @@ fn reuses_a_captured_map_in_any_key_order() {
     &captures
   ));
 }
+
+#[test]
+fn rejects_a_header_that_repeats_a_nan_key() {
+  let nan_keys = ciborium::Value::Map(vec![(
+    ciborium::Value::Integer(34.into()),
+    ciborium::Value::Map(vec![
+      (ciborium::Value::Float(f64::NAN), ciborium::Value::Integer(1.into())),
+      (ciborium::Value::Float(f64::NAN), ciborium::Value::Integer(2.into())),
+    ]),
+  )]);
+  assert_eq!(decode_header(nan_keys), Err("header repeats the key Float(NaN)".into()));
+}
+
+#[test]
+fn fails_data_nested_deeper_than_16() {
+  let deep = |depth: usize| format!("{}0{}", "[".repeat(depth), "]".repeat(depth));
+  for (depth, verdict) in [(16, true), (17, false)] {
+    let mut send = frame(2, 16, None, None);
+    let mut bytes = Vec::new();
+    ciborium::into_writer(
+      &pavia_vectors::diag::parse(&deep(depth)).unwrap().to_cbor().unwrap(),
+      &mut bytes,
+    )
+    .unwrap();
+    send["data_hex"] = json!(runner::wire::hex(&bytes));
+    let steps = json!([
+      {"send": send},
+      {"expect": frame(2, 16, None, Some("*"))},
+    ]);
+    assert_eq!(both(&script(steps)).is_ok(), verdict, "depth {depth}");
+  }
+}

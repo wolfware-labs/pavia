@@ -124,7 +124,7 @@ fn check_header_value(value: &Value) -> Result<(), String> {
     Value::Array(items) => items.iter().try_for_each(check_header_value),
     Value::Map(entries) => {
       for (index, (key, item)) in entries.iter().enumerate() {
-        if entries[..index].iter().any(|(earlier, _)| earlier == key) {
+        if entries[..index].iter().any(|(earlier, _)| super::pattern::same(earlier, key)) {
           return Err(format!("header repeats the key {key:?}"));
         }
         check_header_value(key)?;

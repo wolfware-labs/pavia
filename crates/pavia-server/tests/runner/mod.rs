@@ -36,6 +36,7 @@ use wire::Frame;
 const PING: u8 = 0x04;
 const PONG: u8 = 0x05;
 const EXPECT_WITHIN: Duration = Duration::from_secs(5);
+const MAX_DATA_DEPTH: usize = 16;
 const CLOSE_CODES: [&str; 14] = [
   "NORMAL",
   "PROTOCOL_ERROR",
@@ -583,7 +584,7 @@ where
 }
 
 fn decode_data(mut data: &[u8]) -> Result<ciborium::Value, String> {
-  let value = ciborium::from_reader(&mut data).map_err(|error| error.to_string())?;
+  let value = ciborium::de::from_reader_with_recursion_limit(&mut data, MAX_DATA_DEPTH).map_err(|error| error.to_string())?;
   if data.is_empty() {
     Ok(value)
   } else {

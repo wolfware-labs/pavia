@@ -34,7 +34,7 @@ pub fn matches(pattern: &Diag, value: &Value, captures: &Captures) -> bool {
 
 /// Value equality that holds every NaN equal, tells 0.0 from -0.0, as CBOR encodes them, and
 /// compares map entries in any order, each entry used once.
-fn same(a: &Value, b: &Value) -> bool {
+pub fn same(a: &Value, b: &Value) -> bool {
   match (a, b) {
     (Value::Float(x), Value::Float(y)) => same_float(*x, *y),
     (Value::Tag(x, a), Value::Tag(y, b)) => x == y && same(a, b),
