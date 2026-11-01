@@ -13,9 +13,10 @@ use crate::websocket::{Received, Transport};
 /// Runs a server session on `transport` until it ends, taking application requests from
 /// `commands`. Dropping every sender of `commands` leaves the session running.
 ///
-/// The clock is tokio's, so a test that pauses time drives the session's timers too.
+/// The handshake timer starts at [`Transport::accepted`], before the upgrade. The clock is
+/// tokio's, so a test that pauses time drives the session's timers too.
 pub async fn run(mut transport: Transport, mut commands: mpsc::Receiver<Command>, config: &Config) -> Ending {
-  let mut session = Session::server(config, Instant::now().into_std());
+  let mut session = Session::server(config, transport.accepted().into_std());
   let mut commands_open = true;
   loop {
     let deadline = session.poll_timeout().map(Instant::from_std);

@@ -15,6 +15,7 @@ use std::convert::Infallible;
 use std::future::Future;
 use std::io;
 use std::sync::Arc;
+use std::time::Duration;
 
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
@@ -25,10 +26,11 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::upgrade::Upgraded;
 use hyper::{Method, Request, Response, StatusCode, Version};
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use pavia_proto::registry::CloseCode;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
+use tokio::time::Instant;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
 use tokio_tungstenite::tungstenite::protocol::Role;
@@ -49,13 +51,19 @@ const MAX_CLOSE_REASON: usize = 123;
 pub struct Config {
   /// The endpoint path, for example `/rt` (§3).
   pub path: String,
+  /// How long a connection may take to send the request head before it is dropped, so a client
+  /// that stalls before the upgrade holds no socket for long (§14). Default 10 s.
+  pub header_read_timeout: Duration,
 }
 
 impl Config {
   /// An endpoint on `path`.
   #[must_use]
   pub fn new(path: impl Into<String>) -> Self {
-    Self { path: path.into() }
+    Self {
+      path: path.into(),
+      header_read_timeout: Duration::from_secs(10),
+    }
   }
 }
 
@@ -122,18 +130,21 @@ where
   where
     I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
   {
+    let accepted = Instant::now();
     let endpoint = self.clone();
     let service = service_fn(move |request| {
       let endpoint = endpoint.clone();
-      async move { Ok::<_, Infallible>(endpoint.respond(request)) }
+      async move { Ok::<_, Infallible>(endpoint.respond(request, accepted)) }
     });
     http1::Builder::new()
+      .timer(TokioTimer::new())
+      .header_read_timeout(self.config.header_read_timeout)
       .serve_connection(TokioIo::new(io), service)
       .with_upgrades()
       .await
   }
 
-  fn respond(&self, mut request: Request<Incoming>) -> Response<Empty<Bytes>> {
+  fn respond(&self, mut request: Request<Incoming>, accepted: Instant) -> Response<Empty<Bytes>> {
     let accept = match answer(&self.config, &request) {
       Ok(accept) => accept,
       Err(refusal) => return refusal,
@@ -143,7 +154,7 @@ where
     tokio::spawn(async move {
       if let Ok(upgraded) = upgrade.await {
         let socket = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Server, None).await;
-        handler(Transport { socket }).await;
+        handler(Transport { socket, accepted }).await;
       }
     });
     switching_protocols(&accept)
@@ -252,9 +263,17 @@ pub struct TransportError(#[from] tungstenite::Error);
 #[derive(Debug)]
 pub struct Transport {
   socket: WebSocketStream<TokioIo<Upgraded>>,
+  accepted: Instant,
 }
 
 impl Transport {
+  /// When the connection under this transport was accepted, on tokio's clock. The handshake
+  /// timer starts here, before the HTTP upgrade (§7.1).
+  #[must_use]
+  pub const fn accepted(&self) -> Instant {
+    self.accepted
+  }
+
   /// The next data message, or `None` once the peer closed the WebSocket, after the close reply
   /// is flushed, or the connection ended. WebSocket PING and PONG are answered and skipped here;
   /// they are not Pavia's (§7.4). The PONG goes out when the loop reads again.
