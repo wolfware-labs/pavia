@@ -26,19 +26,22 @@ use hyper::service::service_fn;
 use hyper::upgrade::Upgraded;
 use hyper::{Method, Request, Response, StatusCode, Version};
 use hyper_util::rt::TokioIo;
+use pavia_proto::registry::CloseCode;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::protocol::frame::CloseFrame;
-use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode as WsCloseCode;
 use tokio_tungstenite::tungstenite::{self, Message};
 
 /// The WebSocket subprotocol of framing version 1 (§4.3).
 pub const SUBPROTOCOL: &str = "pavia.1";
 
 const WEBSOCKET_VERSION: &str = "13";
+const CLOSE_CODE_OFFSET: u16 = 4000;
+const MAX_CLOSE_REASON: usize = 123;
 
 /// Where the endpoint listens.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -243,8 +246,9 @@ pub struct Transport {
 }
 
 impl Transport {
-  /// The next data message, or `None` once the peer closed the WebSocket or the connection ended.
-  /// WebSocket PING and PONG are answered and skipped here; they are not Pavia's (§7.4).
+  /// The next data message, or `None` once the peer closed the WebSocket, after the close reply
+  /// is flushed, or the connection ended. WebSocket PING and PONG are answered and skipped here;
+  /// they are not Pavia's (§7.4). The PONG goes out when the loop reads again.
   ///
   /// # Errors
   ///
@@ -254,7 +258,9 @@ impl Transport {
       match self.socket.next().await? {
         Ok(Message::Binary(message)) => return Some(Ok(Received::Binary(message))),
         Ok(Message::Text(_)) => return Some(Ok(Received::Text)),
-        Ok(Message::Close(_)) => return None,
+        Ok(Message::Close(_)) => {
+          return self.socket.flush().await.err().map(|error| Err(error.into()));
+        }
         Ok(Message::Ping(_) | Message::Pong(_) | Message::Frame(_)) => {}
         Err(error) => return Some(Err(error.into())),
       }
@@ -270,19 +276,27 @@ impl Transport {
     Ok(self.socket.send(Message::Binary(message)).await?)
   }
 
-  /// Closes the WebSocket with `code` and `reason`. A session close uses `4000 + code` (§4.3,
-  /// §15.1).
+  /// Closes the WebSocket with the session close `code` as `4000 + code` (§4.3, §15.1) and
+  /// `reason` cut to the 123 bytes a close frame holds, on a character boundary (§7.7).
   ///
   /// # Errors
   ///
   /// A [`TransportError`] when the close frame cannot be written.
-  pub async fn close(mut self, code: u16, reason: &str) -> Result<(), TransportError> {
+  pub async fn close(mut self, code: CloseCode, reason: &str) -> Result<(), TransportError> {
     let frame = CloseFrame {
-      code: CloseCode::from(code),
-      reason: reason.into(),
+      code: WsCloseCode::from(CLOSE_CODE_OFFSET + u16::from(code)),
+      reason: truncate(reason, MAX_CLOSE_REASON).into(),
     };
     Ok(self.socket.close(Some(frame)).await?)
   }
+}
+
+fn truncate(text: &str, max: usize) -> &str {
+  let mut end = text.len().min(max);
+  while !text.is_char_boundary(end) {
+    end -= 1;
+  }
+  &text[..end]
 }
 
 #[cfg(test)]

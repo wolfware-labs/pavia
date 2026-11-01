@@ -5,11 +5,12 @@ use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use hyper::StatusCode;
 use hyper::header::{self, HeaderValue};
+use pavia_proto::registry::CloseCode;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::handshake::client::Response;
-use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode as WsCloseCode;
 use tokio_tungstenite::tungstenite::{self, Message};
 use tokio_tungstenite::{WebSocketStream, client_async};
 
@@ -21,7 +22,11 @@ async fn session(mut transport: Transport) {
   while let Some(Ok(received)) = transport.recv().await {
     let sent = match received {
       Received::Binary(message) if message == "close" => {
-        let _ = transport.close(4001, "bye").await;
+        let _ = transport.close(CloseCode::ProtocolError, "bye").await;
+        return;
+      }
+      Received::Binary(message) if message == "long" => {
+        let _ = transport.close(CloseCode::Internal, &"é".repeat(100)).await;
         return;
       }
       Received::Binary(message) => transport.send(message).await,
@@ -209,8 +214,26 @@ async fn closes_with_the_given_code() {
   let Message::Close(Some(frame)) = socket.next().await.unwrap().unwrap() else {
     panic!("expected a close frame");
   };
-  assert_eq!(frame.code, CloseCode::from(4001));
+  assert_eq!(frame.code, WsCloseCode::from(4001));
   assert_eq!(frame.reason, "bye");
+}
+
+#[tokio::test]
+async fn truncates_the_close_reason_on_a_character_boundary() {
+  let (mut socket, _) = upgrade_tcp(&[SUBPROTOCOL]).await.unwrap();
+  socket.send(Message::binary(&b"long"[..])).await.unwrap();
+  let Message::Close(Some(frame)) = socket.next().await.unwrap().unwrap() else {
+    panic!("expected a close frame");
+  };
+  assert_eq!(frame.code, WsCloseCode::from(4008));
+  assert_eq!(frame.reason, "é".repeat(61));
+}
+
+#[tokio::test]
+async fn answers_a_ping_on_its_own() {
+  let (mut socket, _) = upgrade_tcp(&[SUBPROTOCOL]).await.unwrap();
+  socket.send(Message::Ping(Bytes::from_static(b"p"))).await.unwrap();
+  assert_eq!(socket.next().await.unwrap().unwrap(), Message::Pong(Bytes::from_static(b"p")));
 }
 
 #[tokio::test]
@@ -255,6 +278,7 @@ async fn ends_when_the_peer_closes() {
     let stream = TcpStream::connect(address).await.unwrap();
     let (mut socket, _) = upgrade(stream, PATH, &[SUBPROTOCOL]).await.unwrap();
     socket.close(None).await.unwrap();
+    assert!(matches!(socket.next().await, Some(Ok(Message::Close(_)))));
   })
   .await;
   assert_eq!(received, None);
