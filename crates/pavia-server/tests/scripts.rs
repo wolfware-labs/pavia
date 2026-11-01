@@ -317,3 +317,69 @@ fn matches_a_wildcard_map_key() {
   let value = ciborium::Value::Map(vec![(ciborium::Value::Text("a".into()), ciborium::Value::Integer(1.into()))]);
   assert!(runner::pattern::matches(&pattern, &value, &runner::pattern::Captures::new()));
 }
+
+fn decode_header(header: ciborium::Value) -> Result<Vec<runner::wire::Frame>, String> {
+  let frame = runner::wire::Frame {
+    stream: 0,
+    frame_type: 2,
+    flags: 0,
+    header: Some(header),
+    data: Vec::new(),
+  };
+  runner::wire::decode(&runner::wire::encode(&frame).unwrap())
+}
+
+fn nested(depth: usize) -> ciborium::Value {
+  let mut value = ciborium::Value::Integer(0.into());
+  for _ in 1..depth {
+    value = ciborium::Value::Array(vec![value]);
+  }
+  ciborium::Value::Map(vec![(ciborium::Value::Integer(1.into()), value)])
+}
+
+#[test]
+fn enforces_the_header_limits() {
+  assert!(decode_header(nested(16)).is_ok());
+  assert_eq!(decode_header(nested(17)), Err("header nests deeper than 16".into()));
+  let sized = |length| {
+    ciborium::Value::Map(vec![(
+      ciborium::Value::Integer(1.into()),
+      ciborium::Value::Bytes(vec![0; length]),
+    )])
+  };
+  assert!(decode_header(sized(16_384 - 5)).is_ok());
+  assert_eq!(
+    decode_header(sized(16_384 - 4)),
+    Err("header of 16385 bytes is above 16384".into())
+  );
+}
+
+#[test]
+fn rejects_a_top_level_key_that_is_not_an_unsigned_integer() {
+  for key in [ciborium::Value::Text("a".into()), ciborium::Value::Integer((-1).into())] {
+    let header = ciborium::Value::Map(vec![(key, ciborium::Value::Integer(1.into()))]);
+    assert!(decode_header(header).is_err());
+  }
+  let text_keys_inside = ciborium::Value::Map(vec![(
+    ciborium::Value::Integer(34.into()),
+    ciborium::Value::Map(vec![(ciborium::Value::Text("a".into()), ciborium::Value::Integer(1.into()))]),
+  )]);
+  assert!(decode_header(text_keys_inside).is_ok());
+}
+
+#[test]
+fn matches_each_map_entry_once() {
+  let pattern = pavia_vectors::diag::parse("{\"a\": 1, *: 1, ...}").unwrap();
+  let entry = |key: &str, value: i64| (ciborium::Value::Text(key.into()), ciborium::Value::Integer(value.into()));
+  let captures = runner::pattern::Captures::new();
+  assert!(!runner::pattern::matches(
+    &pattern,
+    &ciborium::Value::Map(vec![entry("a", 1), entry("b", 2)]),
+    &captures
+  ));
+  assert!(runner::pattern::matches(
+    &pattern,
+    &ciborium::Value::Map(vec![entry("b", 1), entry("a", 1)]),
+    &captures
+  ));
+}

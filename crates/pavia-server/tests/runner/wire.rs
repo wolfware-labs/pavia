@@ -5,6 +5,9 @@ use std::fmt;
 
 use ciborium::Value;
 
+const MAX_HEADER_SIZE: usize = 16_384;
+const MAX_HEADER_DEPTH: usize = 16;
+
 /// One frame with its stream ID, as the runner sends or receives it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Frame {
@@ -86,19 +89,47 @@ pub fn decode(mut message: &[u8]) -> Result<Vec<Frame>, String> {
   Ok(frames)
 }
 
-/// Decodes a header the way a strict receiver reads what a sender MUST write (§5.4.1): one map,
-/// no tags, no duplicate keys, and exactly the bytes of its core deterministic encoding, which
-/// rules out indefinite lengths, longer integer and float forms, and keys out of order.
+/// Decodes a header the way a strict receiver reads what a sender MUST write (§5.4.1): at most
+/// 16 KiB and depth 16, one map with unsigned integer keys, no tags, no duplicate keys, and
+/// exactly the bytes of its core deterministic encoding, which rules out indefinite lengths,
+/// longer integer and float forms, and keys out of order.
 fn strict_header(bytes: &[u8]) -> Result<Value, String> {
+  if bytes.len() > MAX_HEADER_SIZE {
+    return Err(format!("header of {} bytes is above {MAX_HEADER_SIZE}", bytes.len()));
+  }
   let value = ciborium::from_reader::<Value, _>(bytes).map_err(|error| format!("header is not CBOR: {error}"))?;
-  if !matches!(value, Value::Map(_)) {
+  let Value::Map(entries) = &value else {
     return Err(format!("header is not a map: {value:?}"));
+  };
+  if let Some((key, _)) = entries
+    .iter()
+    .find(|(key, _)| !matches!(key, Value::Integer(integer) if i128::from(*integer) >= 0))
+  {
+    return Err(format!("header key {key:?} is not an unsigned integer"));
+  }
+  if depth(&value) > MAX_HEADER_DEPTH {
+    return Err(format!("header nests deeper than {MAX_HEADER_DEPTH}"));
   }
   check_header_value(&value)?;
   if cbor(&deterministic(&value)) != bytes {
     return Err(format!("header is not in deterministic encoding: {}", hex(bytes)));
   }
   Ok(value)
+}
+
+fn depth(value: &Value) -> usize {
+  match value {
+    Value::Array(items) => 1 + items.iter().map(depth).max().unwrap_or(0),
+    Value::Map(entries) => {
+      1 + entries
+        .iter()
+        .map(|(key, item)| depth(key).max(depth(item)))
+        .max()
+        .unwrap_or(0)
+    }
+    Value::Tag(_, inner) => depth(inner),
+    _ => 0,
+  }
 }
 
 fn check_header_value(value: &Value) -> Result<(), String> {

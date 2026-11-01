@@ -26,15 +26,28 @@ pub fn matches(pattern: &Diag, value: &Value, captures: &Captures) -> bool {
       items.len() == values.len() && items.iter().zip(values).all(|(item, value)| matches(item, value, captures))
     }
     (Diag::Map { entries, open }, Value::Map(values)) => {
-      (*open || entries.len() == values.len())
-        && entries.iter().all(|(key, item)| {
-          values
-            .iter()
-            .any(|(candidate, value)| matches(key, candidate, captures) && matches(item, value, captures))
-        })
+      (*open || entries.len() == values.len()) && assign(entries, values, &mut vec![false; values.len()], captures)
     }
     _ => false,
   }
+}
+
+/// Whether every pattern entry matches a received entry of its own, trying each free candidate
+/// in turn so that a `*` key never takes the entry a later literal key needs.
+fn assign(entries: &[(Diag, Diag)], values: &[(Value, Value)], used: &mut [bool], captures: &Captures) -> bool {
+  let Some(((key, item), rest)) = entries.split_first() else {
+    return true;
+  };
+  for (index, (candidate, value)) in values.iter().enumerate() {
+    if !used[index] && matches(key, candidate, captures) && matches(item, value, captures) {
+      used[index] = true;
+      if assign(rest, values, used, captures) {
+        return true;
+      }
+      used[index] = false;
+    }
+  }
+  false
 }
 
 /// The value a `send` writes: `pattern` with every `$name` replaced by its capture.
