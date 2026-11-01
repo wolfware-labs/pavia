@@ -36,7 +36,7 @@ pub enum EncodeError {
 }
 
 #[cfg_attr(
-  not(test),
+  not(any(test, fuzzing)),
   expect(
     dead_code,
     reason = "the session batches frames into messages once it sends more than CLOSE (#33)"
@@ -120,7 +120,10 @@ fn varint_length(value: u64) -> u64 {
 /// feed(chunk) ─► checks each Length ─► buffer ─► next_frame() ─► Ok(Some(frame)) │ Ok(None)
 ///                                       finish() at end of stream ─► Err if a frame is cut off
 /// ```
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the WebTransport stream reader"))]
+#[cfg_attr(
+  not(any(test, fuzzing)),
+  expect(dead_code, reason = "used by the WebTransport stream reader")
+)]
 #[derive(Debug)]
 pub struct FrameDecoder {
   buffer: BytesMut,
@@ -128,7 +131,10 @@ pub struct FrameDecoder {
   checked: usize,
 }
 
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the WebTransport stream reader"))]
+#[cfg_attr(
+  not(any(test, fuzzing)),
+  expect(dead_code, reason = "used by the WebTransport stream reader")
+)]
 impl FrameDecoder {
   /// A decoder that rejects any frame whose Length is above `max_frame`.
   pub fn new(max_frame: u64) -> Self {

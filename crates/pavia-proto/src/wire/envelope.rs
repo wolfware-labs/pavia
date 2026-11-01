@@ -32,7 +32,7 @@ pub struct WsFrame {
 
 /// Error returned by [`encode_messages`].
 #[cfg_attr(
-  not(test),
+  not(any(test, fuzzing)),
   expect(
     dead_code,
     reason = "the session batches frames into messages once it sends more than CLOSE (#33)"
@@ -99,7 +99,7 @@ pub fn decode_message(mut message: Bytes, max_frame: u64) -> Result<Vec<WsFrame>
 /// - [`EncodeError::FrameTooLarge`] if a frame's payload is above the peer's `max_frame`.
 /// - [`EncodeError::StreamIdOutOfRange`] for a stream ID above 2^62 − 1.
 #[cfg_attr(
-  not(test),
+  not(any(test, fuzzing)),
   expect(
     dead_code,
     reason = "the session batches frames into messages once it sends more than CLOSE (#33)"

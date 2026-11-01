@@ -200,7 +200,7 @@ fn closes_with_protocol_error_on_a_malformed_message() {
     let Some(Output::Transmit(sent)) = outputs.first() else {
       panic!("{bad:02x?}: {outputs:?}");
     };
-    let [(0, Frame::Close(Close { code: 1, .. }))] = frames(sent).as_slice() else {
+    let [(0, Frame::Close(Close { code: 1, msg: None }))] = frames(sent).as_slice() else {
       panic!("{bad:02x?}: {outputs:?}");
     };
     assert!(matches!(

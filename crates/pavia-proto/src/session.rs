@@ -156,7 +156,7 @@ impl Session {
 
   fn fail(&mut self, error: &ProtocolError) {
     if let Outcome::SessionFatal(code) = error.outcome() {
-      self.close(code, Some(error.to_string()));
+      self.close(code, None);
     }
   }
 
