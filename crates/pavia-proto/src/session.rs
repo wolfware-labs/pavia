@@ -1,13 +1,14 @@
 //! The session state machine (§7), driven as sans-IO: the driver feeds [`Input`]s with
 //! [`Session::handle_input`] and then drains [`Session::poll_output`] until it returns `None`.
 //!
-//! So far it is the server side up to a validated HELLO (§6.2, §7.1) and every way a session ends
-//! (§7.7, §13.4). Time is an input: the session is built with the accept time, every
+//! So far it is the server side up to a validated HELLO with its version and codec chosen (§6.2,
+//! §7.1, §7.2), and every way a session ends (§7.3, §7.7, §13.4). Time is an input: the session is built with the accept time, every
 //! [`Session::handle_input`] call takes `now`, and [`Session::poll_timeout`] gives the handshake deadline.
 //!
 //! ```text
 //!  AwaitHello ──HELLO──▶ Handshaking ──(WELCOME, #31)──▶ …
 //!      │                     │
+//!      ├ no common version or codec ───────────▶ REJECT UNSUPPORTED_VERSION
 //!      ├ other frame first ──┤ second HELLO ─────▶ CLOSE PROTOCOL_ERROR
 //!      ├ deadline ───────────┤ deadline ─────────▶ CLOSE HANDSHAKE_TIMEOUT
 //!      └ TransportLost ──────┴ CLOSE received ───▶ Ended
@@ -24,7 +25,8 @@ use std::time::{Duration, Instant};
 use bytes::{Bytes, BytesMut};
 
 use crate::error::{Outcome, ProtocolError};
-use crate::frame::{Close, Frame, Hello};
+use crate::frame::{Close, Frame, Hello, Reject};
+use crate::negotiate::{self, Codec};
 use crate::registry::CloseCode;
 use crate::stream::Side;
 use crate::wire::envelope::{self, MAX_FRAME_FLOOR};
@@ -93,8 +95,25 @@ pub enum Ending {
     /// The side that sent CLOSE.
     by: Side,
   },
+  /// The server sent REJECT instead of WELCOME (§7.3).
+  Rejected {
+    /// The REJECT code.
+    code: CloseCode,
+    /// The REJECT `msg`.
+    msg: String,
+  },
   /// The transport closed or failed without CLOSE. Without resumption this ends the session.
   TransportLost,
+}
+
+/// The version and codec chosen from a HELLO (§7.2), announced in WELCOME.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Negotiated {
+  /// The protocol major version.
+  pub version: u64,
+  /// The data-section codec.
+  pub codec: Codec,
 }
 
 /// Session settings chosen by the application.
@@ -104,20 +123,33 @@ pub struct Config {
   /// How long the handshake may take, from transport accept until WELCOME or REJECT is sent
   /// (§7.1). Default 10 s.
   pub handshake_timeout: Duration,
+  /// The protocol major versions this server speaks. Default `[1]`.
+  pub versions: Vec<u64>,
+  /// The data-section codecs this server supports. Default `[Codec::Cbor]`; `json` waits for
+  /// its data-section codec (#59).
+  pub codecs: Vec<Codec>,
 }
 
 impl Default for Config {
   fn default() -> Self {
     Self {
       handshake_timeout: Duration::from_secs(10),
+      versions: vec![1],
+      codecs: vec![Codec::Cbor],
     }
   }
 }
 
 #[derive(Debug)]
 enum State {
-  AwaitHello { deadline: Instant },
-  Handshaking { deadline: Instant, hello: Box<Hello> },
+  AwaitHello {
+    deadline: Instant,
+  },
+  Handshaking {
+    deadline: Instant,
+    hello: Box<Hello>,
+    negotiated: Negotiated,
+  },
   Ended,
 }
 
@@ -125,6 +157,8 @@ enum State {
 #[derive(Debug)]
 pub struct Session {
   local: Side,
+  versions: Vec<u64>,
+  codecs: Vec<Codec>,
   max_frame: u64,
   limits: DecodeLimits,
   state: State,
@@ -138,6 +172,8 @@ impl Session {
   pub fn server(config: &Config, now: Instant) -> Self {
     Self {
       local: Side::Server,
+      versions: config.versions.clone(),
+      codecs: config.codecs.clone(),
       max_frame: MAX_FRAME_FLOOR,
       limits: DecodeLimits::default(),
       state: State::AwaitHello {
@@ -158,6 +194,15 @@ impl Session {
   pub fn hello(&self) -> Option<&Hello> {
     match &self.state {
       State::Handshaking { hello, .. } => Some(hello),
+      State::AwaitHello { .. } | State::Ended => None,
+    }
+  }
+
+  /// The version and codec chosen from the client's HELLO.
+  #[must_use]
+  pub const fn negotiated(&self) -> Option<Negotiated> {
+    match &self.state {
+      State::Handshaking { negotiated, .. } => Some(*negotiated),
       State::AwaitHello { .. } | State::Ended => None,
     }
   }
@@ -209,9 +254,15 @@ impl Session {
           if hello.versions.is_empty() || hello.codecs.is_empty() {
             return self.fail(&ProtocolError::InvalidHeaderField);
           }
+          let version = negotiate::version(&hello.versions, &self.versions);
+          let codec = negotiate::codec(&hello.codecs, &self.codecs);
+          let (Some(version), Some(codec)) = (version, codec) else {
+            return self.reject(CloseCode::UnsupportedVersion, "no common protocol version or codec");
+          };
           self.state = State::Handshaking {
             deadline: *deadline,
             hello: Box::new(hello),
+            negotiated: Negotiated { version, codec },
           };
         }
         (State::Handshaking { .. }, Frame::Close(close)) if on_control => return self.peer_closed(close),
@@ -248,11 +299,7 @@ impl Session {
       code: u64::from(u16::from(code)),
       msg: msg.clone(),
     });
-    let mut message = BytesMut::new();
-    varint::encode(CONTROL_STREAM, &mut message).expect("stream 0 fits a varint");
-    if close.encode(&mut message).is_ok() {
-      self.outputs.push_back(Output::Transmit(message.freeze()));
-    }
+    self.transmit(&close);
     self.outputs.push_back(Output::CloseTransport {
       code,
       reason: msg.clone().unwrap_or_default(),
@@ -262,6 +309,31 @@ impl Session {
       msg,
       by: self.local,
     });
+  }
+
+  fn reject(&mut self, code: CloseCode, msg: &str) {
+    let reject = Frame::Reject(Reject {
+      code: u64::from(u16::from(code)),
+      msg: msg.to_owned(),
+      retry: None,
+    });
+    self.transmit(&reject);
+    self.outputs.push_back(Output::CloseTransport {
+      code,
+      reason: msg.to_owned(),
+    });
+    self.end(Ending::Rejected {
+      code,
+      msg: msg.to_owned(),
+    });
+  }
+
+  fn transmit(&mut self, frame: &Frame) {
+    let mut message = BytesMut::new();
+    varint::encode(CONTROL_STREAM, &mut message).expect("stream 0 fits a varint");
+    if frame.encode(&mut message).is_ok() {
+      self.outputs.push_back(Output::Transmit(message.freeze()));
+    }
   }
 
   fn end(&mut self, ending: Ending) {

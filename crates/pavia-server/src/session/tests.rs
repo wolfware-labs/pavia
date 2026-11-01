@@ -338,3 +338,35 @@ async fn closes_with_protocol_error_when_the_first_frame_is_not_hello() {
     }
   ));
 }
+
+fn raw_frame(frame_type: u8, header: &[u8]) -> Vec<u8> {
+  let mut frame = vec![0x00, frame_type, 0x00, header.len() as u8 + 1, header.len() as u8];
+  frame.extend(header);
+  frame
+}
+
+#[tokio::test]
+async fn rejects_a_hello_with_no_common_version_or_codec() {
+  let msg = "no common protocol version or codec";
+  let mut reject = vec![0xa2, 0x06, 0x02, 0x07, 0x78, msg.len() as u8];
+  reject.extend(msg.as_bytes());
+  let hellos = [
+    [&[0xa2, 0x0e, 0x81, 0x02, 0x10, 0x81, 0x64][..], b"cbor"].concat(),
+    [&[0xa2, 0x0e, 0x81, 0x01, 0x10, 0x81, 0x67][..], b"msgpack"].concat(),
+  ];
+  for hello in hellos {
+    let (mut socket, ending) = connect(None).await;
+    socket.send(Message::binary(raw_frame(0x01, &hello))).await.unwrap();
+    let (binary, ws_code, reason) = closed(&mut socket).await;
+    assert_eq!(binary, [raw_frame(0x03, &reject)], "{hello:02x?}");
+    assert_eq!(ws_code, WsCloseCode::from(4002));
+    assert_eq!(reason.as_str(), msg);
+    assert_eq!(
+      ending.await.unwrap(),
+      Ending::Rejected {
+        code: CloseCode::UnsupportedVersion,
+        msg: msg.into()
+      }
+    );
+  }
+}
