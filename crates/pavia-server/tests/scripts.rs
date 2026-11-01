@@ -383,3 +383,32 @@ fn matches_each_map_entry_once() {
     &captures
   ));
 }
+
+#[test]
+fn captures_from_json_data() {
+  let json_frame = |data: &str| {
+    let mut frame = frame(2, 16, None, Some(data));
+    frame["codec"] = json!("json");
+    frame
+  };
+  let mut expect = json_frame("{\"a\":[1,\"x\"]}");
+  expect["capture"] = json!({"x": "data.a.1"});
+  let steps = json!([
+    {"send": json_frame("{\"a\":[1,\"x\"]}")},
+    {"expect": expect},
+    {"send": frame(4, 16, Some("{1: $x}"), None)},
+    {"expect": frame(4, 16, Some("{1: \"x\"}"), None)},
+  ]);
+  assert_eq!(both(&script(steps)), Ok(Verdict::Passed));
+}
+
+#[test]
+fn accepts_shortest_float_widths_in_a_header() {
+  for header in [
+    &[0xa1, 0x01, 0xf9, 0x3e, 0x00][..],
+    &[0xa1, 0x01, 0xfa, 0x3f, 0x80, 0x00, 0x01],
+  ] {
+    assert!(runner::wire::decode(&message_with_header(header)).is_ok(), "{header:02x?}");
+  }
+  assert!(runner::wire::decode(&message_with_header(&[0xa1, 0x01, 0xfa, 0x3f, 0xc0, 0x00, 0x00])).is_err());
+}

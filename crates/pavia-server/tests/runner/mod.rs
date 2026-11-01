@@ -4,6 +4,10 @@
 //! [`Mode::InMemory`] connects over `tokio::io::duplex` on a paused clock, so `wait` and every
 //! timeout advance time instead of sleeping. [`Mode::Socket`] connects over TCP on loopback and
 //! sleeps. Both play the same steps and must reach the same verdict.
+//!
+//! A `send` writes the header and data in the order the script gives them, so a script can check
+//! that a server accepts encodings that are valid but not deterministic (§5.4.1, §12.3). What the
+//! server sends is held to the sender rules.
 
 pub mod pattern;
 pub mod wire;
@@ -133,6 +137,7 @@ enum Data {
   Empty,
   Cbor(Diag),
   Exact(Vec<u8>),
+  Json(Vec<u8>),
 }
 
 impl Script {
@@ -225,7 +230,7 @@ fn parse_frame(body: &Json, codec: &str, captured: &HashSet<String>) -> Result<F
     (Json::Null, Some(raw)) => Data::Exact(pavia_vectors::hex(raw.as_str().ok_or("data_hex is not a string")?)),
     (Json::String(data), _) => match body.get("codec").and_then(Json::as_str).unwrap_or(codec) {
       "cbor" => Data::Cbor(pattern(data, captured)?),
-      "json" => Data::Exact(data.as_bytes().to_vec()),
+      "json" => Data::Json(data.as_bytes().to_vec()),
       other => return Err(format!("unknown codec {other}")),
     },
     _ => return Err("data is neither null nor a string".into()),
@@ -405,7 +410,7 @@ where
         .transpose()?,
       data: match &spec.data {
         Data::Empty => Vec::new(),
-        Data::Exact(bytes) => bytes.clone(),
+        Data::Exact(bytes) | Data::Json(bytes) => bytes.clone(),
         Data::Cbor(data) => {
           let mut bytes = Vec::new();
           ciborium::into_writer(&pattern::resolve(data, &self.captures)?, &mut bytes).map_err(|error| error.to_string())?;
@@ -447,6 +452,7 @@ where
       let mut segments = path.split('.');
       let root = match segments.next() {
         Some("header") => frame.header.clone(),
+        _ if matches!(spec.data, Data::Json(_)) => serde_json::from_slice(&frame.data).ok(),
         _ => decode_data(&frame.data).ok(),
       };
       let segments: Vec<&str> = segments.collect();
@@ -477,7 +483,7 @@ where
     }
     let data = match &spec.data {
       Data::Empty => frame.data.is_empty(),
-      Data::Exact(bytes) => frame.data == *bytes,
+      Data::Exact(bytes) | Data::Json(bytes) => frame.data == *bytes,
       Data::Cbor(pattern) => decode_data(&frame.data).is_ok_and(|data| pattern::matches(pattern, &data, &self.captures)),
     };
     if !data {
