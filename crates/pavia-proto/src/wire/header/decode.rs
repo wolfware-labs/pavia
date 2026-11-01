@@ -24,6 +24,7 @@ pub enum DecodeError {
   TrailingBytes,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DecodeLimits {
   pub max_size: usize,
   pub max_depth: usize,

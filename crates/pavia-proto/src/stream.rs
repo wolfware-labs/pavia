@@ -31,6 +31,17 @@ pub enum Side {
   Server,
 }
 
+impl Side {
+  /// The other side.
+  #[must_use]
+  pub const fn peer(self) -> Self {
+    match self {
+      Self::Client => Self::Server,
+      Self::Server => Self::Client,
+    }
+  }
+}
+
 /// Which end of a call sent a frame on its call stream. The caller is the side that sent CALL,
 /// which is the server for a server-initiated call (§8.8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

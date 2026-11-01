@@ -31,6 +31,13 @@ pub struct WsFrame {
 }
 
 /// Error returned by [`encode_messages`].
+#[cfg_attr(
+  not(test),
+  expect(
+    dead_code,
+    reason = "the session batches frames into messages once it sends more than CLOSE (#33)"
+  )
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum EncodeError {
   /// A frame's payload is above the peer's `max_frame`, so it cannot be sent at all.
@@ -91,6 +98,13 @@ pub fn decode_message(mut message: Bytes, max_frame: u64) -> Result<Vec<WsFrame>
 ///
 /// - [`EncodeError::FrameTooLarge`] if a frame's payload is above the peer's `max_frame`.
 /// - [`EncodeError::StreamIdOutOfRange`] for a stream ID above 2^62 − 1.
+#[cfg_attr(
+  not(test),
+  expect(
+    dead_code,
+    reason = "the session batches frames into messages once it sends more than CLOSE (#33)"
+  )
+)]
 pub fn encode_messages(frames: &[WsFrame], peer_max_frame: Option<u64>) -> Result<Vec<Bytes>, EncodeError> {
   let max_frame = peer_max_frame.unwrap_or(MAX_FRAME_FLOOR);
   let limit = usize::try_from(message_limit(max_frame)).unwrap_or(usize::MAX);
