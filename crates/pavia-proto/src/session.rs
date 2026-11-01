@@ -124,6 +124,7 @@ enum State {
 /// One server session.
 #[derive(Debug)]
 pub struct Session {
+  local: Side,
   max_frame: u64,
   limits: DecodeLimits,
   state: State,
@@ -136,6 +137,7 @@ impl Session {
   #[must_use]
   pub fn server(config: &Config, now: Instant) -> Self {
     Self {
+      local: Side::Server,
       max_frame: MAX_FRAME_FLOOR,
       limits: DecodeLimits::default(),
       state: State::AwaitHello {
@@ -237,7 +239,7 @@ impl Session {
     self.end(Ending::Closed {
       code,
       msg: close.msg,
-      by: Side::Client,
+      by: self.local.peer(),
     });
   }
 
@@ -258,7 +260,7 @@ impl Session {
     self.end(Ending::Closed {
       code,
       msg,
-      by: Side::Server,
+      by: self.local,
     });
   }
 
