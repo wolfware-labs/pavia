@@ -119,12 +119,6 @@ impl Caps {
   }
 }
 
-impl FromIterator<Capability> for Caps {
-  fn from_iter<I: IntoIterator<Item = Capability>>(iter: I) -> Self {
-    Self(iter.into_iter().collect())
-  }
-}
-
 /// Checks one frame received from `sender` against the granted set. A frame that uses a feature
 /// outside it is [`ProtocolError::CapabilityNotGranted`]. Metadata is never gated, so a
 /// `pavia-idempotency-key` without `idempotency` is ordinary metadata (§8.7).
@@ -161,7 +155,7 @@ fn needed(frame: &Frame, sender: Side) -> [Option<Capability>; 4] {
     Frame::Subscribe(subscribe) => [
       Some(Capability::Channels),
       subscribe.since.as_ref().map(|_| Capability::History),
-      (subscribe.presence == Some(true)).then_some(Capability::Presence),
+      subscribe.presence.map(|_| Capability::Presence),
       resume(&subscribe.sequencing),
     ],
     Frame::Subscribed(subscribed) => sequenced(Some(Capability::Channels), &subscribed.sequencing),

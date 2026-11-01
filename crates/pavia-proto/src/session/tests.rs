@@ -504,6 +504,7 @@ fn rejects_a_resume_while_resume_is_not_granted() {
   session.feed(Input::Message(message(&[(
     0,
     Frame::Hello(Hello {
+      versions: vec![9],
       caps: Some(vec!["resume".into()]),
       resume: Some(resume),
       ..hello()

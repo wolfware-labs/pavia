@@ -260,15 +260,15 @@ impl Session {
           if hello.versions.is_empty() || hello.codecs.is_empty() {
             return self.fail(&ProtocolError::InvalidHeaderField);
           }
+          let caps = Caps::grant(hello.caps.as_deref());
+          if hello.resume.is_some() && !caps.contains(Capability::Resume) {
+            return self.reject(CloseCode::ResumeFailed, "unknown session");
+          }
           let version = negotiate::version(&hello.versions, &self.versions);
           let codec = negotiate::codec(&hello.codecs, &self.codecs);
           let (Some(version), Some(codec)) = (version, codec) else {
             return self.reject(CloseCode::UnsupportedVersion, "no common protocol version or codec");
           };
-          let caps = Caps::grant(hello.caps.as_deref());
-          if hello.resume.is_some() && !caps.contains(Capability::Resume) {
-            return self.reject(CloseCode::ResumeFailed, "unknown session");
-          }
           self.state = State::Handshaking {
             deadline: *deadline,
             hello: Box::new(hello),

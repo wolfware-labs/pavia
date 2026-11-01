@@ -3,11 +3,14 @@ use proptest::prelude::*;
 
 use super::{Capability, Caps, IMPLEMENTED, check};
 use crate::error::ProtocolError;
-use crate::frame::{AckMap, Call, Frame, Heartbeat, Meta, MetaValue, Notify, Sequencing, Since, Subscribe};
+use crate::frame::{
+  AckMap, Call, Datagram, DgramBind, Frame, Heartbeat, LaneOpen, Meta, MetaValue, Notify, Presence, Publication, Sequencing,
+  Since, Subscribe, Subscribed, Unsubscribe, Unsubscribed, UnsubscribedForm,
+};
 use crate::stream::Side;
 
 fn granted(capabilities: &[Capability]) -> Caps {
-  capabilities.iter().copied().chain([Capability::Calls]).collect()
+  Caps(capabilities.iter().copied().chain([Capability::Calls]).collect())
 }
 
 fn call(shape: u64, meta: Option<Meta>) -> Frame {
@@ -159,4 +162,91 @@ fn passes_frames_the_grant_covers() {
   }
   let streams_and_server_calls = granted(&[Capability::Streams, Capability::ServerCalls]);
   assert!(check(&streams_and_server_calls, &call(2, None), Side::Server).is_ok());
+}
+
+#[test]
+fn maps_every_gated_frame_to_its_capability() {
+  let channel = || "room".to_owned();
+  let none = Sequencing::default;
+  let rows = [
+    (
+      Frame::Subscribed(Subscribed {
+        rid: 1,
+        channel: channel(),
+        epoch: "e1".into(),
+        offset: 0,
+        recovered: None,
+        sequencing: none(),
+        data: Bytes::new(),
+      }),
+      Capability::Channels,
+    ),
+    (
+      Frame::Unsubscribe(Unsubscribe {
+        rid: 2,
+        channel: channel(),
+        sequencing: none(),
+      }),
+      Capability::Channels,
+    ),
+    (
+      Frame::Unsubscribed(Unsubscribed {
+        channel: channel(),
+        form: UnsubscribedForm::Reply { rid: 2 },
+        sequencing: none(),
+      }),
+      Capability::Channels,
+    ),
+    (
+      Frame::Publication(Publication {
+        channel: channel(),
+        offset: 1,
+        sequencing: none(),
+        data: Bytes::new(),
+      }),
+      Capability::Channels,
+    ),
+    (
+      Frame::Presence(Presence {
+        channel: channel(),
+        kind: 0,
+        sequencing: none(),
+        data: Bytes::new(),
+      }),
+      Capability::Presence,
+    ),
+    (
+      Frame::Datagram(Datagram {
+        key: 1,
+        seq: 0,
+        data: Bytes::new(),
+      }),
+      Capability::Datagrams,
+    ),
+    (
+      Frame::DgramBind(DgramBind {
+        key: 1,
+        name: "cursor".into(),
+        sequencing: none(),
+      }),
+      Capability::Datagrams,
+    ),
+    (Frame::LaneOpen(LaneOpen { lane: 1 }), Capability::Lanes),
+    (subscribe(None, Some(false), none()), Capability::Presence),
+  ];
+  for (frame, capability) in rows {
+    assert!(
+      matches!(
+        check(&granted(&[]), &frame, Side::Server),
+        Err(ProtocolError::CapabilityNotGranted)
+      ),
+      "{frame:?}"
+    );
+    let with = if capability == Capability::Presence {
+      granted(&[Capability::Channels, capability])
+    } else {
+      granted(&[capability])
+    };
+    assert!(check(&with, &frame, Side::Server).is_ok(), "{frame:?} with {capability:?}");
+  }
 }
