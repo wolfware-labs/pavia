@@ -292,10 +292,16 @@ async fn closes_a_slow_hello_with_handshake_timeout() {
     "Sec-WebSocket-Protocol: pavia.1\r\n\r\n",
   );
   stream.write_all(request.as_bytes()).await.unwrap();
-  let mut received = Vec::new();
-  while !received.ends_with(b"\r\n\r\n") {
-    received.push(stream.read_u8().await.unwrap());
-  }
+  let head = tokio::time::timeout(Duration::from_secs(5), async {
+    let mut received = Vec::new();
+    while !received.ends_with(b"\r\n\r\n") {
+      received.push(stream.read_u8().await.unwrap());
+    }
+    received
+  })
+  .await
+  .expect("the server never answered the upgrade");
+  assert!(head.starts_with(b"HTTP/1.1 101"), "{}", String::from_utf8_lossy(&head));
   let masked_hello_start = [0x82, 0x90, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
   for byte in masked_hello_start {
     if stream.write_all(&[byte]).await.is_err() {

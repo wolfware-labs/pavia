@@ -2,8 +2,8 @@
 //! [`Session::handle_input`] and then drains [`Session::poll_output`] until it returns `None`.
 //!
 //! So far it is the server side up to a validated HELLO (§6.2, §7.1) and every way a session ends
-//! (§7.7, §13.4). Time is an input: the session is built with the accept time, every input
-//! carries `now`, and [`Session::poll_timeout`] gives the handshake deadline.
+//! (§7.7, §13.4). Time is an input: the session is built with the accept time, every
+//! [`Session::handle_input`] call takes `now`, and [`Session::poll_timeout`] gives the handshake deadline.
 //!
 //! ```text
 //!  AwaitHello ──HELLO──▶ Handshaking ──(WELCOME, #31)──▶ …
