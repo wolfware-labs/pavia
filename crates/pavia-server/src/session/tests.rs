@@ -1,8 +1,13 @@
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
 use futures_util::{SinkExt, StreamExt};
 use hyper::header::{self, HeaderValue};
 use pavia_proto::registry::CloseCode;
-use pavia_proto::session::{Command, Ending};
+use pavia_proto::session::{Command, Config as SessionConfig, Ending};
 use pavia_proto::stream::Side;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -32,19 +37,20 @@ const CODES: [CloseCode; 14] = [
   CloseCode::ContractMismatch,
 ];
 
-async fn connect(command: Option<Command>) -> (Socket, oneshot::Receiver<Ending>) {
+async fn listen(command: Option<Command>, config: SessionConfig) -> (SocketAddr, oneshot::Receiver<Ending>) {
   let (ended, ending) = oneshot::channel();
-  let ended = std::sync::Arc::new(std::sync::Mutex::new(Some(ended)));
+  let ended = Arc::new(Mutex::new(Some(ended)));
   let endpoint = Endpoint::new(Config::new("/rt"), move |transport: Transport| {
     let ended = ended.lock().unwrap().take();
     let command = command.clone();
+    let config = config.clone();
     async move {
       let (commands, receiver) = mpsc::channel(1);
       if let Some(command) = command {
         commands.send(command).await.unwrap();
       }
       drop(commands);
-      let ending = run(transport, receiver).await;
+      let ending = run(transport, receiver, &config).await;
       if let Some(ended) = ended {
         let _ = ended.send(ending);
       }
@@ -53,6 +59,11 @@ async fn connect(command: Option<Command>) -> (Socket, oneshot::Receiver<Ending>
   let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
   let address = listener.local_addr().unwrap();
   tokio::spawn(endpoint.serve(listener));
+  (address, ending)
+}
+
+async fn connect_with(command: Option<Command>, config: SessionConfig) -> (Socket, oneshot::Receiver<Ending>) {
+  let (address, ending) = listen(command, config).await;
   let mut request = "ws://localhost/rt".into_client_request().unwrap();
   request
     .headers_mut()
@@ -61,6 +72,17 @@ async fn connect(command: Option<Command>) -> (Socket, oneshot::Receiver<Ending>
     .await
     .unwrap();
   (socket, ending)
+}
+
+async fn connect(command: Option<Command>) -> (Socket, oneshot::Receiver<Ending>) {
+  connect_with(command, SessionConfig::default()).await
+}
+
+fn hello_frame() -> Vec<u8> {
+  let header = [0xa2, 0x0e, 0x81, 0x01, 0x10, 0x81, 0x64, b'c', b'b', b'o', b'r'];
+  let mut frame = vec![0x00, 0x01, 0x00, header.len() as u8 + 1, header.len() as u8];
+  frame.extend(header);
+  frame
 }
 
 fn close_frame(code: u8) -> Vec<u8> {
@@ -118,6 +140,7 @@ async fn cuts_the_close_reason_on_a_character_boundary() {
 #[tokio::test]
 async fn mirrors_a_client_close() {
   let (mut socket, ending) = connect(None).await;
+  socket.send(Message::binary(hello_frame())).await.unwrap();
   socket.send(Message::binary(close_frame(0))).await.unwrap();
   let (binary, ws_code, _) = closed(&mut socket).await;
   assert!(binary.is_empty());
@@ -135,6 +158,7 @@ async fn mirrors_a_client_close() {
 #[tokio::test]
 async fn records_an_unknown_client_code_as_internal() {
   let (mut socket, ending) = connect(None).await;
+  socket.send(Message::binary(hello_frame())).await.unwrap();
   socket.send(Message::binary(close_frame(99))).await.unwrap();
   let (_, ws_code, _) = closed(&mut socket).await;
   assert_eq!(ws_code, WsCloseCode::from(4008));
@@ -183,7 +207,7 @@ async fn closes_with_protocol_error_on_a_malformed_message() {
 #[tokio::test]
 async fn keeps_running_after_a_message_that_needs_no_answer() {
   let (mut socket, ending) = connect(None).await;
-  socket.send(Message::binary(&b"\x00\x04\x00\x01\x00"[..])).await.unwrap();
+  socket.send(Message::binary(hello_frame())).await.unwrap();
   socket.send(Message::binary(close_frame(0))).await.unwrap();
   let (binary, ws_code, _) = closed(&mut socket).await;
   assert!(binary.is_empty());
@@ -216,4 +240,94 @@ async fn closes_with_protocol_error_on_a_text_message() {
       }
     ));
   }
+}
+
+fn short_timeout() -> SessionConfig {
+  let mut config = SessionConfig::default();
+  config.handshake_timeout = Duration::from_millis(200);
+  config
+}
+
+#[tokio::test]
+async fn closes_with_handshake_timeout_when_nothing_arrives() {
+  let started = std::time::Instant::now();
+  let (mut socket, ending) = connect_with(None, short_timeout()).await;
+  let (binary, ws_code, _) = closed(&mut socket).await;
+  assert!(started.elapsed() >= Duration::from_millis(200));
+  assert_eq!(binary, [close_frame(12)]);
+  assert_eq!(ws_code, WsCloseCode::from(4012));
+  assert!(matches!(
+    ending.await.unwrap(),
+    Ending::Closed {
+      code: CloseCode::HandshakeTimeout,
+      by: Side::Server,
+      ..
+    }
+  ));
+}
+
+#[tokio::test]
+async fn closes_with_handshake_timeout_after_a_valid_hello() {
+  let (mut socket, ending) = connect_with(None, short_timeout()).await;
+  socket.send(Message::binary(hello_frame())).await.unwrap();
+  let (binary, ws_code, _) = closed(&mut socket).await;
+  assert_eq!(binary, [close_frame(12)]);
+  assert_eq!(ws_code, WsCloseCode::from(4012));
+  assert!(matches!(
+    ending.await.unwrap(),
+    Ending::Closed {
+      code: CloseCode::HandshakeTimeout,
+      ..
+    }
+  ));
+}
+
+#[tokio::test]
+async fn closes_a_slow_hello_with_handshake_timeout() {
+  let (address, ending) = listen(None, short_timeout()).await;
+  let mut stream = TcpStream::connect(address).await.unwrap();
+  let request = concat!(
+    "GET /rt HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n",
+    "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n",
+    "Sec-WebSocket-Protocol: pavia.1\r\n\r\n",
+  );
+  stream.write_all(request.as_bytes()).await.unwrap();
+  let mut received = Vec::new();
+  while !received.ends_with(b"\r\n\r\n") {
+    received.push(stream.read_u8().await.unwrap());
+  }
+  let masked_hello_start = [0x82, 0x90, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
+  for byte in masked_hello_start {
+    if stream.write_all(&[byte]).await.is_err() {
+      break;
+    }
+    tokio::time::sleep(Duration::from_millis(60)).await;
+  }
+  let mut rest = Vec::new();
+  let _ = stream.read_to_end(&mut rest).await;
+  let close_4012 = rest.windows(4).any(|window| window[0] == 0x88 && window[2..] == [0x0f, 0xac]);
+  assert!(close_4012, "{rest:02x?}");
+  assert!(matches!(
+    ending.await.unwrap(),
+    Ending::Closed {
+      code: CloseCode::HandshakeTimeout,
+      ..
+    }
+  ));
+}
+
+#[tokio::test]
+async fn closes_with_protocol_error_when_the_first_frame_is_not_hello() {
+  let (mut socket, ending) = connect(None).await;
+  socket.send(Message::binary(&b"\x00\x04\x00\x01\x00"[..])).await.unwrap();
+  let (binary, ws_code, _) = closed(&mut socket).await;
+  assert_eq!(binary, [close_frame(1)]);
+  assert_eq!(ws_code, WsCloseCode::from(4001));
+  assert!(matches!(
+    ending.await.unwrap(),
+    Ending::Closed {
+      code: CloseCode::ProtocolError,
+      ..
+    }
+  ));
 }

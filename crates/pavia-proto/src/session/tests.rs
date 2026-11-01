@@ -1,7 +1,9 @@
 use bytes::{Bytes, BytesMut};
 
-use super::{Command, Ending, Input, Output, Session};
-use crate::frame::{Close, Frame, Heartbeat};
+use std::time::{Duration, Instant};
+
+use super::{Command, Config, Ending, Input, Output, Session};
+use crate::frame::{Close, Frame, Heartbeat, Hello, Limits, Resume};
 use crate::registry::CloseCode;
 use crate::stream::Side;
 use crate::wire::envelope::{self, MAX_FRAME_FLOOR};
@@ -24,6 +26,40 @@ const CODES: [CloseCode; 14] = [
   CloseCode::HandshakeTimeout,
   CloseCode::ContractMismatch,
 ];
+
+trait Feed {
+  fn feed(&mut self, input: Input);
+}
+
+impl Feed for Session {
+  fn feed(&mut self, input: Input) {
+    self.handle_input(input, Instant::now());
+  }
+}
+
+fn server() -> Session {
+  Session::server(&Config::default(), Instant::now())
+}
+
+fn hello() -> Hello {
+  Hello {
+    versions: vec![1],
+    codecs: vec!["cbor".into()],
+    caps: None,
+    limits: None,
+    contract: None,
+    auth: None,
+    resume: None,
+    client: None,
+  }
+}
+
+fn greeted() -> Session {
+  let mut session = server();
+  session.feed(Input::Message(message(&[(0, Frame::Hello(hello()))])));
+  assert_eq!(drain(&mut session), []);
+  session
+}
 
 fn message(frames: &[(u64, Frame)]) -> Bytes {
   let mut out = BytesMut::new();
@@ -61,8 +97,8 @@ fn frames(message: &Bytes) -> Vec<(u64, Frame)> {
 #[test]
 fn closes_with_every_code() {
   for code in CODES {
-    let mut session = Session::new(Side::Server);
-    session.handle_input(Input::Command(Command::Close {
+    let mut session = server();
+    session.feed(Input::Command(Command::Close {
       code,
       msg: Some("bye".into()),
     }));
@@ -96,8 +132,8 @@ fn closes_with_every_code() {
 #[test]
 fn mirrors_every_code_the_peer_closes_with() {
   for code in CODES {
-    let mut session = Session::new(Side::Server);
-    session.handle_input(Input::Message(message(&[(0, close(u64::from(u16::from(code)), None))])));
+    let mut session = greeted();
+    session.feed(Input::Message(message(&[(0, close(u64::from(u16::from(code)), None))])));
     assert_eq!(
       drain(&mut session),
       [
@@ -118,8 +154,8 @@ fn mirrors_every_code_the_peer_closes_with() {
 #[test]
 fn records_an_unknown_received_code_as_internal() {
   for unknown in [14, 99, u64::from(u16::MAX) + 1] {
-    let mut session = Session::new(Side::Server);
-    session.handle_input(Input::Message(message(&[(0, close(unknown, Some("later draft")))])));
+    let mut session = greeted();
+    session.feed(Input::Message(message(&[(0, close(unknown, Some("later draft")))])));
     assert_eq!(
       drain(&mut session).last(),
       Some(&Output::Ended(Ending::Closed {
@@ -134,17 +170,17 @@ fn records_an_unknown_received_code_as_internal() {
 
 #[test]
 fn ends_on_transport_loss() {
-  let mut session = Session::new(Side::Server);
-  session.handle_input(Input::TransportLost);
+  let mut session = server();
+  session.feed(Input::TransportLost);
   assert_eq!(drain(&mut session), [Output::Ended(Ending::TransportLost)]);
   assert!(session.is_ended());
 }
 
 #[test]
 fn ends_once_when_close_and_transport_loss_arrive_together() {
-  let mut session = Session::new(Side::Server);
-  session.handle_input(Input::Message(message(&[(0, close(0, None))])));
-  session.handle_input(Input::TransportLost);
+  let mut session = greeted();
+  session.feed(Input::Message(message(&[(0, close(0, None))])));
+  session.feed(Input::TransportLost);
   let endings = drain(&mut session)
     .into_iter()
     .filter(|output| matches!(output, Output::Ended(_)))
@@ -154,18 +190,18 @@ fn ends_once_when_close_and_transport_loss_arrive_together() {
 
 #[test]
 fn sends_nothing_after_close() {
-  let mut session = Session::new(Side::Server);
-  session.handle_input(Input::Command(Command::Close {
+  let mut session = server();
+  session.feed(Input::Command(Command::Close {
     code: CloseCode::Normal,
     msg: None,
   }));
   drain(&mut session);
-  session.handle_input(Input::Command(Command::Close {
+  session.feed(Input::Command(Command::Close {
     code: CloseCode::Internal,
     msg: None,
   }));
-  session.handle_input(Input::Message(message(&[(0, close(0, None))])));
-  session.handle_input(Input::TransportLost);
+  session.feed(Input::Message(message(&[(0, close(0, None))])));
+  session.feed(Input::TransportLost);
   assert_eq!(drain(&mut session), []);
 }
 
@@ -174,8 +210,8 @@ fn stops_at_close_inside_a_message() {
   let ping = Frame::Ping {
     data: Heartbeat::try_from(Bytes::new()).unwrap(),
   };
-  let mut session = Session::new(Side::Server);
-  session.handle_input(Input::Message(message(&[
+  let mut session = greeted();
+  session.feed(Input::Message(message(&[
     (0, close(0, None)),
     (0, close(1, None)),
     (0, ping),
@@ -194,8 +230,8 @@ fn stops_at_close_inside_a_message() {
 #[test]
 fn closes_with_protocol_error_on_a_malformed_message() {
   for bad in [&b""[..], b"\x00\x07", b"\x00\x7f\x00\x00", b"\x02\x07\x00\x03\x02\xa1\x06"] {
-    let mut session = Session::new(Side::Server);
-    session.handle_input(Input::Message(Bytes::copy_from_slice(bad)));
+    let mut session = server();
+    session.feed(Input::Message(Bytes::copy_from_slice(bad)));
     let outputs = drain(&mut session);
     let Some(Output::Transmit(sent)) = outputs.first() else {
       panic!("{bad:02x?}: {outputs:?}");
@@ -216,8 +252,8 @@ fn closes_with_protocol_error_on_a_malformed_message() {
 
 #[test]
 fn refuses_close_outside_the_control_stream() {
-  let mut session = Session::new(Side::Server);
-  session.handle_input(Input::Message(message(&[(2, close(0, None))])));
+  let mut session = greeted();
+  session.feed(Input::Message(message(&[(2, close(0, None))])));
   assert!(matches!(
     drain(&mut session).last(),
     Some(Output::Ended(Ending::Closed {
@@ -229,12 +265,12 @@ fn refuses_close_outside_the_control_stream() {
 }
 
 #[test]
-fn ignores_other_frames_until_the_handshake_exists() {
+fn ignores_frames_pipelined_after_hello() {
   let ping = Frame::Ping {
     data: Heartbeat::try_from(Bytes::new()).unwrap(),
   };
-  let mut session = Session::new(Side::Server);
-  session.handle_input(Input::Message(message(&[(0, ping)])));
+  let mut session = greeted();
+  session.feed(Input::Message(message(&[(0, ping)])));
   assert_eq!(drain(&mut session), []);
   assert!(!session.is_ended());
 }
@@ -247,8 +283,8 @@ fn names_the_peer() {
 
 #[test]
 fn closes_with_protocol_error_on_a_text_message() {
-  let mut session = Session::new(Side::Server);
-  session.handle_input(Input::TextMessage);
+  let mut session = server();
+  session.feed(Input::TextMessage);
   let outputs = drain(&mut session);
   let [
     Output::Transmit(sent),
@@ -270,4 +306,176 @@ fn closes_with_protocol_error_on_a_text_message() {
       ..
     }
   ));
+}
+
+fn ended_with(session: &mut Session, code: CloseCode) -> bool {
+  let outputs = drain(session);
+  let sent_close = outputs.iter().any(|output| {
+    matches!(output, Output::Transmit(sent) if matches!(frames(sent).as_slice(), [(0, Frame::Close(close))] if close.code == u64::from(u16::from(code))))
+  });
+  sent_close
+    && matches!(
+      outputs.last(),
+      Some(Output::Ended(Ending::Closed { code: ended, by: Side::Server, .. })) if *ended == code
+    )
+}
+
+fn raw_hello(header: &[u8]) -> Bytes {
+  let mut out = vec![0x00, 0x01, 0x00];
+  let mut payload = Vec::new();
+  varint::encode(header.len() as u64, &mut payload).unwrap();
+  payload.extend_from_slice(header);
+  varint::encode(payload.len() as u64, &mut out).unwrap();
+  out.extend(payload);
+  Bytes::from(out)
+}
+
+const CBOR: [u8; 5] = [0x64, b'c', b'b', b'o', b'r'];
+
+fn hello_header(versions: &[u8], codecs: &[u8], limits: &[u8]) -> Vec<u8> {
+  let mut entries = Vec::new();
+  if !versions.is_empty() {
+    entries.extend_from_slice(&[0x0e]);
+    entries.extend_from_slice(versions);
+  }
+  if !codecs.is_empty() {
+    entries.extend_from_slice(&[0x10]);
+    entries.extend_from_slice(codecs);
+  }
+  if !limits.is_empty() {
+    entries.extend_from_slice(&[0x15]);
+    entries.extend_from_slice(limits);
+  }
+  let count = [versions, codecs, limits].iter().filter(|part| !part.is_empty()).count();
+  let mut header = vec![0xa0 + count as u8];
+  header.extend(entries);
+  header
+}
+
+#[test]
+fn times_out_with_no_bytes_from_accept() {
+  let accepted = Instant::now();
+  let config = Config {
+    handshake_timeout: Duration::from_millis(200),
+  };
+  let mut session = Session::server(&config, accepted);
+  let deadline = accepted + Duration::from_millis(200);
+  assert_eq!(session.poll_timeout(), Some(deadline));
+  session.handle_input(Input::Timeout, deadline - Duration::from_millis(1));
+  assert_eq!(drain(&mut session), []);
+  session.handle_input(Input::Timeout, deadline);
+  assert!(ended_with(&mut session, CloseCode::HandshakeTimeout));
+  assert_eq!(session.poll_timeout(), None);
+}
+
+#[test]
+fn keeps_the_timer_running_after_hello() {
+  let accepted = Instant::now();
+  let mut session = Session::server(&Config::default(), accepted);
+  session.handle_input(
+    Input::Message(message(&[(0, Frame::Hello(hello()))])),
+    accepted + Duration::from_millis(9_900),
+  );
+  assert_eq!(drain(&mut session), []);
+  assert_eq!(session.poll_timeout(), Some(accepted + Duration::from_secs(10)));
+  session.handle_input(Input::Timeout, accepted + Duration::from_secs(10));
+  assert!(ended_with(&mut session, CloseCode::HandshakeTimeout));
+}
+
+#[test]
+fn times_out_a_hello_that_arrives_after_the_deadline() {
+  let accepted = Instant::now();
+  let mut session = Session::server(&Config::default(), accepted);
+  session.handle_input(
+    Input::Message(message(&[(0, Frame::Hello(hello()))])),
+    accepted + Duration::from_millis(10_001),
+  );
+  assert!(ended_with(&mut session, CloseCode::HandshakeTimeout));
+}
+
+#[test]
+fn reports_transport_loss_after_the_deadline_as_transport_loss() {
+  let accepted = Instant::now();
+  let mut session = Session::server(&Config::default(), accepted);
+  session.handle_input(Input::TransportLost, accepted + Duration::from_secs(11));
+  assert_eq!(drain(&mut session), [Output::Ended(Ending::TransportLost)]);
+}
+
+#[test]
+fn refuses_a_first_frame_that_is_not_hello() {
+  let ping = Frame::Ping {
+    data: Heartbeat::try_from(Bytes::new()).unwrap(),
+  };
+  for first in [
+    message(&[(0, ping)]),
+    message(&[(0, close(0, None))]),
+    message(&[(2, Frame::Hello(hello()))]),
+  ] {
+    let mut session = server();
+    session.feed(Input::Message(first.clone()));
+    assert!(ended_with(&mut session, CloseCode::ProtocolError), "{first:02x?}");
+  }
+}
+
+#[test]
+fn refuses_a_second_hello() {
+  let mut session = greeted();
+  session.feed(Input::Message(message(&[(0, Frame::Hello(hello()))])));
+  assert!(ended_with(&mut session, CloseCode::ProtocolError));
+}
+
+#[test]
+fn checks_the_required_hello_fields_and_the_limit_floor() {
+  let one = [0x81, 0x01];
+  let cbor = [&[0x81][..], &CBOR].concat();
+  let max_frame_32768 = [0xa1, 0x18, 0x31, 0x19, 0x80, 0x00];
+  let window_65535 = [0xa1, 0x18, 0x28, 0x19, 0xff, 0xff];
+  let invalid = [
+    hello_header(&[], &cbor, &[]),
+    hello_header(&one, &[], &[]),
+    hello_header(&[0x80], &cbor, &[]),
+    hello_header(&one, &[0x80], &[]),
+    hello_header(&one, &cbor, &max_frame_32768),
+    hello_header(&one, &cbor, &window_65535),
+  ];
+  for header in invalid {
+    let mut session = server();
+    session.feed(Input::Message(raw_hello(&header)));
+    assert!(ended_with(&mut session, CloseCode::ProtocolError), "{header:02x?}");
+  }
+  let at_floor = [
+    0xa2, 0x18, 0x28, 0x1a, 0x00, 0x01, 0x00, 0x00, 0x18, 0x31, 0x1a, 0x00, 0x01, 0x00, 0x00,
+  ];
+  let mut session = server();
+  session.feed(Input::Message(raw_hello(&hello_header(&one, &cbor, &at_floor))));
+  assert_eq!(drain(&mut session), []);
+  let limits = session.hello().and_then(|hello| hello.limits.clone());
+  assert_eq!(
+    limits,
+    Some(Limits {
+      max_frame: Some(65_536),
+      window: Some(65_536),
+      ..Limits::default()
+    })
+  );
+}
+
+#[test]
+fn keeps_the_resume_map_for_the_capability_step() {
+  let resume = Resume {
+    token: crate::frame::Token::Bytes(Bytes::from_static(b"\x01\x02")),
+    session: "s_x".into(),
+    ack: [(0, 0)].into(),
+    lost: None,
+  };
+  let mut session = server();
+  session.feed(Input::Message(message(&[(
+    0,
+    Frame::Hello(Hello {
+      resume: Some(resume.clone()),
+      ..hello()
+    }),
+  )])));
+  assert_eq!(drain(&mut session), []);
+  assert_eq!(session.hello().and_then(|hello| hello.resume.clone()), Some(resume));
 }

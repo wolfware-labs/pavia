@@ -4,19 +4,23 @@
 //! carries out its outputs in order: a CLOSE frame is flushed before the transport closes (§7.7).
 //! It returns the session's [`Ending`], so each session reports its end exactly once (§13.4).
 
-use pavia_proto::session::{Command, Ending, Input, Output, Session};
-use pavia_proto::stream::Side;
+use pavia_proto::session::{Command, Config, Ending, Input, Output, Session};
 use tokio::sync::mpsc;
+use tokio::time::{Instant, sleep_until};
 
 use crate::websocket::{Received, Transport};
 
 /// Runs a server session on `transport` until it ends, taking application requests from
 /// `commands`. Dropping every sender of `commands` leaves the session running.
-pub async fn run(mut transport: Transport, mut commands: mpsc::Receiver<Command>) -> Ending {
-  let mut session = Session::new(Side::Server);
+///
+/// The clock is tokio's, so a test that pauses time drives the session's timers too.
+pub async fn run(mut transport: Transport, mut commands: mpsc::Receiver<Command>, config: &Config) -> Ending {
+  let mut session = Session::server(config, Instant::now().into_std());
   let mut commands_open = true;
   loop {
+    let deadline = session.poll_timeout().map(Instant::from_std);
     let input = tokio::select! {
+      () = sleep_until(deadline.unwrap_or_else(Instant::now)), if deadline.is_some() => Input::Timeout,
       received = transport.recv() => match received {
         Some(Ok(Received::Binary(message))) => Input::Message(message),
         Some(Ok(Received::Text)) => Input::TextMessage,
@@ -30,7 +34,7 @@ pub async fn run(mut transport: Transport, mut commands: mpsc::Receiver<Command>
         }
       },
     };
-    session.handle_input(input);
+    session.handle_input(input, Instant::now().into_std());
     if let Some(ending) = carry_out(&mut session, &mut transport).await {
       return ending;
     }
@@ -42,7 +46,7 @@ async fn carry_out(session: &mut Session, transport: &mut Transport) -> Option<E
     match output {
       Output::Transmit(message) => {
         if transport.send(message).await.is_err() {
-          session.handle_input(Input::TransportLost);
+          session.handle_input(Input::TransportLost, Instant::now().into_std());
         }
       }
       Output::CloseTransport { code, reason } => {

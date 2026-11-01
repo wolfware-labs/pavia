@@ -1,27 +1,30 @@
 //! The session state machine (§7), driven as sans-IO: the driver feeds [`Input`]s with
 //! [`Session::handle_input`] and then drains [`Session::poll_output`] until it returns `None`.
 //!
-//! This first part covers how a session ends (§7.7, §13.4): CLOSE in either direction, a
-//! session-fatal error, and transport loss. Every ending yields exactly one [`Output::Ended`], and
-//! after it the session ignores all input. The handshake and the frames it unlocks come next
-//! (#27 onwards); until then the session ignores every frame except CLOSE. A text message is a
-//! PROTOCOL_ERROR before the handshake as after it (§4.3).
+//! So far it is the server side up to a validated HELLO (§6.2, §7.1) and every way a session ends
+//! (§7.7, §13.4). Time is an input: the session is built with the accept time, every input
+//! carries `now`, and [`Session::poll_timeout`] gives the handshake deadline.
 //!
 //! ```text
-//!  Command::Close ──▶ Transmit(CLOSE) ─▶ CloseTransport(code) ─▶ Ended(Closed, by us)
-//!  CLOSE received ──────────────────────▶ CloseTransport(code) ─▶ Ended(Closed, by peer)
-//!  fatal error ─────▶ Transmit(CLOSE) ─▶ CloseTransport(code) ─▶ Ended(Closed, by us)
-//!  TransportLost ──────────────────────────────────────────────▶ Ended(TransportLost)
+//!  AwaitHello ──HELLO──▶ Handshaking ──(WELCOME, #31)──▶ …
+//!      │                     │
+//!      ├ other frame first ──┤ second HELLO ─────▶ CLOSE PROTOCOL_ERROR
+//!      ├ deadline ───────────┤ deadline ─────────▶ CLOSE HANDSHAKE_TIMEOUT
+//!      └ TransportLost ──────┴ CLOSE received ───▶ Ended
 //! ```
 //!
-//! Only the WebSocket binding exists so far: one [`Output::Transmit`] is one binary message.
+//! Every ending yields exactly one [`Output::Ended`], and after it the session ignores all input.
+//! A text message is a PROTOCOL_ERROR in every state (§4.3). Frames the client pipelines after
+//! HELLO are ignored until WELCOME exists (#31, #40). Only the WebSocket binding exists so far:
+//! one [`Output::Transmit`] is one binary message.
 
 use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
 
 use crate::error::{Outcome, ProtocolError};
-use crate::frame::{Close, Frame};
+use crate::frame::{Close, Frame, Hello};
 use crate::registry::CloseCode;
 use crate::stream::Side;
 use crate::wire::envelope::{self, MAX_FRAME_FLOOR};
@@ -40,6 +43,8 @@ pub enum Input {
   TextMessage,
   /// The transport closed or failed without CLOSE.
   TransportLost,
+  /// The time from [`Session::poll_timeout`] has come.
+  Timeout,
   /// A request from the application.
   Command(Command),
 }
@@ -92,25 +97,50 @@ pub enum Ending {
   TransportLost,
 }
 
-/// One session, as one side sees it.
+/// Session settings chosen by the application.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Config {
+  /// How long the handshake may take, from transport accept until WELCOME or REJECT is sent
+  /// (§7.1). Default 10 s.
+  pub handshake_timeout: Duration,
+}
+
+impl Default for Config {
+  fn default() -> Self {
+    Self {
+      handshake_timeout: Duration::from_secs(10),
+    }
+  }
+}
+
+#[derive(Debug)]
+enum State {
+  AwaitHello { deadline: Instant },
+  Handshaking { deadline: Instant, hello: Box<Hello> },
+  Ended,
+}
+
+/// One server session.
 #[derive(Debug)]
 pub struct Session {
-  local: Side,
   max_frame: u64,
   limits: DecodeLimits,
-  ended: bool,
+  state: State,
   outputs: VecDeque<Output>,
 }
 
 impl Session {
-  /// A WebSocket session for the `local` side.
+  /// A server session on a WebSocket transport accepted at `now`. The handshake timer starts
+  /// here, not at the first byte (§7.1).
   #[must_use]
-  pub fn new(local: Side) -> Self {
+  pub fn server(config: &Config, now: Instant) -> Self {
     Self {
-      local,
       max_frame: MAX_FRAME_FLOOR,
       limits: DecodeLimits::default(),
-      ended: false,
+      state: State::AwaitHello {
+        deadline: now + config.handshake_timeout,
+      },
       outputs: VecDeque::new(),
     }
   }
@@ -118,18 +148,40 @@ impl Session {
   /// Whether the session has ended. Every later input is ignored.
   #[must_use]
   pub const fn is_ended(&self) -> bool {
-    self.ended
+    matches!(self.state, State::Ended)
   }
 
-  /// Applies one input. Drain [`poll_output`](Self::poll_output) afterwards.
-  pub fn handle_input(&mut self, input: Input) {
-    if self.ended {
+  /// The client's HELLO, once it has arrived and passed validation.
+  #[must_use]
+  pub fn hello(&self) -> Option<&Hello> {
+    match &self.state {
+      State::Handshaking { hello, .. } => Some(hello),
+      State::AwaitHello { .. } | State::Ended => None,
+    }
+  }
+
+  /// When the driver must feed [`Input::Timeout`], or `None` when no timer is running.
+  #[must_use]
+  pub const fn poll_timeout(&self) -> Option<Instant> {
+    match self.state {
+      State::AwaitHello { deadline } | State::Handshaking { deadline, .. } => Some(deadline),
+      State::Ended => None,
+    }
+  }
+
+  /// Applies one input that arrived at `now`. Drain [`poll_output`](Self::poll_output) and read
+  /// [`poll_timeout`](Self::poll_timeout) afterwards.
+  pub fn handle_input(&mut self, input: Input, now: Instant) {
+    if self.is_ended() {
       return;
     }
+    let expired = self.poll_timeout().is_some_and(|deadline| now >= deadline);
     match input {
+      Input::TransportLost => self.end(Ending::TransportLost),
+      _ if expired => self.close(CloseCode::HandshakeTimeout, None),
       Input::Message(message) => self.receive(message),
       Input::TextMessage => self.fail(&ProtocolError::TextMessage),
-      Input::TransportLost => self.end(Ending::TransportLost),
+      Input::Timeout => {}
       Input::Command(Command::Close { code, msg }) => self.close(code, msg),
     }
   }
@@ -149,11 +201,23 @@ impl Session {
         Ok(frame) => frame,
         Err(error) => return self.fail(&error.into()),
       };
-      if let Frame::Close(close) = frame {
-        if ws_frame.stream_id != CONTROL_STREAM {
+      let on_control = ws_frame.stream_id == CONTROL_STREAM;
+      match (&self.state, frame) {
+        (State::AwaitHello { deadline }, Frame::Hello(hello)) if on_control => {
+          if hello.versions.is_empty() || hello.codecs.is_empty() {
+            return self.fail(&ProtocolError::InvalidHeaderField);
+          }
+          self.state = State::Handshaking {
+            deadline: *deadline,
+            hello: Box::new(hello),
+          };
+        }
+        (State::Handshaking { .. }, Frame::Close(close)) if on_control => return self.peer_closed(close),
+        (State::AwaitHello { .. }, _) | (State::Handshaking { .. }, Frame::Hello(_) | Frame::Close(_)) => {
           return self.fail(&ProtocolError::FrameTypeNotAllowed);
         }
-        return self.peer_closed(close);
+        (State::Handshaking { .. }, _) => {}
+        (State::Ended, _) => return,
       }
     }
   }
@@ -173,7 +237,7 @@ impl Session {
     self.end(Ending::Closed {
       code,
       msg: close.msg,
-      by: self.local.peer(),
+      by: Side::Client,
     });
   }
 
@@ -194,12 +258,12 @@ impl Session {
     self.end(Ending::Closed {
       code,
       msg,
-      by: self.local,
+      by: Side::Server,
     });
   }
 
   fn end(&mut self, ending: Ending) {
-    self.ended = true;
+    self.state = State::Ended;
     self.outputs.push_back(Output::Ended(ending));
   }
 }
