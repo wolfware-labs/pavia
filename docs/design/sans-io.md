@@ -1,6 +1,6 @@
 # Sans-IO core and crate layout
 
-Decision record for roadmap C0.7 (#2). Status: accepted, 2026-09-21. Amended 2026-11-01 (#36): `poll_output` returns `None` when drained, and the next deadline comes from `poll_timeout`. Amended 2026-11-01 (#27): `now` is a `handle_input` argument, not a field of each input.
+Decision record for roadmap C0.7 (#2). Status: accepted, 2026-09-21. Amended 2026-11-01 (#36): `poll_output` returns `None` when drained, and the next deadline comes from `poll_timeout`. Amended 2026-11-01 (#27): `now` is a `handle_input` argument, not a field of each input. Amended 2026-11-01 (#30): authentication is `Output::Authenticate` and its answer an input, because the authenticator is async application code that runs in the driver.
 
 ## Decisions
 
@@ -68,6 +68,8 @@ pub enum Input<'a> {
     Datagram { data: &'a [u8] },
     TransportLost,
     Timeout,
+    Authenticated { user: Option<String> },                   // the authenticator's answer to Authenticate
+    AuthFailed(AuthFailure),
     Command(Command),                                         // from the application
 }
 
@@ -78,6 +80,7 @@ pub enum Output {
     StopSending { stream: StreamId, code: u64 },
     Datagram(Bytes),
     CloseTransport { code: CloseCode, reason: String },
+    Authenticate { auth: Option<Auth> },                      // run the authenticator on HELLO auth (7.5)
     Event(Event),                                             // to the application
     Ended(Ending),                                            // last output, exactly once (§13.4)
 }

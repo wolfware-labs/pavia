@@ -239,7 +239,7 @@ async fn answers_a_ping_on_its_own() {
 #[tokio::test]
 async fn serves_an_in_memory_connection() {
   let (client, server) = tokio::io::duplex(65_536);
-  tokio::spawn(async move { endpoint().serve_connection(server).await });
+  tokio::spawn(async move { endpoint().serve_connection(server, None).await });
   let (mut socket, response) = upgrade(client, PATH, &[SUBPROTOCOL]).await.unwrap();
   assert_eq!(selected(&response), [SUBPROTOCOL]);
   socket.send(Message::binary(&b"\x00\x04\x00\x00\x00"[..])).await.unwrap();

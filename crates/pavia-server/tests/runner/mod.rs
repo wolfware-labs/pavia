@@ -344,7 +344,7 @@ where
       Self::InMemory(endpoint) => {
         let (client, server) = tokio::io::duplex(1 << 20);
         let serving = endpoint.clone();
-        tokio::spawn(async move { serving.serve_connection(server).await });
+        tokio::spawn(async move { serving.serve_connection(server, None).await });
         (Box::new(client), &endpoint.config().path)
       }
       Self::Socket { address, path } => {
