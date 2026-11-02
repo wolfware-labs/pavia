@@ -1058,3 +1058,34 @@ fn puts_pong_ahead_of_frames_already_queued() {
   session.feed(Input::Message(message(&[(0, ping(b"\x03"))])));
   assert_eq!(sent(&mut session), [(0, pong(b"\x03")), (0, queued)]);
 }
+
+#[test]
+fn sends_close_ahead_of_queued_frames_and_drops_them() {
+  let queued = Frame::Cancel(Cancel { msg: None });
+  let (mut session, _) = welcomed_at(Duration::ZERO);
+  session.transmit(&queued);
+  session.feed(Input::Command(Command::Close {
+    code: CloseCode::GoingAway,
+    msg: None,
+  }));
+  let outputs = drain(&mut session);
+  let [Output::Transmit(sent), Output::CloseTransport { .. }, Output::Ended(_)] = outputs.as_slice() else {
+    panic!("{outputs:?}");
+  };
+  assert_eq!(frames(sent), [(0, close(7, None))]);
+  let (mut session, _) = welcomed_at(Duration::ZERO);
+  session.transmit(&queued);
+  session.feed(Input::Message(message(&[(0, ping(b"\x01")), (0, Frame::Hello(hello()))])));
+  let outputs = drain(&mut session);
+  let [
+    Output::Transmit(first),
+    Output::Transmit(second),
+    Output::CloseTransport { .. },
+    Output::Ended(_),
+  ] = outputs.as_slice()
+  else {
+    panic!("{outputs:?}");
+  };
+  assert_eq!(frames(first), [(0, pong(b"\x01"))]);
+  assert_eq!(frames(second), [(0, close(1, None))]);
+}
