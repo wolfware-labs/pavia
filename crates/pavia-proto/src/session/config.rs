@@ -55,7 +55,7 @@ impl Default for Config {
 }
 
 impl Config {
-  /// Checks every setting: no zero duration or limit, no empty version or codec list, and
+  /// Checks every setting: no duration under 1 ms, no zero limit, no empty version or codec list, and
   /// `max_frame` and `window` at or above the 64 KiB floor (§4.1, §16).
   ///
   /// ```
@@ -76,7 +76,7 @@ impl Config {
       ("idle_timeout", self.idle_timeout),
     ];
     if let Some((name, _)) = durations.iter().find(|(_, duration)| millis(*duration) == 0) {
-      return Err(ConfigError::Zero(name));
+      return Err(ConfigError::TooShort(name));
     }
     let counts = [
       ("max_calls", self.max_calls),
@@ -128,7 +128,10 @@ impl ValidConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 #[non_exhaustive]
 pub enum ConfigError {
-  /// A duration under 1 ms, or a zero limit.
+  /// A duration under 1 ms; WELCOME carries durations in whole milliseconds.
+  #[error("{0} must be at least 1 ms")]
+  TooShort(&'static str),
+  /// A zero limit.
   #[error("{0} must not be zero")]
   Zero(&'static str),
   /// `max_frame` or `window` below 65,536 bytes.

@@ -888,15 +888,15 @@ fn validates_the_config() {
     ),
     (
       |config| config.heartbeat = Duration::ZERO,
-      Some(ConfigError::Zero("heartbeat")),
+      Some(ConfigError::TooShort("heartbeat")),
     ),
     (
       |config| config.idle_timeout = Duration::from_micros(999),
-      Some(ConfigError::Zero("idle_timeout")),
+      Some(ConfigError::TooShort("idle_timeout")),
     ),
     (
       |config| config.handshake_timeout = Duration::ZERO,
-      Some(ConfigError::Zero("handshake_timeout")),
+      Some(ConfigError::TooShort("handshake_timeout")),
     ),
     (|config| config.max_calls = 0, Some(ConfigError::Zero("max_calls"))),
     (|config| config.versions.clear(), Some(ConfigError::Empty("versions"))),
