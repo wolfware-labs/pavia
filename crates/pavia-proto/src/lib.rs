@@ -7,7 +7,8 @@
 //! and return data-section values. [`stream`] is public so a driver can reject a frame on the
 //! wrong kind of stream as soon as it decodes one. [`session`] is the state machine every driver
 //! runs, and [`negotiate`] and [`caps`] hold its version, codec and capability selection, which
-//! clients share. The wire layer stays private.
+//! clients share. [`session_id`] is the format of the public session ID. The wire layer stays
+//! private.
 #![forbid(unsafe_code)]
 
 pub mod caps;
@@ -17,6 +18,7 @@ pub mod frame;
 pub mod negotiate;
 pub mod registry;
 pub mod session;
+pub mod session_id;
 pub mod stream;
 
 #[cfg(not(fuzzing))]
