@@ -460,6 +460,7 @@ name = "pavia-proto"
 version = "0.1.0-alpha.0"
 dependencies = [
  "bytes",
+ "data-encoding",
  "half",
  "minicbor",
  "proptest",
@@ -476,6 +477,7 @@ dependencies = [
  "bytes",
  "ciborium",
  "futures-util",
+ "getrandom",
  "http-body-util",
  "hyper",
  "hyper-util",

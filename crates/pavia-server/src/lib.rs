@@ -4,4 +4,5 @@
 #![forbid(unsafe_code)]
 
 pub mod session;
+mod session_id;
 pub mod websocket;

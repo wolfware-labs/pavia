@@ -12,6 +12,7 @@ license.workspace = true
 [dependencies]
 bytes.workspace = true
 futures-util.workspace = true
+getrandom = { workspace = true, features = ["std"] }
 http-body-util.workspace = true
 hyper = { workspace = true, features = ["http1", "server"] }
 hyper-util = { workspace = true, features = ["tokio"] }
