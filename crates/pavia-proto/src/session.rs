@@ -1,14 +1,16 @@
 //! The session state machine (§7), driven as sans-IO: the driver feeds [`Input`]s with
 //! [`Session::handle_input`] and then drains [`Session::poll_output`] until it returns `None`.
 //!
-//! So far it is the server side up to a validated HELLO with its version and codec chosen (§6.2,
-//! §7.1, §7.2), and every way a session ends (§7.3, §7.7, §13.4). Time is an input: the session is built with the accept time, every
-//! [`Session::handle_input`] call takes `now`, and [`Session::poll_timeout`] gives the handshake deadline.
+//! So far it is the server side up to a validated HELLO with its version, codec and capabilities
+//! chosen (§6.2, §7.1, §7.2, §7.10), and every way a session ends (§7.3, §7.7, §13.4). Time is
+//! an input: the session is built with the accept time, every [`Session::handle_input`] call
+//! takes `now`, and [`Session::poll_timeout`] gives the handshake deadline.
 //!
 //! ```text
 //!  AwaitHello ──HELLO──▶ Handshaking ──(WELCOME, #31)──▶ …
 //!      │                     │
 //!      ├ no common version or codec ───────────▶ REJECT UNSUPPORTED_VERSION
+//!      ├ resume without `resume` granted ──────▶ REJECT RESUME_FAILED
 //!      ├ other frame first ──┤ second HELLO ─────▶ CLOSE PROTOCOL_ERROR
 //!      ├ deadline ───────────┤ deadline ─────────▶ CLOSE HANDSHAKE_TIMEOUT
 //!      └ TransportLost ──────┴ CLOSE received ───▶ Ended
@@ -24,6 +26,7 @@ use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
 
+use crate::caps::{Capability, Caps};
 use crate::data::Codec;
 use crate::error::{Outcome, ProtocolError};
 use crate::frame::{Close, Frame, Hello, Reject};
@@ -108,13 +111,15 @@ pub enum Ending {
 }
 
 /// The version and codec chosen from a HELLO (§7.2), announced in WELCOME.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Negotiated {
   /// The protocol major version.
   pub version: u64,
   /// The data-section codec.
   pub codec: Codec,
+  /// The granted capabilities (§7.10), fixed for the life of the session.
+  pub caps: Caps,
 }
 
 /// Session settings chosen by the application.
@@ -199,11 +204,11 @@ impl Session {
     }
   }
 
-  /// The version and codec chosen from the client's HELLO.
+  /// The version, codec and capabilities chosen from the client's HELLO.
   #[must_use]
-  pub const fn negotiated(&self) -> Option<Negotiated> {
+  pub const fn negotiated(&self) -> Option<&Negotiated> {
     match &self.state {
-      State::Handshaking { negotiated, .. } => Some(*negotiated),
+      State::Handshaking { negotiated, .. } => Some(negotiated),
       State::AwaitHello { .. } | State::Ended => None,
     }
   }
@@ -255,6 +260,10 @@ impl Session {
           if hello.versions.is_empty() || hello.codecs.is_empty() {
             return self.fail(&ProtocolError::InvalidHeaderField);
           }
+          let caps = Caps::grant(hello.caps.as_deref());
+          if hello.resume.is_some() && !caps.contains(Capability::Resume) {
+            return self.reject(CloseCode::ResumeFailed, "unknown session");
+          }
           let version = negotiate::version(&hello.versions, &self.versions);
           let codec = negotiate::codec(&hello.codecs, &self.codecs);
           let (Some(version), Some(codec)) = (version, codec) else {
@@ -263,7 +272,7 @@ impl Session {
           self.state = State::Handshaking {
             deadline: *deadline,
             hello: Box::new(hello),
-            negotiated: Negotiated { version, codec },
+            negotiated: Negotiated { version, codec, caps },
           };
         }
         (State::Handshaking { .. }, Frame::Close(close)) if on_control => return self.peer_closed(close),

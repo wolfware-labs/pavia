@@ -6,9 +6,11 @@
 //! [`error::Outcome`] and convert the registry codes. [`data`] is public because handlers receive
 //! and return data-section values. [`stream`] is public so a driver can reject a frame on the
 //! wrong kind of stream as soon as it decodes one. [`session`] is the state machine every driver
-//! runs, and [`negotiate`] holds its version and codec selection, which clients share. The wire layer stays private.
+//! runs, and [`negotiate`] and [`caps`] hold its version, codec and capability selection, which
+//! clients share. The wire layer stays private.
 #![forbid(unsafe_code)]
 
+pub mod caps;
 pub mod data;
 pub mod error;
 pub mod frame;

@@ -370,3 +370,28 @@ async fn rejects_a_hello_with_no_common_version_or_codec() {
     );
   }
 }
+
+#[tokio::test]
+async fn rejects_a_resume_with_resume_failed() {
+  let msg = "unknown session";
+  let mut reject = vec![0xa2, 0x06, 0x0b, 0x07, 0x60 + msg.len() as u8];
+  reject.extend(msg.as_bytes());
+  let mut hello = vec![0xa3, 0x0e, 0x81, 0x01, 0x10, 0x81, 0x64];
+  hello.extend(b"cbor");
+  hello.extend([0x14, 0xa3, 0x0d, 0x41, 0x00, 0x13, 0x63]);
+  hello.extend(b"s_x");
+  hello.extend([0x18, 0x2c, 0xa1, 0x00, 0x00]);
+  let (mut socket, ending) = connect(None).await;
+  socket.send(Message::binary(raw_frame(0x01, &hello))).await.unwrap();
+  let (binary, ws_code, reason) = closed(&mut socket).await;
+  assert_eq!(binary, [raw_frame(0x03, &reject)]);
+  assert_eq!(ws_code, WsCloseCode::from(4011));
+  assert_eq!(reason.as_str(), msg);
+  assert_eq!(
+    ending.await.unwrap(),
+    Ending::Rejected {
+      code: CloseCode::ResumeFailed,
+      msg: msg.into()
+    }
+  );
+}

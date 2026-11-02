@@ -40,6 +40,9 @@ pub enum ProtocolError {
   /// An unknown must-understand type (`0x00` to `0x7F`), or a known type where it is not allowed (§5.6).
   #[error("frame type not allowed here")]
   FrameTypeNotAllowed,
+  /// A frame that uses a feature whose capability the session did not grant (§7.10).
+  #[error("capability not granted")]
+  CapabilityNotGranted,
   /// A stream ID that breaks the opening order (§6.1): an opening frame at or below the
   /// initiator's highest opened ID, or a non-opening frame above it. Gaps between IDs are allowed.
   #[error("stream id out of order")]
@@ -241,6 +244,7 @@ impl ProtocolError {
       | Self::HeartbeatTooLarge
       | Self::UnexpectedDataSection
       | Self::FrameTypeNotAllowed
+      | Self::CapabilityNotGranted
       | Self::StreamIdOutOfOrder
       | Self::StreamIdWrongParity
       | Self::FrameAfterTerminalFrame
@@ -313,6 +317,7 @@ mod tests {
       (ProtocolError::HeartbeatTooLarge, CloseCode::ProtocolError),
       (ProtocolError::UnexpectedDataSection, CloseCode::ProtocolError),
       (ProtocolError::FrameTypeNotAllowed, CloseCode::ProtocolError),
+      (ProtocolError::CapabilityNotGranted, CloseCode::ProtocolError),
       (ProtocolError::StreamIdOutOfOrder, CloseCode::ProtocolError),
       (ProtocolError::StreamIdWrongParity, CloseCode::ProtocolError),
       (ProtocolError::FrameAfterTerminalFrame, CloseCode::ProtocolError),
