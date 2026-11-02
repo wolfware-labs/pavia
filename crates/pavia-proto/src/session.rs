@@ -3,10 +3,10 @@
 //!
 //! So far it is the server side through the handshake: a validated HELLO with its version, codec
 //! and capabilities chosen (§6.2, §7.1, §7.2, §7.10), authentication by the driver's
-//! authenticator (§7.5), WELCOME, the capability gate on every later frame, and every way a
-//! session ends (§7.3, §7.7, §13.4). Time is an input: the session is built with the accept
-//! time, every [`Session::handle_input`] call takes `now`, and [`Session::poll_timeout`] gives
-//! the handshake deadline.
+//! authenticator (§7.5), WELCOME, the capability gate on every later frame, the heartbeat
+//! (§7.4), and every way a session ends (§7.3, §7.7, §13.4). Time is an input: the session is
+//! built with the accept time, every [`Session::handle_input`] call takes `now`, and
+//! [`Session::poll_timeout`] gives the handshake deadline, then the next heartbeat PING.
 //!
 //! ```text
 //!  AwaitHello ──HELLO──▶ Handshaking ──Authenticated: WELCOME──▶ Established
@@ -18,6 +18,8 @@
 //!  AwaitHello, Handshaking   deadline                         ▶ CLOSE HANDSHAKE_TIMEOUT
 //!  Handshaking, Established  second HELLO                     ▶ CLOSE PROTOCOL_ERROR
 //!  Established               a capability not granted         ▶ CLOSE PROTOCOL_ERROR
+//!  Established               PING with up to 8 bytes          ▶ PONG with the same bytes
+//!  Established               hb with nothing sent             ▶ PING
 //!  any                       CLOSE received, TransportLost    ▶ Ended
 //! ```
 //!
@@ -29,6 +31,9 @@
 //! A text message is a PROTOCOL_ERROR in every state (§4.3). Frames the client pipelines before
 //! WELCOME are dropped until the pre-authentication buffer exists (#40). After WELCOME every frame
 //! passes [`caps::check`] and is otherwise ignored until its feature lands.
+//! PING, PONG and CLOSE skip ahead of other queued outputs, in the order they were made (§6.6,
+//! §13.5). Sending CLOSE drops what is still queued behind it, since nothing follows CLOSE on the
+//! transport (§7.7).
 //! Only the WebSocket binding exists so far: one [`Output::Transmit`] is one binary message.
 
 use std::collections::VecDeque;
@@ -39,7 +44,7 @@ use bytes::{Bytes, BytesMut};
 use crate::caps::{self, Capability, Caps};
 use crate::data::Codec;
 use crate::error::{Outcome, ProtocolError};
-use crate::frame::{Auth, Close, Frame, Hello, Reject, Welcome};
+use crate::frame::{Auth, Close, Frame, Heartbeat, Hello, Reject, Welcome};
 use crate::negotiate;
 use crate::registry::CloseCode;
 use crate::session_id::SessionId;
@@ -187,6 +192,7 @@ enum State {
   Established {
     hello: Box<Hello>,
     negotiated: Negotiated,
+    ping_at: Instant,
   },
   Ended,
 }
@@ -195,11 +201,13 @@ enum State {
 #[derive(Debug)]
 pub struct Session {
   local: Side,
+  now: Instant,
   config: ValidConfig,
   max_frame: u64,
   limits: DecodeLimits,
   state: State,
   outputs: VecDeque<Output>,
+  urgent: usize,
 }
 
 impl Session {
@@ -209,6 +217,7 @@ impl Session {
   pub fn server(config: &ValidConfig, now: Instant) -> Self {
     Self {
       local: Side::Server,
+      now,
       config: config.clone(),
       max_frame: MAX_FRAME_FLOOR,
       limits: DecodeLimits::default(),
@@ -216,6 +225,7 @@ impl Session {
         deadline: now + config.0.handshake_timeout,
       },
       outputs: VecDeque::new(),
+      urgent: 0,
     }
   }
 
@@ -247,8 +257,10 @@ impl Session {
   #[must_use]
   pub const fn poll_timeout(&self) -> Option<Instant> {
     match self.state {
-      State::AwaitHello { deadline } | State::Handshaking { deadline, .. } => Some(deadline),
-      State::Established { .. } | State::Ended => None,
+      State::AwaitHello { deadline } | State::Handshaking { deadline, .. } | State::Established { ping_at: deadline, .. } => {
+        Some(deadline)
+      }
+      State::Ended => None,
     }
   }
 
@@ -258,7 +270,9 @@ impl Session {
     if self.is_ended() {
       return;
     }
-    let expired = self.poll_timeout().is_some_and(|deadline| now >= deadline);
+    self.now = now;
+    let due = self.poll_timeout().is_some_and(|deadline| now >= deadline);
+    let expired = due && matches!(self.state, State::AwaitHello { .. } | State::Handshaking { .. });
     match input {
       Input::TransportLost => self.end(Ending::TransportLost),
       Input::TextMessage => self.fail(&ProtocolError::TextMessage),
@@ -274,12 +288,16 @@ impl Session {
           self.reject(code, msg);
         }
       }
+      Input::Timeout if due => self.transmit(&Frame::Ping {
+        data: Heartbeat::default(),
+      }),
       Input::Timeout => {}
     }
   }
 
   /// The next output, or `None` when there is nothing to do until the next input.
   pub fn poll_output(&mut self) -> Option<Output> {
+    self.urgent = self.urgent.saturating_sub(1);
     self.outputs.pop_front()
   }
 
@@ -319,8 +337,11 @@ impl Session {
         (State::Handshaking { .. } | State::Established { .. }, Frame::Close(close)) if on_control => {
           return self.peer_closed(close);
         }
+        (State::Established { .. }, Frame::Ping { data }) if on_control => self.transmit(&Frame::Pong { data }),
+        (State::Established { .. }, Frame::Pong { .. }) if on_control => {}
         (State::AwaitHello { .. }, _)
-        | (State::Handshaking { .. } | State::Established { .. }, Frame::Hello(_) | Frame::Close(_)) => {
+        | (State::Handshaking { .. } | State::Established { .. }, Frame::Hello(_) | Frame::Close(_))
+        | (State::Established { .. }, Frame::Ping { .. } | Frame::Pong { .. }) => {
           return self.fail(&ProtocolError::FrameTypeNotAllowed);
         }
         (State::Handshaking { .. }, _) => {}
@@ -359,7 +380,11 @@ impl Session {
       lost: None,
       transports: None,
     });
-    self.state = State::Established { hello, negotiated };
+    self.state = State::Established {
+      hello,
+      negotiated,
+      ping_at: self.now,
+    };
     self.max_frame = self.config.0.max_frame;
     self.transmit(&welcome);
   }
@@ -384,6 +409,7 @@ impl Session {
   }
 
   fn close(&mut self, code: CloseCode, msg: Option<String>) {
+    self.outputs.truncate(self.urgent);
     let close = Frame::Close(Close {
       code: u64::from(u16::from(code)),
       msg: msg.clone(),
@@ -421,7 +447,16 @@ impl Session {
     let mut message = BytesMut::new();
     varint::encode(CONTROL_STREAM, &mut message).expect("stream 0 fits a varint");
     if frame.encode(&mut message).is_ok() {
-      self.outputs.push_back(Output::Transmit(message.freeze()));
+      let output = Output::Transmit(message.freeze());
+      if matches!(frame, Frame::Ping { .. } | Frame::Pong { .. } | Frame::Close(_)) {
+        self.outputs.insert(self.urgent, output);
+        self.urgent += 1;
+      } else {
+        self.outputs.push_back(output);
+      }
+      if let State::Established { ping_at, .. } = &mut self.state {
+        *ping_at = self.now + self.config.0.heartbeat;
+      }
     }
   }
 

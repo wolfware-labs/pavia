@@ -39,6 +39,15 @@
       "direction": "decode",
       "hex": "01 00 13 12 a3 0e 81 01 10 81 64 63 62 6f 72 15 a1 18 31 19 04 00",
       "error": {"code": "PROTOCOL_ERROR", "reason": "max_frame below 64 KiB"}
+    },
+    {
+      "id": "ping-data-nine-bytes-wt",
+      "spec": ["7.4"],
+      "note": "PING with a 9-byte data section, one more than the 8 a heartbeat may carry.",
+      "binding": "wt",
+      "direction": "decode",
+      "hex": "04 00 0a 00 01 02 03 04 05 06 07 08 09",
+      "error": {"code": "PROTOCOL_ERROR", "reason": "heartbeat data section over 8 bytes"}
     }
   ]
 }

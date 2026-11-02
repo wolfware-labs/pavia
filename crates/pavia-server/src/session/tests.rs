@@ -586,3 +586,45 @@ async fn closes_a_slow_authenticator_with_handshake_timeout() {
     }
   ));
 }
+
+fn fast_heartbeat() -> SessionConfig {
+  let mut config = SessionConfig::default();
+  config.heartbeat = Duration::from_millis(200);
+  config
+}
+
+async fn welcomed(config: SessionConfig) -> (Socket, oneshot::Receiver<Ending>) {
+  let (mut socket, ending) = connect_with(None, config).await;
+  socket.send(Message::binary(hello_frame())).await.unwrap();
+  let Message::Binary(message) = socket.next().await.unwrap().unwrap() else {
+    panic!("expected WELCOME");
+  };
+  assert_eq!(welcome(&message).len(), 7);
+  (socket, ending)
+}
+
+#[tokio::test]
+async fn pings_an_idle_session_every_heartbeat() {
+  let (mut socket, _) = welcomed(fast_heartbeat()).await;
+  let mut last = std::time::Instant::now();
+  for _ in 0..4 {
+    let message = socket.next().await.unwrap().unwrap();
+    assert_eq!(message, Message::binary(raw_frame(0x04, &[])));
+    let gap = last.elapsed();
+    assert!(gap >= Duration::from_millis(190), "{gap:?}");
+    assert!(gap < Duration::from_millis(400), "{gap:?}");
+    last = std::time::Instant::now();
+  }
+}
+
+#[tokio::test]
+async fn answers_a_ping_with_its_data() {
+  let (mut socket, _) = welcomed(SessionConfig::default()).await;
+  let data = [1, 2, 3, 4, 5, 6, 7, 8];
+  let mut ping = vec![0x00, 0x04, 0x00, 0x09, 0x00];
+  ping.extend(data);
+  socket.send(Message::binary(ping)).await.unwrap();
+  let mut pong = vec![0x00, 0x05, 0x00, 0x09, 0x00];
+  pong.extend(data);
+  assert_eq!(socket.next().await.unwrap().unwrap(), Message::binary(pong));
+}

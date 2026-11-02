@@ -769,7 +769,6 @@ fn sends_welcome_with_every_required_field_after_authentication() {
     }
   );
   assert!(!session.is_ended());
-  assert_eq!(session.poll_timeout(), None);
 }
 
 #[test]
@@ -834,14 +833,98 @@ fn times_out_an_authenticator_that_answers_after_the_deadline() {
 
 #[test]
 fn stops_the_handshake_timer_at_welcome() {
-  let (mut session, _) = welcomed(None);
-  session.handle_input(Input::Timeout, Instant::now() + Duration::from_secs(60));
-  session.handle_input(
-    Input::Message(message(&[(2, Frame::Cancel(Cancel { msg: None }))])),
-    Instant::now() + Duration::from_secs(60),
-  );
+  let (mut session, accepted) = welcomed_at(Duration::from_secs(9));
+  let late = accepted + Duration::from_secs(11);
+  session.handle_input(Input::Message(message(&[(2, Frame::Cancel(Cancel { msg: None }))])), late);
   assert_eq!(drain(&mut session), []);
   assert!(!session.is_ended());
+}
+
+fn welcomed_at(after: Duration) -> (Session, Instant) {
+  let accepted = Instant::now();
+  let mut session = Session::server(&ValidConfig::default(), accepted);
+  session.handle_input(Input::Message(message(&[(0, Frame::Hello(hello()))])), accepted);
+  session.handle_input(authenticated(None), accepted + after);
+  assert_eq!(drain(&mut session).len(), 2);
+  (session, accepted)
+}
+
+fn ping(data: &'static [u8]) -> Frame {
+  Frame::Ping {
+    data: Heartbeat::try_from(Bytes::from_static(data)).unwrap(),
+  }
+}
+
+fn pong(data: &'static [u8]) -> Frame {
+  Frame::Pong {
+    data: Heartbeat::try_from(Bytes::from_static(data)).unwrap(),
+  }
+}
+
+fn sent(session: &mut Session) -> Vec<(u64, Frame)> {
+  drain(session)
+    .iter()
+    .map(|output| match output {
+      Output::Transmit(message) => frames(message),
+      other => panic!("{other:?}"),
+    })
+    .collect::<Vec<_>>()
+    .concat()
+}
+
+#[test]
+fn pings_after_a_heartbeat_of_send_silence() {
+  let (mut session, accepted) = welcomed_at(Duration::from_secs(1));
+  let hb = Duration::from_secs(15);
+  let welcome_sent = accepted + Duration::from_secs(1);
+  assert_eq!(session.poll_timeout(), Some(welcome_sent + hb));
+  session.handle_input(Input::Timeout, welcome_sent + hb - Duration::from_millis(1));
+  assert_eq!(drain(&mut session), []);
+  session.handle_input(Input::Timeout, welcome_sent + hb);
+  assert_eq!(sent(&mut session), [(0, ping(b""))]);
+  assert_eq!(session.poll_timeout(), Some(welcome_sent + hb + hb));
+  session.handle_input(Input::Timeout, welcome_sent + hb + hb + Duration::from_millis(5));
+  assert_eq!(sent(&mut session), [(0, ping(b""))]);
+  assert_eq!(
+    session.poll_timeout(),
+    Some(welcome_sent + hb + hb + Duration::from_millis(5) + hb)
+  );
+}
+
+#[test]
+fn answers_a_ping_with_the_same_data_and_restarts_the_timer() {
+  let (mut session, accepted) = welcomed_at(Duration::ZERO);
+  for data in [&b""[..], b"\x01", b"\x01\x02\x03\x04\x05\x06\x07\x08"] {
+    let at = accepted + Duration::from_secs(3);
+    session.handle_input(Input::Message(message(&[(0, ping(data))])), at);
+    assert_eq!(sent(&mut session), [(0, pong(data))], "{data:02x?}");
+    assert_eq!(session.poll_timeout(), Some(at + Duration::from_secs(15)));
+  }
+}
+
+#[test]
+fn keeps_the_ping_timer_when_only_receiving() {
+  let (mut session, accepted) = welcomed_at(Duration::ZERO);
+  for seconds in [3, 6, 9] {
+    session.handle_input(
+      Input::Message(message(&[(0, pong(b"")), (2, Frame::Cancel(Cancel { msg: None }))])),
+      accepted + Duration::from_secs(seconds),
+    );
+    assert_eq!(drain(&mut session), []);
+  }
+  assert_eq!(session.poll_timeout(), Some(accepted + Duration::from_secs(15)));
+}
+
+#[test]
+fn refuses_a_ping_with_nine_data_bytes_or_off_the_control_stream() {
+  let nine = Bytes::from_static(b"\x00\x04\x00\x0a\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09");
+  let off_control = message(&[(2, ping(b"\x01"))]);
+  let stray_pong = message(&[(2, pong(b""))]);
+  for bad in [nine, off_control, stray_pong] {
+    let (mut session, _) = welcomed_at(Duration::ZERO);
+    session.feed(Input::Message(bad.clone()));
+    assert!(ended_with(&mut session, CloseCode::ProtocolError), "{bad:02x?}");
+  }
 }
 
 #[test]
@@ -953,4 +1036,56 @@ fn takes_frames_up_to_the_advertised_max_frame_after_welcome() {
   assert!(!session.is_ended());
   session.feed(Input::Message(item(1 << 20)));
   assert!(ended_with(&mut session, CloseCode::FrameTooLarge));
+}
+
+#[test]
+fn puts_pong_ahead_of_frames_already_queued() {
+  let (mut session, _) = welcomed_at(Duration::ZERO);
+  let queued = Frame::Cancel(Cancel { msg: None });
+  session.transmit(&queued);
+  session.transmit(&queued);
+  session.feed(Input::Message(message(&[(0, ping(b"\x01")), (0, ping(b"\x02"))])));
+  assert_eq!(
+    sent(&mut session),
+    [
+      (0, pong(b"\x01")),
+      (0, pong(b"\x02")),
+      (0, queued.clone()),
+      (0, queued.clone())
+    ]
+  );
+  session.transmit(&queued);
+  session.feed(Input::Message(message(&[(0, ping(b"\x03"))])));
+  assert_eq!(sent(&mut session), [(0, pong(b"\x03")), (0, queued)]);
+}
+
+#[test]
+fn sends_close_ahead_of_queued_frames_and_drops_them() {
+  let queued = Frame::Cancel(Cancel { msg: None });
+  let (mut session, _) = welcomed_at(Duration::ZERO);
+  session.transmit(&queued);
+  session.feed(Input::Command(Command::Close {
+    code: CloseCode::GoingAway,
+    msg: None,
+  }));
+  let outputs = drain(&mut session);
+  let [Output::Transmit(sent), Output::CloseTransport { .. }, Output::Ended(_)] = outputs.as_slice() else {
+    panic!("{outputs:?}");
+  };
+  assert_eq!(frames(sent), [(0, close(7, None))]);
+  let (mut session, _) = welcomed_at(Duration::ZERO);
+  session.transmit(&queued);
+  session.feed(Input::Message(message(&[(0, ping(b"\x01")), (0, Frame::Hello(hello()))])));
+  let outputs = drain(&mut session);
+  let [
+    Output::Transmit(first),
+    Output::Transmit(second),
+    Output::CloseTransport { .. },
+    Output::Ended(_),
+  ] = outputs.as_slice()
+  else {
+    panic!("{outputs:?}");
+  };
+  assert_eq!(frames(first), [(0, pong(b"\x01"))]);
+  assert_eq!(frames(second), [(0, close(1, None))]);
 }
