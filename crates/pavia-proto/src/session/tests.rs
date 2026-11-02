@@ -2,11 +2,12 @@ use bytes::{Bytes, BytesMut};
 
 use std::time::{Duration, Instant};
 
-use super::{AuthFailure, Authentication, Command, Config, Ending, Input, Output, Session, State};
+use super::{AuthFailure, Command, Config, ConfigError, Ending, Input, Output, Session, State, ValidConfig};
 use crate::data::Codec;
 use crate::frame::Reject;
-use crate::frame::{Auth, Close, Frame, Heartbeat, Hello, Limits, Resume, Token};
+use crate::frame::{AckMap, Auth, Cancel, Close, Frame, Heartbeat, Hello, Limits, Resume, ServerLimits, Token, Welcome};
 use crate::registry::CloseCode;
+use crate::session_id::SessionId;
 use crate::stream::Side;
 use crate::wire::envelope::{self, MAX_FRAME_FLOOR};
 use crate::wire::header::DecodeLimits;
@@ -40,7 +41,7 @@ impl Feed for Session {
 }
 
 fn server() -> Session {
-  Session::server(&Config::default(), Instant::now())
+  Session::server(&ValidConfig::default(), Instant::now())
 }
 
 fn hello() -> Hello {
@@ -363,7 +364,7 @@ fn times_out_with_no_bytes_from_accept() {
     handshake_timeout: Duration::from_millis(200),
     ..Config::default()
   };
-  let mut session = Session::server(&config, accepted);
+  let mut session = Session::server(&config.validate().unwrap(), accepted);
   let deadline = accepted + Duration::from_millis(200);
   assert_eq!(session.poll_timeout(), Some(deadline));
   session.handle_input(Input::Timeout, deadline - Duration::from_millis(1));
@@ -376,7 +377,7 @@ fn times_out_with_no_bytes_from_accept() {
 #[test]
 fn keeps_the_timer_running_after_hello() {
   let accepted = Instant::now();
-  let mut session = Session::server(&Config::default(), accepted);
+  let mut session = Session::server(&ValidConfig::default(), accepted);
   session.handle_input(
     Input::Message(message(&[(0, Frame::Hello(hello()))])),
     accepted + Duration::from_millis(9_900),
@@ -390,7 +391,7 @@ fn keeps_the_timer_running_after_hello() {
 #[test]
 fn times_out_a_hello_that_arrives_after_the_deadline() {
   let accepted = Instant::now();
-  let mut session = Session::server(&Config::default(), accepted);
+  let mut session = Session::server(&ValidConfig::default(), accepted);
   session.handle_input(
     Input::Message(message(&[(0, Frame::Hello(hello()))])),
     accepted + Duration::from_millis(10_001),
@@ -401,7 +402,7 @@ fn times_out_a_hello_that_arrives_after_the_deadline() {
 #[test]
 fn reports_transport_loss_after_the_deadline_as_transport_loss() {
   let accepted = Instant::now();
-  let mut session = Session::server(&Config::default(), accepted);
+  let mut session = Session::server(&ValidConfig::default(), accepted);
   session.handle_input(Input::TransportLost, accepted + Duration::from_secs(11));
   assert_eq!(drain(&mut session), [Output::Ended(Ending::TransportLost)]);
 }
@@ -540,7 +541,7 @@ fn rejects_a_resume_while_resume_is_not_granted() {
 fn honors_a_close_command_or_text_message_after_the_deadline() {
   let accepted = Instant::now();
   let late = accepted + Duration::from_secs(11);
-  let mut session = Session::server(&Config::default(), accepted);
+  let mut session = Session::server(&ValidConfig::default(), accepted);
   session.handle_input(
     Input::Command(Command::Close {
       code: CloseCode::GoingAway,
@@ -556,7 +557,7 @@ fn honors_a_close_command_or_text_message_after_the_deadline() {
       by: Side::Server
     }))
   );
-  let mut session = Session::server(&Config::default(), accepted);
+  let mut session = Session::server(&ValidConfig::default(), accepted);
   session.handle_input(Input::TextMessage, late);
   assert!(ended_with(&mut session, CloseCode::ProtocolError));
 }
@@ -567,7 +568,7 @@ fn negotiating(versions: Vec<u64>, codecs: &[&str]) -> Session {
     codecs: vec![Codec::Cbor, Codec::Json],
     ..Config::default()
   };
-  let mut session = Session::server(&config, Instant::now());
+  let mut session = Session::server(&config.validate().unwrap(), Instant::now());
   session.feed(Input::Message(message(&[(
     0,
     Frame::Hello(Hello {
@@ -659,14 +660,30 @@ fn bearer(token: &str) -> Auth {
   }
 }
 
-fn user(session: &Session) -> Option<Option<&str>> {
-  match &session.state {
-    State::Handshaking {
-      authentication: Authentication::Done { user },
-      ..
-    } => Some(user.as_deref()),
-    _ => None,
+fn session_id() -> SessionId {
+  SessionId::parse("s_test").unwrap()
+}
+
+fn authenticated(user: Option<&str>) -> Input {
+  Input::Authenticated {
+    session: session_id(),
+    user: user.map(str::to_owned),
   }
+}
+
+fn welcomed(user: Option<&str>) -> (Session, Welcome) {
+  let mut session = greeted();
+  session.feed(authenticated(user));
+  let outputs = drain(&mut session);
+  let [Output::Transmit(sent)] = outputs.as_slice() else {
+    panic!("{outputs:?}");
+  };
+  let decoded = frames(sent);
+  let [(0, Frame::Welcome(welcome))] = decoded.as_slice() else {
+    panic!("{sent:02x?}");
+  };
+  let welcome = welcome.clone();
+  (session, welcome)
 }
 
 #[test]
@@ -686,7 +703,6 @@ fn hands_the_hello_credential_to_the_driver_and_drops_it() {
     }]
   );
   assert_eq!(session.hello().map(|hello| hello.auth.clone()), Some(None));
-  assert_eq!(user(&session), None);
 }
 
 #[test]
@@ -724,49 +740,194 @@ fn rejects_with_the_code_the_authenticator_chose() {
 }
 
 #[test]
-fn keeps_the_user_and_waits_for_welcome_after_authentication() {
-  for authenticated in [Some("u-42"), None] {
-    let accepted = Instant::now();
-    let mut session = Session::server(&Config::default(), accepted);
-    session.feed(Input::Message(message(&[(0, Frame::Hello(hello()))])));
-    assert_eq!(drain(&mut session), ANONYMOUS);
-    session.feed(Input::Authenticated {
-      user: authenticated.map(str::to_owned),
-    });
-    assert_eq!(drain(&mut session), []);
-    assert_eq!(user(&session), Some(authenticated));
-    assert!(!session.is_ended());
-    assert_eq!(session.poll_timeout(), Some(accepted + Duration::from_secs(10)));
-  }
+fn sends_welcome_with_every_required_field_after_authentication() {
+  let (session, welcome) = welcomed(None);
+  assert_eq!(
+    welcome,
+    Welcome {
+      version: 1,
+      codec: "cbor".into(),
+      caps: vec!["calls".into()],
+      session: "s_test".into(),
+      token: None,
+      limits: ServerLimits {
+        max_calls: 100,
+        max_frame: 1_048_576,
+        max_subs: 256,
+        max_dgram: 1_100,
+        window: Some(262_144),
+      },
+      hb: 15_000,
+      idle: 45_000,
+      resume_window: None,
+      contract: None,
+      user: None,
+      resumed: None,
+      ack: None,
+      lost: None,
+      transports: None,
+    }
+  );
+  assert!(!session.is_ended());
+  assert_eq!(session.poll_timeout(), None);
+}
+
+#[test]
+fn echoes_the_user_id_only_when_the_principal_has_one() {
+  assert_eq!(welcomed(Some("u1")).1.user.as_deref(), Some("u1"));
+  assert_eq!(welcomed(None).1.user, None);
+}
+
+#[test]
+fn announces_the_configured_values() {
+  let config = Config {
+    heartbeat: Duration::from_secs(5),
+    idle_timeout: Duration::from_millis(12_500),
+    max_calls: 7,
+    max_frame: 65_536,
+    window: 65_536,
+    ..Config::default()
+  };
+  let mut session = Session::server(&config.validate().unwrap(), Instant::now());
+  session.feed(Input::Message(message(&[(0, Frame::Hello(hello()))])));
+  session.feed(authenticated(None));
+  let outputs = drain(&mut session);
+  let Some(Output::Transmit(sent)) = outputs.last() else {
+    panic!("{outputs:?}");
+  };
+  let decoded = frames(sent);
+  let [(0, Frame::Welcome(welcome))] = decoded.as_slice() else {
+    panic!("{sent:02x?}");
+  };
+  assert_eq!((welcome.hb, welcome.idle), (5_000, 12_500));
+  assert_eq!(
+    (welcome.limits.max_calls, welcome.limits.max_frame, welcome.limits.window),
+    (7, 65_536, Some(65_536))
+  );
 }
 
 #[test]
 fn ignores_an_answer_without_a_pending_authentication() {
   let mut session = server();
   session.feed(Input::AuthFailed(AuthFailure::Forbidden));
-  session.feed(Input::Authenticated { user: None });
+  session.feed(authenticated(None));
   assert_eq!(drain(&mut session), []);
   assert!(matches!(session.state, State::AwaitHello { .. }));
-  let mut session = greeted();
-  session.feed(Input::Authenticated {
-    user: Some("u-1".into()),
-  });
+  let (mut session, _) = welcomed(Some("u-1"));
   session.feed(Input::AuthFailed(AuthFailure::Unauthenticated));
-  session.feed(Input::Authenticated {
-    user: Some("u-2".into()),
-  });
+  session.feed(authenticated(Some("u-2")));
   assert_eq!(drain(&mut session), []);
-  assert_eq!(user(&session), Some(Some("u-1")));
+  assert!(matches!(session.state, State::Established { .. }));
 }
 
 #[test]
 fn times_out_an_authenticator_that_answers_after_the_deadline() {
-  for answer in [Input::Authenticated { user: None }, Input::AuthFailed(AuthFailure::Forbidden)] {
+  for answer in [authenticated(None), Input::AuthFailed(AuthFailure::Forbidden)] {
     let accepted = Instant::now();
-    let mut session = Session::server(&Config::default(), accepted);
+    let mut session = Session::server(&ValidConfig::default(), accepted);
     session.handle_input(Input::Message(message(&[(0, Frame::Hello(hello()))])), accepted);
     assert_eq!(drain(&mut session), ANONYMOUS);
     session.handle_input(answer.clone(), accepted + Duration::from_secs(10));
     assert!(ended_with(&mut session, CloseCode::HandshakeTimeout), "{answer:?}");
   }
+}
+
+#[test]
+fn stops_the_handshake_timer_at_welcome() {
+  let (mut session, _) = welcomed(None);
+  session.handle_input(Input::Timeout, Instant::now() + Duration::from_secs(60));
+  session.handle_input(
+    Input::Message(message(&[(2, Frame::Cancel(Cancel { msg: None }))])),
+    Instant::now() + Duration::from_secs(60),
+  );
+  assert_eq!(drain(&mut session), []);
+  assert!(!session.is_ended());
+}
+
+#[test]
+fn gates_frames_after_welcome_on_the_granted_capabilities() {
+  let (mut session, _) = welcomed(None);
+  session.feed(Input::Message(message(&[(0, Frame::Ack { ack: AckMap::new() })])));
+  assert!(ended_with(&mut session, CloseCode::ProtocolError));
+}
+
+#[test]
+fn refuses_hello_and_closes_on_close_after_welcome() {
+  let (mut session, _) = welcomed(None);
+  session.feed(Input::Message(message(&[(0, Frame::Hello(hello()))])));
+  assert!(ended_with(&mut session, CloseCode::ProtocolError));
+  let (mut session, _) = welcomed(None);
+  session.feed(Input::Message(message(&[(0, close(0, None))])));
+  assert_eq!(
+    drain(&mut session).last(),
+    Some(&Output::Ended(Ending::Closed {
+      code: CloseCode::Normal,
+      msg: None,
+      by: Side::Client
+    }))
+  );
+}
+
+type Change = fn(&mut Config);
+
+#[test]
+fn validates_the_config() {
+  let floor = Limits::FLOOR;
+  let cases: [(Change, Option<ConfigError>); 12] = [
+    (|_| {}, None),
+    (|config| config.max_frame = Limits::FLOOR, None),
+    (|config| config.window = Limits::FLOOR, None),
+    (|config| (config.window, config.max_frame) = (Limits::FLOOR, 1 << 20), None),
+    (
+      |config| config.max_frame = Limits::FLOOR - 1,
+      Some(ConfigError::BelowFloor("max_frame")),
+    ),
+    (
+      |config| config.window = Limits::FLOOR - 1,
+      Some(ConfigError::BelowFloor("window")),
+    ),
+    (
+      |config| config.heartbeat = Duration::ZERO,
+      Some(ConfigError::Zero("heartbeat")),
+    ),
+    (
+      |config| config.idle_timeout = Duration::from_micros(999),
+      Some(ConfigError::Zero("idle_timeout")),
+    ),
+    (
+      |config| config.handshake_timeout = Duration::ZERO,
+      Some(ConfigError::Zero("handshake_timeout")),
+    ),
+    (|config| config.max_calls = 0, Some(ConfigError::Zero("max_calls"))),
+    (|config| config.versions.clear(), Some(ConfigError::Empty("versions"))),
+    (|config| config.codecs.clear(), Some(ConfigError::Empty("codecs"))),
+  ];
+  for (index, (change, expected)) in cases.into_iter().enumerate() {
+    let mut config = Config::default();
+    change(&mut config);
+    assert_eq!(config.validate().err(), expected, "case {index}, floor {floor}");
+  }
+  let mut config = Config::default();
+  (config.max_subs, config.max_dgram) = (0, 0);
+  assert_eq!(config.validate().err(), Some(ConfigError::Zero("max_subs")));
+}
+
+#[test]
+fn sends_the_default_welcome_vector() {
+  let doc: serde_json::Value = serde_json::from_str(include_str!("../../../../vectors/frames/handshake.json")).unwrap();
+  let case = doc["cases"]
+    .as_array()
+    .unwrap()
+    .iter()
+    .find(|case| case["id"] == "welcome-defaults-ws")
+    .unwrap();
+  let expected: Vec<u8> = case["hex"]
+    .as_str()
+    .unwrap()
+    .split_whitespace()
+    .map(|byte| u8::from_str_radix(byte, 16).unwrap())
+    .collect();
+  let mut session = greeted();
+  session.feed(authenticated(None));
+  assert_eq!(drain(&mut session), [Output::Transmit(Bytes::from(expected))]);
 }

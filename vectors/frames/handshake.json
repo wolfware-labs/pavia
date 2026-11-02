@@ -39,6 +39,24 @@
       ]
     },
     {
+      "id": "welcome-defaults-ws",
+      "spec": ["5.4", "5.4.1", "7.2", "16"],
+      "note": "WELCOME with the section 16 default limits, hb and idle, version 1, codec cbor and caps [\"calls\"]. Only the session ID varies between servers; this one is fixed. The 63-byte header makes the payload length 64, the first length that needs a two-byte varint.",
+      "binding": "ws",
+      "direction": "both",
+      "hex": "00 02 00 40 40 3f a7 0f 01 11 64 63 62 6f 72 12 81 65 63 61 6c 6c 73 13 66 73 5f 74 65 73 74 15 a5 18 28 1a 00 04 00 00 18 30 18 64 18 31 1a 00 10 00 00 18 32 19 01 00 18 33 19 04 4c 16 19 3a 98 17 19 af c8",
+      "frames": [
+        {
+          "stream": 0,
+          "type": 2,
+          "name": "WELCOME",
+          "flags": 0,
+          "header": "{15: 1, 17: \"cbor\", 18: [\"calls\"], 19: \"s_test\", 21: {40: 262144, 48: 100, 49: 1048576, 50: 256, 51: 1100}, 22: 15000, 23: 45000}",
+          "data": null
+        }
+      ]
+    },
+    {
       "id": "call-unary-ws",
       "spec": ["5.2", "5.5", "6.1", "8.2"],
       "note": "Client CALL on stream 2 (first client-initiated stream), unary shape, 5 s deadline. The data section is the cbor argument array.",

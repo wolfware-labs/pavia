@@ -1,21 +1,24 @@
 //! The session state machine (§7), driven as sans-IO: the driver feeds [`Input`]s with
 //! [`Session::handle_input`] and then drains [`Session::poll_output`] until it returns `None`.
 //!
-//! So far it is the server side up to a validated HELLO with its version, codec and capabilities
-//! chosen (§6.2, §7.1, §7.2, §7.10), authentication by the driver's authenticator (§7.5), and
-//! every way a session ends (§7.3, §7.7, §13.4). Time is
-//! an input: the session is built with the accept time, every [`Session::handle_input`] call
-//! takes `now`, and [`Session::poll_timeout`] gives the handshake deadline.
+//! So far it is the server side through the handshake: a validated HELLO with its version, codec
+//! and capabilities chosen (§6.2, §7.1, §7.2, §7.10), authentication by the driver's
+//! authenticator (§7.5), WELCOME, the capability gate on every later frame, and every way a
+//! session ends (§7.3, §7.7, §13.4). Time is an input: the session is built with the accept
+//! time, every [`Session::handle_input`] call takes `now`, and [`Session::poll_timeout`] gives
+//! the handshake deadline.
 //!
 //! ```text
-//!  AwaitHello ──HELLO──▶ Handshaking ──Authenticated──▶ (WELCOME, #31) …
-//!      │                     │
-//!      ├ no common version or codec ───────────▶ REJECT UNSUPPORTED_VERSION
-//!      ├ resume without `resume` granted ──────▶ REJECT RESUME_FAILED
-//!      │                     ├ AuthFailed ───────▶ REJECT UNAUTHENTICATED or FORBIDDEN
-//!      ├ other frame first ──┤ second HELLO ─────▶ CLOSE PROTOCOL_ERROR
-//!      ├ deadline ───────────┤ deadline ─────────▶ CLOSE HANDSHAKE_TIMEOUT
-//!      └ TransportLost ──────┴ CLOSE received ───▶ Ended
+//!  AwaitHello ──HELLO──▶ Handshaking ──Authenticated: WELCOME──▶ Established
+//!
+//!  AwaitHello                no common version or codec       ▶ REJECT UNSUPPORTED_VERSION
+//!  AwaitHello                resume without `resume`          ▶ REJECT RESUME_FAILED
+//!  AwaitHello                a first frame that is not HELLO  ▶ CLOSE PROTOCOL_ERROR
+//!  Handshaking               AuthFailed                       ▶ REJECT UNAUTHENTICATED or FORBIDDEN
+//!  AwaitHello, Handshaking   deadline                         ▶ CLOSE HANDSHAKE_TIMEOUT
+//!  Handshaking, Established  second HELLO                     ▶ CLOSE PROTOCOL_ERROR
+//!  Established               a capability not granted         ▶ CLOSE PROTOCOL_ERROR
+//!  any                       CLOSE received, TransportLost    ▶ Ended
 //! ```
 //!
 //! A validated HELLO yields [`Output::Authenticate`]. The driver runs the authenticator and feeds
@@ -23,25 +26,31 @@
 //! running meanwhile, so a slow authenticator ends in HANDSHAKE_TIMEOUT (§7.1).
 //!
 //! Every ending yields exactly one [`Output::Ended`], and after it the session ignores all input.
-//! A text message is a PROTOCOL_ERROR in every state (§4.3). Frames the client pipelines after
-//! HELLO are ignored until WELCOME exists (#31, #40). Only the WebSocket binding exists so far:
-//! one [`Output::Transmit`] is one binary message.
+//! A text message is a PROTOCOL_ERROR in every state (§4.3). Frames the client pipelines before
+//! WELCOME are dropped until the pre-authentication buffer exists (#40). After WELCOME every frame
+//! passes [`caps::check`] and is otherwise ignored until its feature lands.
+//! Only the WebSocket binding exists so far: one [`Output::Transmit`] is one binary message.
 
 use std::collections::VecDeque;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use bytes::{Bytes, BytesMut};
 
-use crate::caps::{Capability, Caps};
+use crate::caps::{self, Capability, Caps};
 use crate::data::Codec;
 use crate::error::{Outcome, ProtocolError};
-use crate::frame::{Auth, Close, Frame, Hello, Reject};
+use crate::frame::{Auth, Close, Frame, Hello, Reject, Welcome};
 use crate::negotiate;
 use crate::registry::CloseCode;
+use crate::session_id::SessionId;
 use crate::stream::Side;
 use crate::wire::envelope::{self, MAX_FRAME_FLOOR};
 use crate::wire::header::DecodeLimits;
 use crate::wire::varint;
+
+mod config;
+
+pub use config::{Config, ConfigError, ValidConfig};
 
 const CONTROL_STREAM: u64 = 0;
 
@@ -57,10 +66,12 @@ pub enum Input {
   TransportLost,
   /// The time from [`Session::poll_timeout`] has come.
   Timeout,
-  /// The authenticator accepted the client after [`Output::Authenticate`]. `user` is the
-  /// principal's user ID, `None` for an anonymous session (§2).
+  /// The authenticator accepted the client after [`Output::Authenticate`]: the session sends
+  /// WELCOME and the handshake timer stops (§7.2).
   Authenticated {
-    /// The user ID, echoed later in WELCOME `user`.
+    /// The session ID the driver assigned, WELCOME `session`.
+    session: SessionId,
+    /// The principal's user ID, WELCOME `user`; `None` for an anonymous session (§2).
     user: Option<String>,
   },
   /// The authenticator refused the client after [`Output::Authenticate`].
@@ -163,30 +174,6 @@ pub struct Negotiated {
   pub caps: Caps,
 }
 
-/// Session settings chosen by the application.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct Config {
-  /// How long the handshake may take, from transport accept until WELCOME or REJECT is sent
-  /// (§7.1). Default 10 s.
-  pub handshake_timeout: Duration,
-  /// The protocol major versions this server speaks. Default `[1]`.
-  pub versions: Vec<u64>,
-  /// The data-section codecs this server supports. Default `[Codec::Cbor]`; `json` waits for
-  /// its data-section codec (#59).
-  pub codecs: Vec<Codec>,
-}
-
-impl Default for Config {
-  fn default() -> Self {
-    Self {
-      handshake_timeout: Duration::from_secs(10),
-      versions: vec![1],
-      codecs: vec![Codec::Cbor],
-    }
-  }
-}
-
 #[derive(Debug)]
 enum State {
   AwaitHello {
@@ -196,26 +183,19 @@ enum State {
     deadline: Instant,
     hello: Box<Hello>,
     negotiated: Negotiated,
-    authentication: Authentication,
+  },
+  Established {
+    hello: Box<Hello>,
+    negotiated: Negotiated,
   },
   Ended,
-}
-
-#[derive(Debug)]
-enum Authentication {
-  Pending,
-  Done {
-    #[cfg_attr(not(test), expect(dead_code))]
-    user: Option<String>,
-  },
 }
 
 /// One server session.
 #[derive(Debug)]
 pub struct Session {
   local: Side,
-  versions: Vec<u64>,
-  codecs: Vec<Codec>,
+  config: ValidConfig,
   max_frame: u64,
   limits: DecodeLimits,
   state: State,
@@ -226,15 +206,14 @@ impl Session {
   /// A server session on a WebSocket transport accepted at `now`. The handshake timer starts
   /// here, not at the first byte (§7.1).
   #[must_use]
-  pub fn server(config: &Config, now: Instant) -> Self {
+  pub fn server(config: &ValidConfig, now: Instant) -> Self {
     Self {
       local: Side::Server,
-      versions: config.versions.clone(),
-      codecs: config.codecs.clone(),
+      config: config.clone(),
       max_frame: MAX_FRAME_FLOOR,
       limits: DecodeLimits::default(),
       state: State::AwaitHello {
-        deadline: now + config.handshake_timeout,
+        deadline: now + config.0.handshake_timeout,
       },
       outputs: VecDeque::new(),
     }
@@ -250,7 +229,7 @@ impl Session {
   #[must_use]
   pub fn hello(&self) -> Option<&Hello> {
     match &self.state {
-      State::Handshaking { hello, .. } => Some(hello),
+      State::Handshaking { hello, .. } | State::Established { hello, .. } => Some(hello),
       State::AwaitHello { .. } | State::Ended => None,
     }
   }
@@ -259,7 +238,7 @@ impl Session {
   #[must_use]
   pub const fn negotiated(&self) -> Option<&Negotiated> {
     match &self.state {
-      State::Handshaking { negotiated, .. } => Some(negotiated),
+      State::Handshaking { negotiated, .. } | State::Established { negotiated, .. } => Some(negotiated),
       State::AwaitHello { .. } | State::Ended => None,
     }
   }
@@ -269,7 +248,7 @@ impl Session {
   pub const fn poll_timeout(&self) -> Option<Instant> {
     match self.state {
       State::AwaitHello { deadline } | State::Handshaking { deadline, .. } => Some(deadline),
-      State::Ended => None,
+      State::Established { .. } | State::Ended => None,
     }
   }
 
@@ -288,21 +267,9 @@ impl Session {
         self.close(CloseCode::HandshakeTimeout, None);
       }
       Input::Message(message) => self.receive(message),
-      Input::Authenticated { user } => {
-        if let State::Handshaking {
-          authentication: authentication @ Authentication::Pending,
-          ..
-        } = &mut self.state
-        {
-          *authentication = Authentication::Done { user };
-        }
-      }
+      Input::Authenticated { session, user } => self.welcome(&session, user),
       Input::AuthFailed(failure) => {
-        if let State::Handshaking {
-          authentication: Authentication::Pending,
-          ..
-        } = self.state
-        {
+        if let State::Handshaking { .. } = self.state {
           let (code, msg) = failure.reject();
           self.reject(code, msg);
         }
@@ -336,8 +303,8 @@ impl Session {
           if hello.resume.is_some() && !caps.contains(Capability::Resume) {
             return self.reject(CloseCode::ResumeFailed, "unknown session");
           }
-          let version = negotiate::version(&hello.versions, &self.versions);
-          let codec = negotiate::codec(&hello.codecs, &self.codecs);
+          let version = negotiate::version(&hello.versions, &self.config.0.versions);
+          let codec = negotiate::codec(&hello.codecs, &self.config.0.codecs);
           let (Some(version), Some(codec)) = (version, codec) else {
             return self.reject(CloseCode::UnsupportedVersion, "no common protocol version or codec");
           };
@@ -346,18 +313,54 @@ impl Session {
             deadline: *deadline,
             hello: Box::new(hello),
             negotiated: Negotiated { version, codec, caps },
-            authentication: Authentication::Pending,
           };
           self.outputs.push_back(Output::Authenticate { auth });
         }
-        (State::Handshaking { .. }, Frame::Close(close)) if on_control => return self.peer_closed(close),
-        (State::AwaitHello { .. }, _) | (State::Handshaking { .. }, Frame::Hello(_) | Frame::Close(_)) => {
+        (State::Handshaking { .. } | State::Established { .. }, Frame::Close(close)) if on_control => {
+          return self.peer_closed(close);
+        }
+        (State::AwaitHello { .. }, _)
+        | (State::Handshaking { .. } | State::Established { .. }, Frame::Hello(_) | Frame::Close(_)) => {
           return self.fail(&ProtocolError::FrameTypeNotAllowed);
         }
         (State::Handshaking { .. }, _) => {}
+        (State::Established { negotiated, .. }, frame) => {
+          if let Err(error) = caps::check(&negotiated.caps, &frame, self.local.peer()) {
+            return self.fail(&error);
+          }
+        }
         (State::Ended, _) => return,
       }
     }
+  }
+
+  fn welcome(&mut self, session: &SessionId, user: Option<String>) {
+    let (hello, negotiated) = match std::mem::replace(&mut self.state, State::Ended) {
+      State::Handshaking { hello, negotiated, .. } => (hello, negotiated),
+      other => {
+        self.state = other;
+        return;
+      }
+    };
+    let welcome = Frame::Welcome(Welcome {
+      version: negotiated.version,
+      codec: negotiated.codec.name().to_owned(),
+      caps: negotiated.caps.names().map(str::to_owned).collect(),
+      session: session.as_str().to_owned(),
+      token: None,
+      limits: self.config.limits(),
+      hb: self.config.heartbeat_ms(),
+      idle: self.config.idle_ms(),
+      resume_window: None,
+      contract: None,
+      user,
+      resumed: None,
+      ack: None,
+      lost: None,
+      transports: None,
+    });
+    self.state = State::Established { hello, negotiated };
+    self.transmit(&welcome);
   }
 
   fn fail(&mut self, error: &ProtocolError) {

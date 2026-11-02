@@ -8,11 +8,13 @@ use std::future::Future;
 use std::pin::Pin;
 
 use pavia_proto::frame::Auth;
-use pavia_proto::session::{Command, Config, Ending, Input, Output, Session};
+use pavia_proto::registry::CloseCode;
+use pavia_proto::session::{Command, Ending, Input, Output, Session, ValidConfig};
 use tokio::sync::mpsc;
 use tokio::time::{Instant, sleep_until};
 
 use crate::auth::{AuthFailure, Authenticator, Principal};
+use crate::session_id;
 use crate::websocket::{Received, Transport};
 
 type Authenticating<'a> = Pin<Box<dyn Future<Output = Result<Principal, AuthFailure>> + Send + 'a>>;
@@ -21,14 +23,16 @@ type Authenticating<'a> = Pin<Box<dyn Future<Output = Result<Principal, AuthFail
 /// `commands`. Dropping every sender of `commands` leaves the session running.
 ///
 /// `authenticator` runs once, after HELLO (§7.5). The transport keeps being read while it runs,
-/// so a CLOSE, a transport loss or the handshake deadline still ends the session.
+/// so a CLOSE, a transport loss or the handshake deadline still ends the session. When it
+/// accepts, the session gets a new ID and sends WELCOME; if the operating system cannot supply
+/// the ID's randomness, the session closes with INTERNAL instead.
 ///
 /// The handshake timer starts at [`Transport::accepted`], before the upgrade. The clock is
 /// tokio's, so a test that pauses time drives the session's timers too.
 pub async fn run<A: Authenticator>(
   mut transport: Transport,
   mut commands: mpsc::Receiver<Command>,
-  config: &Config,
+  config: &ValidConfig,
   authenticator: &A,
 ) -> Ending {
   let mut session = Session::server(config, transport.accepted().into_std());
@@ -36,15 +40,17 @@ pub async fn run<A: Authenticator>(
   let mut authenticating: Option<Authenticating<'_>> = None;
   let mut commands_open = true;
   loop {
+    let mut answered = false;
     let deadline = session.poll_timeout().map(Instant::from_std);
     let input = tokio::select! {
       () = sleep_until(deadline.unwrap_or_else(Instant::now)), if deadline.is_some() => Input::Timeout,
       answer = async { authenticating.as_mut().expect("guarded by the branch condition").await },
-        if authenticating.is_some() => match answer {
-        Ok(principal) => Input::Authenticated {
-          user: principal.user().map(str::to_owned),
-        },
-        Err(failure) => Input::AuthFailed(failure),
+        if authenticating.is_some() => {
+        answered = true;
+        match answer {
+          Ok(principal) => accept(&principal),
+          Err(failure) => Input::AuthFailed(failure),
+        }
       },
       received = transport.recv() => match received {
         Some(Ok(Received::Binary(message))) => Input::Message(message),
@@ -59,7 +65,7 @@ pub async fn run<A: Authenticator>(
         }
       },
     };
-    if matches!(input, Input::Authenticated { .. } | Input::AuthFailed(_)) {
+    if answered {
       authenticating = None;
     }
     session.handle_input(input, Instant::now().into_std());
@@ -73,6 +79,19 @@ pub async fn run<A: Authenticator>(
       }
       Step::Ended(ending) => return ending,
     }
+  }
+}
+
+fn accept(principal: &Principal) -> Input {
+  match session_id::generate() {
+    Ok(session) => Input::Authenticated {
+      session,
+      user: principal.user().map(str::to_owned),
+    },
+    Err(_) => Input::Command(Command::Close {
+      code: CloseCode::Internal,
+      msg: None,
+    }),
   }
 }
 
