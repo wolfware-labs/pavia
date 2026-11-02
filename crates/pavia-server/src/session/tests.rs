@@ -1,7 +1,9 @@
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use ciborium::Value;
 use futures_util::{SinkExt, StreamExt};
 use hyper::header::{self, HeaderValue};
 use pavia_proto::frame::Auth;
@@ -48,6 +50,7 @@ async fn listen_with<A: Authenticator + 'static>(
   config: SessionConfig,
   authenticator: Arc<A>,
 ) -> (SocketAddr, oneshot::Receiver<Ending>) {
+  let config = config.validate().unwrap();
   let (ended, ending) = oneshot::channel();
   let ended = Arc::new(Mutex::new(Some(ended)));
   let endpoint = Endpoint::new(Config::new("/rt"), move |transport: Transport| {
@@ -152,6 +155,7 @@ async fn cuts_the_close_reason_on_a_character_boundary() {
 async fn mirrors_a_client_close() {
   let (mut socket, ending) = connect(None).await;
   socket.send(Message::binary(hello_frame())).await.unwrap();
+  assert_eq!(next_welcome(&mut socket).await.len(), 7);
   socket.send(Message::binary(close_frame(0))).await.unwrap();
   let (binary, ws_code, _) = closed(&mut socket).await;
   assert!(binary.is_empty());
@@ -219,6 +223,7 @@ async fn closes_with_protocol_error_on_a_malformed_message() {
 async fn keeps_running_after_a_message_that_needs_no_answer() {
   let (mut socket, ending) = connect(None).await;
   socket.send(Message::binary(hello_frame())).await.unwrap();
+  assert_eq!(next_welcome(&mut socket).await.len(), 7);
   socket.send(Message::binary(close_frame(0))).await.unwrap();
   let (binary, ws_code, _) = closed(&mut socket).await;
   assert!(binary.is_empty());
@@ -278,19 +283,54 @@ async fn closes_with_handshake_timeout_when_nothing_arrives() {
 }
 
 #[tokio::test]
-async fn closes_with_handshake_timeout_after_a_valid_hello() {
+async fn sends_welcome_and_stops_the_handshake_timer() {
   let (mut socket, ending) = connect_with(None, short_timeout()).await;
   socket.send(Message::binary(hello_frame())).await.unwrap();
+  let welcome = next_welcome(&mut socket).await;
+  let keys: Vec<u64> = welcome.keys().copied().collect();
+  assert_eq!(keys, [15, 17, 18, 19, 21, 22, 23]);
+  assert_eq!(welcome[&15], Value::Integer(1.into()));
+  assert_eq!(welcome[&17], Value::Text("cbor".into()));
+  assert_eq!(welcome[&18], Value::Array(vec![Value::Text("calls".into())]));
+  let Value::Text(id) = &welcome[&19] else {
+    panic!("{welcome:?}");
+  };
+  assert!(pavia_proto::session_id::SessionId::parse(id).is_ok(), "{id}");
+  assert!(tokio::time::timeout(Duration::from_millis(400), socket.next()).await.is_err());
+  socket.send(Message::binary(close_frame(0))).await.unwrap();
   let (binary, ws_code, _) = closed(&mut socket).await;
-  assert_eq!(binary, [close_frame(12)]);
-  assert_eq!(ws_code, WsCloseCode::from(4012));
-  assert!(matches!(
-    ending.await.unwrap(),
-    Ending::Closed {
-      code: CloseCode::HandshakeTimeout,
-      ..
-    }
-  ));
+  assert!(binary.is_empty());
+  assert_eq!(ws_code, WsCloseCode::from(4000));
+  assert!(matches!(ending.await.unwrap(), Ending::Closed { by: Side::Client, .. }));
+}
+
+async fn next_welcome(socket: &mut Socket) -> BTreeMap<u64, Value> {
+  match socket.next().await.unwrap().unwrap() {
+    Message::Binary(message) => welcome(&message),
+    other => panic!("expected WELCOME, got {other:?}"),
+  }
+}
+
+fn welcome(message: &[u8]) -> BTreeMap<u64, Value> {
+  assert_eq!(message[..3], [0x00, 0x02, 0x00], "{message:02x?}");
+  let mut rest = &message[3..];
+  let _payload = varint(&mut rest);
+  let header = varint(&mut rest);
+  let header: Value = ciborium::from_reader(&rest[..header as usize]).unwrap();
+  let Value::Map(entries) = header else {
+    panic!("{header:?}");
+  };
+  entries
+    .into_iter()
+    .map(|(key, value)| (u64::try_from(key.as_integer().unwrap()).unwrap(), value))
+    .collect()
+}
+
+fn varint(bytes: &mut &[u8]) -> u64 {
+  let len = 1 << (bytes[0] >> 6);
+  let value = bytes[..len].iter().fold(0, |value, &byte| (value << 8) | u64::from(byte)) & (u64::MAX >> (64 - 8 * len + 2));
+  *bytes = &bytes[len..];
+  value
 }
 
 #[tokio::test]
@@ -498,9 +538,10 @@ async fn gives_the_authenticator_the_credential_and_the_upgrade_request() {
   let authenticator = Recording::answering(Some(Ok(Principal::for_user("u-42"))));
   let (mut socket, local, ending) = connect_to(Arc::clone(&authenticator), SessionConfig::default()).await;
   socket.send(Message::binary(bearer_hello())).await.unwrap();
+  assert_eq!(next_welcome(&mut socket).await.get(&36), Some(&Value::Text("u-42".into())));
   socket.send(Message::binary(close_frame(0))).await.unwrap();
   let (binary, ws_code, _) = closed(&mut socket).await;
-  assert_eq!(binary, Vec::<Vec<u8>>::new());
+  assert!(binary.is_empty());
   assert_eq!(ws_code, WsCloseCode::from(4000));
   assert!(matches!(ending.await.unwrap(), Ending::Closed { by: Side::Client, .. }));
   assert_eq!(
@@ -519,6 +560,9 @@ async fn keeps_reading_the_transport_while_the_authenticator_runs() {
   let authenticator = Recording::answering(None);
   let (mut socket, _, ending) = connect_to(Arc::clone(&authenticator), SessionConfig::default()).await;
   socket.send(Message::binary(bearer_hello())).await.unwrap();
+  while authenticator.seen().is_empty() {
+    tokio::time::sleep(Duration::from_millis(5)).await;
+  }
   socket.send(Message::binary(close_frame(0))).await.unwrap();
   let (_, ws_code, _) = closed(&mut socket).await;
   assert_eq!(ws_code, WsCloseCode::from(4000));

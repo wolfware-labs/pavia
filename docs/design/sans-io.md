@@ -1,6 +1,6 @@
 # Sans-IO core and crate layout
 
-Decision record for roadmap C0.7 (#2). Status: accepted, 2026-09-21. Amended 2026-11-01 (#36): `poll_output` returns `None` when drained, and the next deadline comes from `poll_timeout`. Amended 2026-11-01 (#27): `now` is a `handle_input` argument, not a field of each input. Amended 2026-11-01 (#30): authentication is `Output::Authenticate` and its answer an input, because the authenticator is async application code that runs in the driver.
+Decision record for roadmap C0.7 (#2). Status: accepted, 2026-09-21. Amended 2026-11-01 (#36): `poll_output` returns `None` when drained, and the next deadline comes from `poll_timeout`. Amended 2026-11-01 (#27): `now` is a `handle_input` argument, not a field of each input. Amended 2026-11-01 (#30): authentication is `Output::Authenticate` and its answer an input, because the authenticator is async application code that runs in the driver. Amended 2026-11-01 (#31): the driver supplies the session ID with `Authenticated`, since generating it needs OS randomness.
 
 ## Decisions
 
@@ -68,7 +68,7 @@ pub enum Input<'a> {
     Datagram { data: &'a [u8] },
     TransportLost,
     Timeout,
-    Authenticated { user: Option<String> },                   // the authenticator's answer to Authenticate
+    Authenticated { session: SessionId, user: Option<String> }, // the authenticator's answer; WELCOME follows
     AuthFailed(AuthFailure),
     Command(Command),                                         // from the application
 }
