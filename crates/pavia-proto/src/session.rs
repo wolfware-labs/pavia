@@ -360,6 +360,7 @@ impl Session {
       transports: None,
     });
     self.state = State::Established { hello, negotiated };
+    self.max_frame = self.config.0.max_frame;
     self.transmit(&welcome);
   }
 

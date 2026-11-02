@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use super::{AuthFailure, Command, Config, ConfigError, Ending, Input, Output, Session, State, ValidConfig};
 use crate::data::Codec;
 use crate::frame::Reject;
-use crate::frame::{AckMap, Auth, Cancel, Close, Frame, Heartbeat, Hello, Limits, Resume, ServerLimits, Token, Welcome};
+use crate::frame::{AckMap, Auth, Cancel, Close, Frame, Heartbeat, Hello, Item, Limits, Resume, ServerLimits, Token, Welcome};
 use crate::registry::CloseCode;
 use crate::session_id::SessionId;
 use crate::stream::Side;
@@ -930,4 +930,27 @@ fn sends_the_default_welcome_vector() {
   let mut session = greeted();
   session.feed(authenticated(None));
   assert_eq!(drain(&mut session), [Output::Transmit(Bytes::from(expected))]);
+}
+
+fn item(len: usize) -> Bytes {
+  message(&[(
+    2,
+    Frame::Item(Item {
+      meta: None,
+      data: Bytes::from(vec![0; len]),
+    }),
+  )])
+}
+
+#[test]
+fn takes_frames_up_to_the_advertised_max_frame_after_welcome() {
+  let mut session = greeted();
+  session.feed(Input::Message(item(70_000)));
+  assert!(ended_with(&mut session, CloseCode::FrameTooLarge));
+  let (mut session, _) = welcomed(None);
+  session.feed(Input::Message(item(70_000)));
+  assert_eq!(drain(&mut session), []);
+  assert!(!session.is_ended());
+  session.feed(Input::Message(item(1 << 20)));
+  assert!(ended_with(&mut session, CloseCode::FrameTooLarge));
 }
