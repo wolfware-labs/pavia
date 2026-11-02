@@ -12,7 +12,8 @@ use pavia_proto::session_id::SessionId;
 ///
 /// The operating system's error when it cannot supply random bytes. The caller then refuses the
 /// session instead of falling back to a weaker source.
-pub fn generate() -> io::Result<SessionId> {
+#[cfg_attr(not(test), expect(dead_code))]
+pub(crate) fn generate() -> io::Result<SessionId> {
   let mut bytes = [0; 16];
   getrandom::fill(&mut bytes)?;
   Ok(SessionId::from_random(bytes))
