@@ -1037,3 +1037,24 @@ fn takes_frames_up_to_the_advertised_max_frame_after_welcome() {
   session.feed(Input::Message(item(1 << 20)));
   assert!(ended_with(&mut session, CloseCode::FrameTooLarge));
 }
+
+#[test]
+fn puts_pong_ahead_of_frames_already_queued() {
+  let (mut session, _) = welcomed_at(Duration::ZERO);
+  let queued = Frame::Cancel(Cancel { msg: None });
+  session.transmit(&queued);
+  session.transmit(&queued);
+  session.feed(Input::Message(message(&[(0, ping(b"\x01")), (0, ping(b"\x02"))])));
+  assert_eq!(
+    sent(&mut session),
+    [
+      (0, pong(b"\x01")),
+      (0, pong(b"\x02")),
+      (0, queued.clone()),
+      (0, queued.clone())
+    ]
+  );
+  session.transmit(&queued);
+  session.feed(Input::Message(message(&[(0, ping(b"\x03"))])));
+  assert_eq!(sent(&mut session), [(0, pong(b"\x03")), (0, queued)]);
+}

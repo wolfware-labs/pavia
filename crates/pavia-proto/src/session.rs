@@ -31,6 +31,7 @@
 //! A text message is a PROTOCOL_ERROR in every state (§4.3). Frames the client pipelines before
 //! WELCOME are dropped until the pre-authentication buffer exists (#40). After WELCOME every frame
 //! passes [`caps::check`] and is otherwise ignored until its feature lands.
+//! PING and PONG skip ahead of other queued outputs, in the order they were made (§6.6, §13.5).
 //! Only the WebSocket binding exists so far: one [`Output::Transmit`] is one binary message.
 
 use std::collections::VecDeque;
@@ -204,6 +205,7 @@ pub struct Session {
   limits: DecodeLimits,
   state: State,
   outputs: VecDeque<Output>,
+  urgent: usize,
 }
 
 impl Session {
@@ -221,6 +223,7 @@ impl Session {
         deadline: now + config.0.handshake_timeout,
       },
       outputs: VecDeque::new(),
+      urgent: 0,
     }
   }
 
@@ -292,6 +295,7 @@ impl Session {
 
   /// The next output, or `None` when there is nothing to do until the next input.
   pub fn poll_output(&mut self) -> Option<Output> {
+    self.urgent = self.urgent.saturating_sub(1);
     self.outputs.pop_front()
   }
 
@@ -440,7 +444,13 @@ impl Session {
     let mut message = BytesMut::new();
     varint::encode(CONTROL_STREAM, &mut message).expect("stream 0 fits a varint");
     if frame.encode(&mut message).is_ok() {
-      self.outputs.push_back(Output::Transmit(message.freeze()));
+      let output = Output::Transmit(message.freeze());
+      if matches!(frame, Frame::Ping { .. } | Frame::Pong { .. }) {
+        self.outputs.insert(self.urgent, output);
+        self.urgent += 1;
+      } else {
+        self.outputs.push_back(output);
+      }
       if let State::Established { ping_at, .. } = &mut self.state {
         *ping_at = self.now + self.config.0.heartbeat;
       }
