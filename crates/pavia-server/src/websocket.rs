@@ -14,6 +14,7 @@
 use std::convert::Infallible;
 use std::future::Future;
 use std::io;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -37,6 +38,8 @@ use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::protocol::frame::CloseFrame;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode as WsCloseCode;
 use tokio_tungstenite::tungstenite::{self, Message};
+
+use crate::auth::RequestContext;
 
 /// The WebSocket subprotocol of framing version 1 (§4.3).
 pub const SUBPROTOCOL: &str = "pavia.1";
@@ -118,20 +121,21 @@ where
   /// The error from [`TcpListener::accept`].
   pub async fn serve(self, listener: TcpListener) -> io::Result<()> {
     loop {
-      let (stream, _) = listener.accept().await?;
+      let (stream, peer) = listener.accept().await?;
       let endpoint = self.clone();
       tokio::spawn(async move {
-        let _ = endpoint.serve_connection(stream).await;
+        let _ = endpoint.serve_connection(stream, Some(peer)).await;
       });
     }
   }
 
   /// Serves HTTP/1.1 on one connection: a TCP stream, a TLS stream, or an in-memory pipe.
+  /// `peer` is the remote address the authenticator sees, when the connection has one.
   ///
   /// # Errors
   ///
   /// The error from hyper when the connection fails before the response is written.
-  pub async fn serve_connection<I>(&self, io: I) -> Result<(), hyper::Error>
+  pub async fn serve_connection<I>(&self, io: I, peer: Option<SocketAddr>) -> Result<(), hyper::Error>
   where
     I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
   {
@@ -139,7 +143,7 @@ where
     let endpoint = self.clone();
     let service = service_fn(move |request| {
       let endpoint = endpoint.clone();
-      async move { Ok::<_, Infallible>(endpoint.respond(request, accepted)) }
+      async move { Ok::<_, Infallible>(endpoint.respond(request, accepted, peer)) }
     });
     http1::Builder::new()
       .timer(TokioTimer::new())
@@ -149,17 +153,23 @@ where
       .await
   }
 
-  fn respond(&self, mut request: Request<Incoming>, accepted: Instant) -> Response<Empty<Bytes>> {
+  fn respond(&self, mut request: Request<Incoming>, accepted: Instant, peer: Option<SocketAddr>) -> Response<Empty<Bytes>> {
     let accept = match answer(&self.config, &request) {
       Ok(accept) => accept,
       Err(refusal) => return refusal,
     };
     let upgrade = hyper::upgrade::on(&mut request);
+    let context = RequestContext::new(request.headers().clone(), peer);
     let handler = self.handler.clone();
     tokio::spawn(async move {
       if let Ok(upgraded) = upgrade.await {
         let socket = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Server, None).await;
-        handler(Transport { socket, accepted }).await;
+        handler(Transport {
+          socket,
+          accepted,
+          context,
+        })
+        .await;
       }
     });
     switching_protocols(&accept)
@@ -269,6 +279,7 @@ pub struct TransportError(#[from] tungstenite::Error);
 pub struct Transport {
   socket: WebSocketStream<TokioIo<Upgraded>>,
   accepted: Instant,
+  context: RequestContext,
 }
 
 impl Transport {
@@ -277,6 +288,12 @@ impl Transport {
   #[must_use]
   pub const fn accepted(&self) -> Instant {
     self.accepted
+  }
+
+  /// The upgrade request this transport arrived on.
+  #[must_use]
+  pub(crate) const fn context(&self) -> &RequestContext {
+    &self.context
   }
 
   /// The next data message, or `None` once the peer closed the WebSocket, after the close reply

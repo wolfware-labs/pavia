@@ -2,19 +2,25 @@
 //! [`Session::handle_input`] and then drains [`Session::poll_output`] until it returns `None`.
 //!
 //! So far it is the server side up to a validated HELLO with its version, codec and capabilities
-//! chosen (§6.2, §7.1, §7.2, §7.10), and every way a session ends (§7.3, §7.7, §13.4). Time is
+//! chosen (§6.2, §7.1, §7.2, §7.10), authentication by the driver's authenticator (§7.5), and
+//! every way a session ends (§7.3, §7.7, §13.4). Time is
 //! an input: the session is built with the accept time, every [`Session::handle_input`] call
 //! takes `now`, and [`Session::poll_timeout`] gives the handshake deadline.
 //!
 //! ```text
-//!  AwaitHello ──HELLO──▶ Handshaking ──(WELCOME, #31)──▶ …
+//!  AwaitHello ──HELLO──▶ Handshaking ──Authenticated──▶ (WELCOME, #31) …
 //!      │                     │
 //!      ├ no common version or codec ───────────▶ REJECT UNSUPPORTED_VERSION
 //!      ├ resume without `resume` granted ──────▶ REJECT RESUME_FAILED
+//!      │                     ├ AuthFailed ───────▶ REJECT UNAUTHENTICATED or FORBIDDEN
 //!      ├ other frame first ──┤ second HELLO ─────▶ CLOSE PROTOCOL_ERROR
 //!      ├ deadline ───────────┤ deadline ─────────▶ CLOSE HANDSHAKE_TIMEOUT
 //!      └ TransportLost ──────┴ CLOSE received ───▶ Ended
 //! ```
+//!
+//! A validated HELLO yields [`Output::Authenticate`]. The driver runs the authenticator and feeds
+//! its answer back as [`Input::Authenticated`] or [`Input::AuthFailed`]; the handshake timer keeps
+//! running meanwhile, so a slow authenticator ends in HANDSHAKE_TIMEOUT (§7.1).
 //!
 //! Every ending yields exactly one [`Output::Ended`], and after it the session ignores all input.
 //! A text message is a PROTOCOL_ERROR in every state (§4.3). Frames the client pipelines after
@@ -29,7 +35,7 @@ use bytes::{Bytes, BytesMut};
 use crate::caps::{Capability, Caps};
 use crate::data::Codec;
 use crate::error::{Outcome, ProtocolError};
-use crate::frame::{Close, Frame, Hello, Reject};
+use crate::frame::{Auth, Close, Frame, Hello, Reject};
 use crate::negotiate;
 use crate::registry::CloseCode;
 use crate::stream::Side;
@@ -51,6 +57,14 @@ pub enum Input {
   TransportLost,
   /// The time from [`Session::poll_timeout`] has come.
   Timeout,
+  /// The authenticator accepted the client after [`Output::Authenticate`]. `user` is the
+  /// principal's user ID, `None` for an anonymous session (§2).
+  Authenticated {
+    /// The user ID, echoed later in WELCOME `user`.
+    user: Option<String>,
+  },
+  /// The authenticator refused the client after [`Output::Authenticate`].
+  AuthFailed(AuthFailure),
   /// A request from the application.
   Command(Command),
 }
@@ -74,6 +88,13 @@ pub enum Command {
 pub enum Output {
   /// Send one binary WebSocket message, already in the `WsFrame` envelope (§5.4).
   Transmit(Bytes),
+  /// Run the authenticator on HELLO `auth` (`None` when HELLO has none) and the upgrade request,
+  /// then feed its answer back (§7.5). Emitted once, after HELLO is validated and negotiated. The
+  /// credential moves out of the session here, so [`Session::hello`] no longer holds it.
+  Authenticate {
+    /// HELLO `auth`.
+    auth: Option<Auth>,
+  },
   /// Close the transport. On WebSocket the close code is `4000 + code` and the reason is cut
   /// to 123 bytes on a character boundary (§4.3, §7.7).
   CloseTransport {
@@ -84,6 +105,26 @@ pub enum Output {
   },
   /// The session is over. Emitted once, as the last output.
   Ended(Ending),
+}
+
+/// Why the authenticator refused a client (§7.5). The session answers with REJECT and the
+/// matching code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum AuthFailure {
+  /// Missing, invalid or expired credentials: UNAUTHENTICATED.
+  Unauthenticated,
+  /// Credentials for a principal that may not connect: FORBIDDEN.
+  Forbidden,
+}
+
+impl AuthFailure {
+  const fn reject(self) -> (CloseCode, &'static str) {
+    match self {
+      Self::Unauthenticated => (CloseCode::Unauthenticated, "unauthenticated"),
+      Self::Forbidden => (CloseCode::Forbidden, "forbidden"),
+    }
+  }
 }
 
 /// How a session ended (§13.4).
@@ -155,8 +196,18 @@ enum State {
     deadline: Instant,
     hello: Box<Hello>,
     negotiated: Negotiated,
+    authentication: Authentication,
   },
   Ended,
+}
+
+#[derive(Debug)]
+enum Authentication {
+  Pending,
+  Done {
+    #[cfg_attr(not(test), expect(dead_code))]
+    user: Option<String>,
+  },
 }
 
 /// One server session.
@@ -233,8 +284,29 @@ impl Session {
       Input::TransportLost => self.end(Ending::TransportLost),
       Input::TextMessage => self.fail(&ProtocolError::TextMessage),
       Input::Command(Command::Close { code, msg }) => self.close(code, msg),
-      Input::Message(_) | Input::Timeout if expired => self.close(CloseCode::HandshakeTimeout, None),
+      Input::Message(_) | Input::Timeout | Input::Authenticated { .. } | Input::AuthFailed(_) if expired => {
+        self.close(CloseCode::HandshakeTimeout, None);
+      }
       Input::Message(message) => self.receive(message),
+      Input::Authenticated { user } => {
+        if let State::Handshaking {
+          authentication: authentication @ Authentication::Pending,
+          ..
+        } = &mut self.state
+        {
+          *authentication = Authentication::Done { user };
+        }
+      }
+      Input::AuthFailed(failure) => {
+        if let State::Handshaking {
+          authentication: Authentication::Pending,
+          ..
+        } = self.state
+        {
+          let (code, msg) = failure.reject();
+          self.reject(code, msg);
+        }
+      }
       Input::Timeout => {}
     }
   }
@@ -256,7 +328,7 @@ impl Session {
       };
       let on_control = ws_frame.stream_id == CONTROL_STREAM;
       match (&self.state, frame) {
-        (State::AwaitHello { deadline }, Frame::Hello(hello)) if on_control => {
+        (State::AwaitHello { deadline }, Frame::Hello(mut hello)) if on_control => {
           if hello.versions.is_empty() || hello.codecs.is_empty() {
             return self.fail(&ProtocolError::InvalidHeaderField);
           }
@@ -269,11 +341,14 @@ impl Session {
           let (Some(version), Some(codec)) = (version, codec) else {
             return self.reject(CloseCode::UnsupportedVersion, "no common protocol version or codec");
           };
+          let auth = hello.auth.take();
           self.state = State::Handshaking {
             deadline: *deadline,
             hello: Box::new(hello),
             negotiated: Negotiated { version, codec, caps },
+            authentication: Authentication::Pending,
           };
+          self.outputs.push_back(Output::Authenticate { auth });
         }
         (State::Handshaking { .. }, Frame::Close(close)) if on_control => return self.peer_closed(close),
         (State::AwaitHello { .. }, _) | (State::Handshaking { .. }, Frame::Hello(_) | Frame::Close(_)) => {

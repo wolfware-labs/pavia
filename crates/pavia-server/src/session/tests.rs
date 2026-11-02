@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use hyper::header::{self, HeaderValue};
+use pavia_proto::frame::Auth;
 use pavia_proto::registry::CloseCode;
 use pavia_proto::session::{Command, Config as SessionConfig, Ending};
 use pavia_proto::stream::Side;
@@ -16,6 +17,7 @@ use tokio_tungstenite::tungstenite::{Message, Utf8Bytes};
 use tokio_tungstenite::{WebSocketStream, client_async};
 
 use super::run;
+use crate::auth::{AuthFailure, Authenticator, Permissive, Principal, RequestContext};
 use crate::websocket::{Config, Endpoint, SUBPROTOCOL, Transport};
 
 type Socket = WebSocketStream<TcpStream>;
@@ -38,19 +40,28 @@ const CODES: [CloseCode; 14] = [
 ];
 
 async fn listen(command: Option<Command>, config: SessionConfig) -> (SocketAddr, oneshot::Receiver<Ending>) {
+  listen_with(command, config, Arc::new(Permissive)).await
+}
+
+async fn listen_with<A: Authenticator + 'static>(
+  command: Option<Command>,
+  config: SessionConfig,
+  authenticator: Arc<A>,
+) -> (SocketAddr, oneshot::Receiver<Ending>) {
   let (ended, ending) = oneshot::channel();
   let ended = Arc::new(Mutex::new(Some(ended)));
   let endpoint = Endpoint::new(Config::new("/rt"), move |transport: Transport| {
     let ended = ended.lock().unwrap().take();
     let command = command.clone();
     let config = config.clone();
+    let authenticator = Arc::clone(&authenticator);
     async move {
       let (commands, receiver) = mpsc::channel(1);
       if let Some(command) = command {
         commands.send(command).await.unwrap();
       }
       drop(commands);
-      let ending = run(transport, receiver, &config).await;
+      let ending = run(transport, receiver, &config, &*authenticator).await;
       if let Some(ended) = ended {
         let _ = ended.send(ending);
       }
@@ -394,4 +405,140 @@ async fn rejects_a_resume_with_resume_failed() {
       msg: msg.into()
     }
   );
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Seen {
+  scheme: Option<String>,
+  header: Option<Vec<u8>>,
+  cookie: Option<String>,
+  peer: Option<SocketAddr>,
+}
+
+struct Recording {
+  answer: Option<Result<Principal, AuthFailure>>,
+  seen: Mutex<Vec<Seen>>,
+}
+
+impl Recording {
+  fn answering(answer: Option<Result<Principal, AuthFailure>>) -> Arc<Self> {
+    Arc::new(Self {
+      answer,
+      seen: Mutex::new(Vec::new()),
+    })
+  }
+
+  fn seen(&self) -> Vec<Seen> {
+    self.seen.lock().unwrap().clone()
+  }
+}
+
+impl Authenticator for Recording {
+  fn schemes(&self) -> &[String] {
+    &[]
+  }
+
+  async fn authenticate(&self, auth: Option<&Auth>, context: &RequestContext) -> Result<Principal, AuthFailure> {
+    self.seen.lock().unwrap().push(Seen {
+      scheme: auth.map(|auth| auth.scheme.clone()),
+      header: context.header("x-pavia-test").map(<[u8]>::to_vec),
+      cookie: context.cookie("session").map(str::to_owned),
+      peer: context.peer(),
+    });
+    match &self.answer {
+      Some(answer) => answer.clone(),
+      None => std::future::pending().await,
+    }
+  }
+}
+
+fn bearer_hello() -> Vec<u8> {
+  let mut hello = vec![0xa3, 0x0e, 0x81, 0x01, 0x10, 0x81, 0x64];
+  hello.extend(b"cbor");
+  hello.extend([0x18, 0x21, 0xa2, 0x0d, 0x64]);
+  hello.extend(b"good");
+  hello.extend([0x18, 0x23, 0x66]);
+  hello.extend(b"bearer");
+  raw_frame(0x01, &hello)
+}
+
+async fn connect_to(authenticator: Arc<Recording>, config: SessionConfig) -> (Socket, SocketAddr, oneshot::Receiver<Ending>) {
+  let (address, ending) = listen_with(None, config, authenticator).await;
+  let mut request = "ws://localhost/rt".into_client_request().unwrap();
+  let headers = request.headers_mut();
+  headers.insert(header::SEC_WEBSOCKET_PROTOCOL, HeaderValue::from_static(SUBPROTOCOL));
+  headers.insert("x-pavia-test", HeaderValue::from_static("yes"));
+  headers.insert(header::COOKIE, HeaderValue::from_static("theme=dark; session=c00kie"));
+  let stream = TcpStream::connect(address).await.unwrap();
+  let local = stream.local_addr().unwrap();
+  let (socket, _) = client_async(request, stream).await.unwrap();
+  (socket, local, ending)
+}
+
+#[tokio::test]
+async fn rejects_with_the_code_the_authenticator_chose() {
+  for (failure, code, msg) in [
+    (AuthFailure::Unauthenticated, CloseCode::Unauthenticated, "unauthenticated"),
+    (AuthFailure::Forbidden, CloseCode::Forbidden, "forbidden"),
+  ] {
+    let mut reject = vec![0xa2, 0x06, u16::from(code) as u8, 0x07, 0x60 + msg.len() as u8];
+    reject.extend(msg.as_bytes());
+    let (mut socket, _, ending) = connect_to(Recording::answering(Some(Err(failure))), SessionConfig::default()).await;
+    socket.send(Message::binary(bearer_hello())).await.unwrap();
+    let (binary, ws_code, reason) = closed(&mut socket).await;
+    assert_eq!(binary, [raw_frame(0x03, &reject)], "{failure:?}");
+    assert_eq!(ws_code, WsCloseCode::from(4000 + u16::from(code)));
+    assert_eq!(reason.as_str(), msg);
+    assert_eq!(ending.await.unwrap(), Ending::Rejected { code, msg: msg.into() });
+  }
+}
+
+#[tokio::test]
+async fn gives_the_authenticator_the_credential_and_the_upgrade_request() {
+  let authenticator = Recording::answering(Some(Ok(Principal::for_user("u-42"))));
+  let (mut socket, local, ending) = connect_to(Arc::clone(&authenticator), SessionConfig::default()).await;
+  socket.send(Message::binary(bearer_hello())).await.unwrap();
+  socket.send(Message::binary(close_frame(0))).await.unwrap();
+  let (binary, ws_code, _) = closed(&mut socket).await;
+  assert_eq!(binary, Vec::<Vec<u8>>::new());
+  assert_eq!(ws_code, WsCloseCode::from(4000));
+  assert!(matches!(ending.await.unwrap(), Ending::Closed { by: Side::Client, .. }));
+  assert_eq!(
+    authenticator.seen(),
+    [Seen {
+      scheme: Some("bearer".into()),
+      header: Some(b"yes".to_vec()),
+      cookie: Some("c00kie".into()),
+      peer: Some(local),
+    }]
+  );
+}
+
+#[tokio::test]
+async fn keeps_reading_the_transport_while_the_authenticator_runs() {
+  let authenticator = Recording::answering(None);
+  let (mut socket, _, ending) = connect_to(Arc::clone(&authenticator), SessionConfig::default()).await;
+  socket.send(Message::binary(bearer_hello())).await.unwrap();
+  socket.send(Message::binary(close_frame(0))).await.unwrap();
+  let (_, ws_code, _) = closed(&mut socket).await;
+  assert_eq!(ws_code, WsCloseCode::from(4000));
+  assert!(matches!(ending.await.unwrap(), Ending::Closed { by: Side::Client, .. }));
+  assert_eq!(authenticator.seen().len(), 1);
+}
+
+#[tokio::test]
+async fn closes_a_slow_authenticator_with_handshake_timeout() {
+  let (mut socket, _, ending) = connect_to(Recording::answering(None), short_timeout()).await;
+  socket.send(Message::binary(bearer_hello())).await.unwrap();
+  let (binary, ws_code, _) = closed(&mut socket).await;
+  assert_eq!(binary, [close_frame(12)]);
+  assert_eq!(ws_code, WsCloseCode::from(4012));
+  assert!(matches!(
+    ending.await.unwrap(),
+    Ending::Closed {
+      code: CloseCode::HandshakeTimeout,
+      by: Side::Server,
+      ..
+    }
+  ));
 }

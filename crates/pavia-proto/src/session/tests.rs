@@ -2,10 +2,10 @@ use bytes::{Bytes, BytesMut};
 
 use std::time::{Duration, Instant};
 
-use super::{Command, Config, Ending, Input, Output, Session};
+use super::{AuthFailure, Authentication, Command, Config, Ending, Input, Output, Session, State};
 use crate::data::Codec;
 use crate::frame::Reject;
-use crate::frame::{Close, Frame, Heartbeat, Hello, Limits, Resume};
+use crate::frame::{Auth, Close, Frame, Heartbeat, Hello, Limits, Resume, Token};
 use crate::registry::CloseCode;
 use crate::stream::Side;
 use crate::wire::envelope::{self, MAX_FRAME_FLOOR};
@@ -56,10 +56,12 @@ fn hello() -> Hello {
   }
 }
 
+const ANONYMOUS: [Output; 1] = [Output::Authenticate { auth: None }];
+
 fn greeted() -> Session {
   let mut session = server();
   session.feed(Input::Message(message(&[(0, Frame::Hello(hello()))])));
-  assert_eq!(drain(&mut session), []);
+  assert_eq!(drain(&mut session), ANONYMOUS);
   session
 }
 
@@ -379,7 +381,7 @@ fn keeps_the_timer_running_after_hello() {
     Input::Message(message(&[(0, Frame::Hello(hello()))])),
     accepted + Duration::from_millis(9_900),
   );
-  assert_eq!(drain(&mut session), []);
+  assert_eq!(drain(&mut session), ANONYMOUS);
   assert_eq!(session.poll_timeout(), Some(accepted + Duration::from_secs(10)));
   session.handle_input(Input::Timeout, accepted + Duration::from_secs(10));
   assert!(ended_with(&mut session, CloseCode::HandshakeTimeout));
@@ -451,7 +453,7 @@ fn checks_the_required_hello_fields_and_the_limit_floor() {
   ];
   let mut session = server();
   session.feed(Input::Message(raw_hello(&hello_header(&one, &cbor, &at_floor))));
-  assert_eq!(drain(&mut session), []);
+  assert_eq!(drain(&mut session), ANONYMOUS);
   let limits = session.hello().and_then(|hello| hello.limits.clone());
   assert_eq!(
     limits,
@@ -472,7 +474,7 @@ fn hello_with_caps(caps: Option<&[&str]>) -> Session {
       ..hello()
     }),
   )])));
-  assert_eq!(drain(&mut session), []);
+  assert_eq!(drain(&mut session), ANONYMOUS);
   session
 }
 
@@ -580,7 +582,7 @@ fn negotiating(versions: Vec<u64>, codecs: &[&str]) -> Session {
 #[test]
 fn negotiates_the_highest_version_and_the_client_codec_preference() {
   let mut session = negotiating(vec![1, 2, 3], &["msgpack", "json", "cbor"]);
-  assert_eq!(drain(&mut session), []);
+  assert_eq!(drain(&mut session), ANONYMOUS);
   let negotiated = session.negotiated().unwrap();
   assert_eq!((negotiated.version, negotiated.codec), (2, Codec::Json));
 }
@@ -648,4 +650,123 @@ fn offers_only_cbor_by_default() {
   assert_eq!((negotiated.version, negotiated.codec), (1, Codec::Cbor));
   assert_eq!(negotiated.caps.names().collect::<Vec<_>>(), ["calls"]);
   assert_eq!(drain(&mut session), []);
+}
+
+fn bearer(token: &str) -> Auth {
+  Auth {
+    scheme: "bearer".into(),
+    token: Token::Text(token.into()),
+  }
+}
+
+fn user(session: &Session) -> Option<Option<&str>> {
+  match &session.state {
+    State::Handshaking {
+      authentication: Authentication::Done { user },
+      ..
+    } => Some(user.as_deref()),
+    _ => None,
+  }
+}
+
+#[test]
+fn hands_the_hello_credential_to_the_driver_and_drops_it() {
+  let mut session = server();
+  session.feed(Input::Message(message(&[(
+    0,
+    Frame::Hello(Hello {
+      auth: Some(bearer("s3cret")),
+      ..hello()
+    }),
+  )])));
+  assert_eq!(
+    drain(&mut session),
+    [Output::Authenticate {
+      auth: Some(bearer("s3cret"))
+    }]
+  );
+  assert_eq!(session.hello().map(|hello| hello.auth.clone()), Some(None));
+  assert_eq!(user(&session), None);
+}
+
+#[test]
+fn rejects_with_the_code_the_authenticator_chose() {
+  for (failure, code, msg) in [
+    (AuthFailure::Unauthenticated, CloseCode::Unauthenticated, "unauthenticated"),
+    (AuthFailure::Forbidden, CloseCode::Forbidden, "forbidden"),
+  ] {
+    let mut session = greeted();
+    session.feed(Input::AuthFailed(failure));
+    let outputs = drain(&mut session);
+    let [Output::Transmit(sent), close_transport, ended] = outputs.as_slice() else {
+      panic!("{failure:?}: {outputs:?}");
+    };
+    assert_eq!(
+      frames(sent),
+      [(
+        0,
+        Frame::Reject(Reject {
+          code: u64::from(u16::from(code)),
+          msg: msg.into(),
+          retry: None
+        })
+      )]
+    );
+    assert_eq!(
+      *close_transport,
+      Output::CloseTransport {
+        code,
+        reason: msg.into()
+      }
+    );
+    assert_eq!(*ended, Output::Ended(Ending::Rejected { code, msg: msg.into() }));
+  }
+}
+
+#[test]
+fn keeps_the_user_and_waits_for_welcome_after_authentication() {
+  for authenticated in [Some("u-42"), None] {
+    let accepted = Instant::now();
+    let mut session = Session::server(&Config::default(), accepted);
+    session.feed(Input::Message(message(&[(0, Frame::Hello(hello()))])));
+    assert_eq!(drain(&mut session), ANONYMOUS);
+    session.feed(Input::Authenticated {
+      user: authenticated.map(str::to_owned),
+    });
+    assert_eq!(drain(&mut session), []);
+    assert_eq!(user(&session), Some(authenticated));
+    assert!(!session.is_ended());
+    assert_eq!(session.poll_timeout(), Some(accepted + Duration::from_secs(10)));
+  }
+}
+
+#[test]
+fn ignores_an_answer_without_a_pending_authentication() {
+  let mut session = server();
+  session.feed(Input::AuthFailed(AuthFailure::Forbidden));
+  session.feed(Input::Authenticated { user: None });
+  assert_eq!(drain(&mut session), []);
+  assert!(matches!(session.state, State::AwaitHello { .. }));
+  let mut session = greeted();
+  session.feed(Input::Authenticated {
+    user: Some("u-1".into()),
+  });
+  session.feed(Input::AuthFailed(AuthFailure::Unauthenticated));
+  session.feed(Input::Authenticated {
+    user: Some("u-2".into()),
+  });
+  assert_eq!(drain(&mut session), []);
+  assert_eq!(user(&session), Some(Some("u-1")));
+}
+
+#[test]
+fn times_out_an_authenticator_that_answers_after_the_deadline() {
+  for answer in [Input::Authenticated { user: None }, Input::AuthFailed(AuthFailure::Forbidden)] {
+    let accepted = Instant::now();
+    let mut session = Session::server(&Config::default(), accepted);
+    session.handle_input(Input::Message(message(&[(0, Frame::Hello(hello()))])), accepted);
+    assert_eq!(drain(&mut session), ANONYMOUS);
+    session.handle_input(answer.clone(), accepted + Duration::from_secs(10));
+    assert!(ended_with(&mut session, CloseCode::HandshakeTimeout), "{answer:?}");
+  }
 }
