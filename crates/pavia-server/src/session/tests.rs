@@ -8,7 +8,8 @@ use futures_util::{SinkExt, StreamExt};
 use hyper::header::{self, HeaderValue};
 use pavia_proto::frame::Auth;
 use pavia_proto::registry::CloseCode;
-use pavia_proto::session::{Command, Config as SessionConfig, Ending};
+use pavia_proto::session::{Command, Config as SessionConfig, Ending, Input};
+use pavia_proto::session_id::SessionId;
 use pavia_proto::stream::Side;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -18,7 +19,7 @@ use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode as WsClos
 use tokio_tungstenite::tungstenite::{Message, Utf8Bytes};
 use tokio_tungstenite::{WebSocketStream, client_async};
 
-use super::run;
+use super::{accept, run};
 use crate::auth::{AuthFailure, Authenticator, Permissive, Principal, RequestContext};
 use crate::websocket::{Config, Endpoint, SUBPROTOCOL, Transport};
 
@@ -584,5 +585,28 @@ async fn closes_a_slow_authenticator_with_handshake_timeout() {
       by: Side::Server,
       ..
     }
+  ));
+}
+
+#[test]
+fn closes_with_internal_when_the_session_id_cannot_be_generated() {
+  let failed = std::io::Error::other("no entropy");
+  let input = accept(&Principal::for_user("ada"), Err(failed));
+  assert!(matches!(
+    input,
+    Input::Command(Command::Close {
+      code: CloseCode::Internal,
+      msg: None
+    })
+  ));
+}
+
+#[test]
+fn hands_the_generated_id_and_user_to_the_session() {
+  let id = SessionId::from_random([7; 16]);
+  let input = accept(&Principal::for_user("ada"), Ok(id.clone()));
+  assert!(matches!(
+    input,
+    Input::Authenticated { session, user: Some(user) } if session == id && user == "ada"
   ));
 }

@@ -5,11 +5,13 @@
 //! It returns the session's [`Ending`], so each session reports its end exactly once (§13.4).
 
 use std::future::Future;
+use std::io;
 use std::pin::Pin;
 
 use pavia_proto::frame::Auth;
 use pavia_proto::registry::CloseCode;
 use pavia_proto::session::{Command, Ending, Input, Output, Session, ValidConfig};
+use pavia_proto::session_id::SessionId;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, sleep_until};
 
@@ -48,7 +50,7 @@ pub async fn run<A: Authenticator>(
         if authenticating.is_some() => {
         answered = true;
         match answer {
-          Ok(principal) => accept(&principal),
+          Ok(principal) => accept(&principal, session_id::generate()),
           Err(failure) => Input::AuthFailed(failure),
         }
       },
@@ -82,8 +84,8 @@ pub async fn run<A: Authenticator>(
   }
 }
 
-fn accept(principal: &Principal) -> Input {
-  match session_id::generate() {
+fn accept(principal: &Principal, id: io::Result<SessionId>) -> Input {
+  match id {
     Ok(session) => Input::Authenticated {
       session,
       user: principal.user().map(str::to_owned),
