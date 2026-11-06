@@ -53,9 +53,9 @@ fn data_codecs(c: &mut Criterion) {
 fn session_hello(c: &mut Criterion) {
   let config = Config::default();
   let hello = Bytes::from_static(&HELLO_WS);
+  let now = Instant::now();
   c.bench_function("session/hello", |b| {
     b.iter(|| {
-      let now = Instant::now();
       let mut session = Session::server(&config, now);
       session.handle_input(Input::Message(black_box(hello.clone())), now);
       while let Some(output) = session.poll_output() {
