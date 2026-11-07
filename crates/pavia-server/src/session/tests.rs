@@ -378,7 +378,7 @@ async fn closes_a_slow_hello_with_handshake_timeout() {
 #[tokio::test]
 async fn closes_with_protocol_error_when_the_first_frame_is_not_hello() {
   let (mut socket, ending) = connect(None).await;
-  socket.send(Message::binary(&b"\x00\x04\x00\x01\x00"[..])).await.unwrap();
+  socket.send(Message::binary(heartbeat_frame(0x04, &[]))).await.unwrap();
   let (binary, ws_code, _) = closed(&mut socket).await;
   assert_eq!(binary, [close_frame(1)]);
   assert_eq!(ws_code, WsCloseCode::from(4001));
@@ -394,6 +394,12 @@ async fn closes_with_protocol_error_when_the_first_frame_is_not_hello() {
 fn raw_frame(frame_type: u8, header: &[u8]) -> Vec<u8> {
   let mut frame = vec![0x00, frame_type, 0x00, header.len() as u8 + 1, header.len() as u8];
   frame.extend(header);
+  frame
+}
+
+fn heartbeat_frame(frame_type: u8, data: &[u8]) -> Vec<u8> {
+  let mut frame = vec![0x00, frame_type, 0x00, data.len() as u8 + 1, 0x00];
+  frame.extend(data);
   frame
 }
 
@@ -624,10 +630,7 @@ fn fast_heartbeat() -> SessionConfig {
 async fn welcomed(config: SessionConfig) -> (Socket, oneshot::Receiver<Ending>) {
   let (mut socket, ending) = connect_with(None, config).await;
   socket.send(Message::binary(hello_frame())).await.unwrap();
-  let Message::Binary(message) = socket.next().await.unwrap().unwrap() else {
-    panic!("expected WELCOME");
-  };
-  assert_eq!(welcome(&message).len(), 7);
+  assert_eq!(next_welcome(&mut socket).await.len(), 7);
   (socket, ending)
 }
 
@@ -637,7 +640,7 @@ async fn pings_an_idle_session_every_heartbeat() {
   let mut last = std::time::Instant::now();
   for _ in 0..4 {
     let message = socket.next().await.unwrap().unwrap();
-    assert_eq!(message, Message::binary(raw_frame(0x04, &[])));
+    assert_eq!(message, Message::binary(heartbeat_frame(0x04, &[])));
     let gap = last.elapsed();
     assert!(gap >= Duration::from_millis(190), "{gap:?}");
     assert!(gap < Duration::from_millis(400), "{gap:?}");
@@ -649,10 +652,9 @@ async fn pings_an_idle_session_every_heartbeat() {
 async fn answers_a_ping_with_its_data() {
   let (mut socket, _) = welcomed(SessionConfig::default()).await;
   let data = [1, 2, 3, 4, 5, 6, 7, 8];
-  let mut ping = vec![0x00, 0x04, 0x00, 0x09, 0x00];
-  ping.extend(data);
-  socket.send(Message::binary(ping)).await.unwrap();
-  let mut pong = vec![0x00, 0x05, 0x00, 0x09, 0x00];
-  pong.extend(data);
-  assert_eq!(socket.next().await.unwrap().unwrap(), Message::binary(pong));
+  socket.send(Message::binary(heartbeat_frame(0x04, &data))).await.unwrap();
+  assert_eq!(
+    socket.next().await.unwrap().unwrap(),
+    Message::binary(heartbeat_frame(0x05, &data))
+  );
 }
