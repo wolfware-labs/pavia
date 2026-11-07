@@ -20,7 +20,13 @@ serde_json = { workspace = true, features = ["float_roundtrip"] }
 thiserror.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
+pavia-vectors = { path = "../pavia-vectors" }
 proptest.workspace = true
+
+[[bench]]
+name = "proto"
+harness = false
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
