@@ -867,6 +867,25 @@ fn sends_welcome_before_a_heartbeat_queued_behind_it() {
   );
 }
 
+#[test]
+fn keeps_welcome_ahead_of_a_close_sent_right_after_it() {
+  let mut session = greeted();
+  session.feed(authenticated(None));
+  session.feed(Input::Message(message(&[(0, ping(b"1"))])));
+  session.feed(Input::Command(Command::Close {
+    code: CloseCode::Normal,
+    msg: None,
+  }));
+  let types: Vec<_> = drain(&mut session)
+    .iter()
+    .filter_map(|output| match output {
+      Output::Transmit(message) => frames(message).first().and_then(|(_, frame)| frame.frame_type()),
+      _ => None,
+    })
+    .collect();
+  assert_eq!(types, [FrameType::Welcome, FrameType::Pong, FrameType::Close]);
+}
+
 fn sent_frames(session: &mut Session) -> Vec<(u64, Frame)> {
   drain(session)
     .iter()
