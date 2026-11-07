@@ -337,6 +337,8 @@ fn raw_hello(header: &[u8]) -> Bytes {
 
 const CBOR: [u8; 5] = [0x64, b'c', b'b', b'o', b'r'];
 
+const AUTH_REFRESH_WITHOUT_AUTH: [u8; 8] = [0x00, 0x08, 0x00, 0x04, 0x03, 0xa1, 0x01, 0x05];
+
 fn hello_header(versions: &[u8], codecs: &[u8], limits: &[u8]) -> Vec<u8> {
   let mut entries = Vec::new();
   if !versions.is_empty() {
@@ -932,7 +934,7 @@ fn validates_the_config() {
 #[test]
 fn keeps_reading_a_message_after_a_frame_that_only_fails_its_request() {
   let (mut session, _) = welcomed(None);
-  let mut bytes = BytesMut::from(&[0x00, 0x08, 0x00, 0x04, 0x03, 0xa1, 0x01, 0x05][..]);
+  let mut bytes = BytesMut::from(&AUTH_REFRESH_WITHOUT_AUTH[..]);
   bytes.extend_from_slice(&message(&[(0, close(0, None))]));
   session.feed(Input::Message(bytes.freeze()));
   assert_eq!(
@@ -948,7 +950,7 @@ fn keeps_reading_a_message_after_a_frame_that_only_fails_its_request() {
 #[test]
 fn refuses_a_hello_behind_a_malformed_first_frame() {
   let mut session = server();
-  let mut bytes = BytesMut::from(&[0x00, 0x08, 0x00, 0x04, 0x03, 0xa1, 0x01, 0x05][..]);
+  let mut bytes = BytesMut::from(&AUTH_REFRESH_WITHOUT_AUTH[..]);
   bytes.extend_from_slice(&message(&[(0, Frame::Hello(hello()))]));
   session.feed(Input::Message(bytes.freeze()));
   assert!(ended_with(&mut session, CloseCode::ProtocolError));
