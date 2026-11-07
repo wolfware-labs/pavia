@@ -292,7 +292,12 @@ impl Session {
       let frame = match Frame::from_raw(&ws_frame.frame, &self.limits) {
         Ok(frame) => frame,
         Err(error) => {
-          self.fail(&error.into());
+          let error = ProtocolError::from(error);
+          let fatal = matches!(error.outcome(), Outcome::SessionFatal(_));
+          if !fatal && matches!(self.state, State::AwaitHello { .. }) {
+            return self.fail(&ProtocolError::FrameTypeNotAllowed);
+          }
+          self.fail(&error);
           if self.is_ended() {
             return;
           }

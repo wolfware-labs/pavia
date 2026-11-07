@@ -868,7 +868,7 @@ type Change = fn(&mut Config);
 
 #[test]
 fn validates_the_config() {
-  let cases: [(Change, Option<ConfigError>); 16] = [
+  let cases: [(Change, Option<ConfigError>); 17] = [
     (|_| {}, None),
     (
       |config| {
@@ -886,6 +886,10 @@ fn validates_the_config() {
     ),
     (
       |config| config.idle_timeout = config.heartbeat,
+      Some(ConfigError::IdleNotAboveHeartbeat),
+    ),
+    (
+      |config| (config.heartbeat, config.idle_timeout) = (Duration::from_micros(1_500), Duration::from_micros(1_900)),
       Some(ConfigError::IdleNotAboveHeartbeat),
     ),
     (|config| config.max_frame = Limits::FLOOR, None),
@@ -939,6 +943,15 @@ fn keeps_reading_a_message_after_a_frame_that_only_fails_its_request() {
       by: Side::Client
     }))
   );
+}
+
+#[test]
+fn refuses_a_hello_behind_a_malformed_first_frame() {
+  let mut session = server();
+  let mut bytes = BytesMut::from(&[0x00, 0x08, 0x00, 0x04, 0x03, 0xa1, 0x01, 0x05][..]);
+  bytes.extend_from_slice(&message(&[(0, Frame::Hello(hello()))]));
+  session.feed(Input::Message(bytes.freeze()));
+  assert!(ended_with(&mut session, CloseCode::ProtocolError));
 }
 
 #[test]

@@ -90,7 +90,7 @@ impl Config {
     if let Some((name, _)) = durations.iter().find(|(_, duration)| *duration > Self::MAX_DURATION) {
       return Err(ConfigError::TooLong(name));
     }
-    if self.idle_timeout <= self.heartbeat {
+    if millis(self.idle_timeout) <= millis(self.heartbeat) {
       return Err(ConfigError::IdleNotAboveHeartbeat);
     }
     let counts = [
