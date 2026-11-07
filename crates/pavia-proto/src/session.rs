@@ -394,7 +394,7 @@ impl Session {
     self.state = State::Established {
       hello,
       negotiated,
-      ping_at: self.now + self.config.0.heartbeat,
+      ping_at: self.now,
     };
     self.max_frame = self.config.0.max_frame;
     self.transmit(&welcome);
