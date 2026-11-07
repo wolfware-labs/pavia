@@ -1,6 +1,10 @@
 # Pavia
 
+[![CI](https://img.shields.io/github/actions/workflow/status/wolfware-labs/pavia/ci.yml?branch=main&logo=github&label=ci)](https://github.com/wolfware-labs/pavia/actions/workflows/ci.yml?query=branch%3Amain)
 [![Coverage](https://img.shields.io/codecov/c/github/wolfware-labs/pavia?logo=codecov&label=coverage)](https://codecov.io/gh/wolfware-labs/pavia)
+[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/wolfware-labs/pavia?utm_source=badge)
+[![MSRV](https://img.shields.io/badge/rust-1.96%2B-orange?logo=rust)](Cargo.toml)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 
 Pavia is a real-time RPC and messaging protocol between browsers or apps and servers, with a Rust server implementation and generated clients. One persistent session carries calls in both directions and lets the server target sessions, users and groups. On top of that:
 
