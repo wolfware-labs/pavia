@@ -870,7 +870,7 @@ type Change = fn(&mut Config);
 
 #[test]
 fn validates_the_config() {
-  let cases: [(Change, Option<ConfigError>); 17] = [
+  let cases: [(Change, Option<ConfigError>); 18] = [
     (|_| {}, None),
     (
       |config| {
@@ -881,6 +881,10 @@ fn validates_the_config() {
     (
       |config| config.handshake_timeout = Config::MAX_DURATION + Duration::from_millis(1),
       Some(ConfigError::TooLong("handshake_timeout")),
+    ),
+    (
+      |config| config.handshake_timeout = Config::MAX_DURATION + Duration::from_micros(500),
+      None,
     ),
     (
       |config| config.idle_timeout = Duration::MAX,
@@ -938,12 +942,18 @@ fn keeps_reading_a_message_after_a_frame_that_only_fails_its_request() {
   bytes.extend_from_slice(&message(&[(0, close(0, None))]));
   session.feed(Input::Message(bytes.freeze()));
   assert_eq!(
-    drain(&mut session).last(),
-    Some(&Output::Ended(Ending::Closed {
-      code: CloseCode::Normal,
-      msg: None,
-      by: Side::Client
-    }))
+    drain(&mut session),
+    [
+      Output::CloseTransport {
+        code: CloseCode::Normal,
+        reason: String::new(),
+      },
+      Output::Ended(Ending::Closed {
+        code: CloseCode::Normal,
+        msg: None,
+        by: Side::Client
+      }),
+    ]
   );
 }
 

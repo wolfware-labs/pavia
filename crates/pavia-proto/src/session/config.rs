@@ -87,7 +87,10 @@ impl Config {
     if let Some((name, _)) = durations.iter().find(|(_, duration)| millis(*duration) == 0) {
       return Err(ConfigError::TooShort(name));
     }
-    if let Some((name, _)) = durations.iter().find(|(_, duration)| *duration > Self::MAX_DURATION) {
+    if let Some((name, _)) = durations
+      .iter()
+      .find(|(_, duration)| millis(*duration) > millis(Self::MAX_DURATION))
+    {
       return Err(ConfigError::TooLong(name));
     }
     if millis(self.idle_timeout) <= millis(self.heartbeat) {
