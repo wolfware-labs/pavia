@@ -5,7 +5,9 @@ use std::time::{Duration, Instant};
 use super::{AuthFailure, Command, Config, ConfigError, Ending, Input, Output, Session, State, ValidConfig};
 use crate::data::Codec;
 use crate::frame::Reject;
-use crate::frame::{AckMap, Auth, Cancel, Close, Frame, Heartbeat, Hello, Item, Limits, Resume, ServerLimits, Token, Welcome};
+use crate::frame::{
+  AckMap, Auth, Cancel, Close, Frame, FrameType, Heartbeat, Hello, Item, Limits, Resume, ServerLimits, Token, Welcome,
+};
 use crate::registry::CloseCode;
 use crate::session_id::SessionId;
 use crate::stream::Side;
@@ -848,6 +850,21 @@ fn pong(data: &'static [u8]) -> Frame {
   Frame::Pong {
     data: Heartbeat::try_from(Bytes::from_static(data)).unwrap(),
   }
+}
+
+#[test]
+fn sends_welcome_before_a_heartbeat_queued_behind_it() {
+  let accepted = Instant::now();
+  let mut session = greeted();
+  session.handle_input(authenticated(None), accepted);
+  session.handle_input(Input::Message(message(&[(0, ping(b"1"))])), accepted);
+  session.handle_input(Input::Timeout, accepted + Duration::from_secs(16));
+  let sent = sent_frames(&mut session);
+  let types: Vec<_> = sent.iter().map(|(_, frame)| frame.frame_type()).collect();
+  assert_eq!(
+    types,
+    [Some(FrameType::Welcome), Some(FrameType::Pong), Some(FrameType::Ping)]
+  );
 }
 
 fn sent_frames(session: &mut Session) -> Vec<(u64, Frame)> {

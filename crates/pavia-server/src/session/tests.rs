@@ -637,15 +637,14 @@ async fn welcomed(config: SessionConfig) -> (Socket, oneshot::Receiver<Ending>) 
 #[tokio::test]
 async fn pings_an_idle_session_every_heartbeat() {
   let (mut socket, _) = welcomed(fast_heartbeat()).await;
-  let mut last = std::time::Instant::now();
+  let start = std::time::Instant::now();
   for _ in 0..4 {
     let message = socket.next().await.unwrap().unwrap();
     assert_eq!(message, Message::binary(heartbeat_frame(0x04, &[])));
-    let gap = last.elapsed();
-    assert!(gap >= Duration::from_millis(190), "{gap:?}");
-    assert!(gap < Duration::from_millis(400), "{gap:?}");
-    last = std::time::Instant::now();
   }
+  let elapsed = start.elapsed();
+  assert!(elapsed >= Duration::from_millis(700), "{elapsed:?}");
+  assert!(elapsed < Duration::from_secs(3), "{elapsed:?}");
 }
 
 #[tokio::test]

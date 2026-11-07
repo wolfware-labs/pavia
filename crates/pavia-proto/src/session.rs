@@ -394,10 +394,11 @@ impl Session {
     self.state = State::Established {
       hello,
       negotiated,
-      ping_at: self.now,
+      ping_at: self.now + self.config.0.heartbeat,
     };
     self.max_frame = self.config.0.max_frame;
     self.transmit(&welcome);
+    self.urgent = self.outputs.len();
   }
 
   fn fail(&mut self, error: &ProtocolError) {
