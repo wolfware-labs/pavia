@@ -21,6 +21,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
+pavia-vectors = { path = "../pavia-vectors" }
 proptest.workspace = true
 
 [[bench]]

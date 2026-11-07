@@ -1,3 +1,6 @@
+//! Benchmarks of the public API: the data-section codecs (§5.5) on a 100-item value, a server session
+//! handling the minimal WebSocket HELLO vector (§7.1), and session-ID parsing.
+
 use std::hint::black_box;
 use std::time::Instant;
 
@@ -7,18 +10,21 @@ use pavia_proto::data::{self, Codec, DecodeLimits, Value};
 use pavia_proto::session::{Config, Input, Session};
 use pavia_proto::session_id::SessionId;
 
-const HELLO_WS: [u8; 24] = [
-  0x00, 0x01, 0x00, 0x14, 0x13, 0xa3, 0x0e, 0x81, 0x01, 0x10, 0x81, 0x64, 0x63, 0x62, 0x6f, 0x72, 0x12, 0x81, 0x65, 0x63, 0x61,
-  0x6c, 0x6c, 0x73,
-];
+fn hello_ws() -> Bytes {
+  let doc = pavia_vectors::load(&pavia_vectors::vectors_dir().join("frames/handshake.json"));
+  let case = doc["cases"]
+    .as_array()
+    .and_then(|cases| cases.iter().find(|case| case["id"] == "hello-minimal-ws"))
+    .expect("handshake.json has the hello-minimal-ws case");
+  Bytes::from(pavia_vectors::hex(case["hex"].as_str().expect("the case has hex bytes")))
+}
 
-fn order(index: u64) -> Value {
-  let index_f64 = f64::from(u32::try_from(index).unwrap_or(u32::MAX));
+fn order(index: u32) -> Value {
   Value::Map(vec![
-    (Value::Text("id".into()), Value::Unsigned(index)),
+    (Value::Text("id".into()), Value::Unsigned(index.into())),
     (Value::Text("sku".into()), Value::Text(format!("SKU-{index:05}"))),
-    (Value::Text("price".into()), Value::Float(index_f64 * 1.25)),
-    (Value::Text("delta".into()), Value::Negative(index)),
+    (Value::Text("price".into()), Value::Float(f64::from(index) * 1.25)),
+    (Value::Text("delta".into()), Value::Negative(index.into())),
     (Value::Text("paid".into()), Value::Bool(index.is_multiple_of(2))),
     (Value::Text("note".into()), Value::Null),
   ])
@@ -52,7 +58,7 @@ fn data_codecs(c: &mut Criterion) {
 
 fn session_hello(c: &mut Criterion) {
   let config = Config::default();
-  let hello = Bytes::from_static(&HELLO_WS);
+  let hello = hello_ws();
   let now = Instant::now();
   c.bench_function("session/hello", |b| {
     b.iter(|| {

@@ -677,6 +677,7 @@ dependencies = [
  "data-encoding",
  "half",
  "minicbor",
+ "pavia-vectors",
  "proptest",
  "ryu-js",
  "serde",
