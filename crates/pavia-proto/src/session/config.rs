@@ -58,8 +58,14 @@ impl Default for Config {
 }
 
 impl Config {
-  /// Checks every setting: no duration under 1 ms, no zero limit, no empty version or codec list, and
-  /// `max_frame` and `window` at or above the 64 KiB floor (§4.1, §16).
+  /// The longest duration a setting may have: 2^31 − 1 ms, about 24.8 days, the largest delay a
+  /// browser timer accepts. A longer `hb` or `idle` in WELCOME would make a browser client's timer
+  /// fire at once.
+  pub const MAX_DURATION: Duration = Duration::from_millis(2_147_483_647);
+
+  /// Checks every setting: every duration from 1 ms to [`Self::MAX_DURATION`], `idle_timeout`
+  /// longer than `heartbeat`, no zero limit, no empty version or codec list, and `max_frame` and
+  /// `window` at or above the 64 KiB floor (§4.1, §16).
   ///
   /// ```
   /// use pavia_proto::session::{Config, ConfigError};
@@ -80,6 +86,12 @@ impl Config {
     ];
     if let Some((name, _)) = durations.iter().find(|(_, duration)| millis(*duration) == 0) {
       return Err(ConfigError::TooShort(name));
+    }
+    if let Some((name, _)) = durations.iter().find(|(_, duration)| *duration > Self::MAX_DURATION) {
+      return Err(ConfigError::TooLong(name));
+    }
+    if self.idle_timeout <= self.heartbeat {
+      return Err(ConfigError::IdleNotAboveHeartbeat);
     }
     let counts = [
       ("max_calls", self.max_calls),
@@ -134,6 +146,13 @@ pub enum ConfigError {
   /// A duration under 1 ms; WELCOME carries durations in whole milliseconds.
   #[error("{0} must be at least 1 ms")]
   TooShort(&'static str),
+  /// A duration above [`Config::MAX_DURATION`].
+  #[error("{0} must be at most {max} ms", max = Config::MAX_DURATION.as_millis())]
+  TooLong(&'static str),
+  /// An `idle_timeout` no longer than `heartbeat`, so a quiet but healthy peer would time out
+  /// before the next PING is due (§7.4).
+  #[error("idle_timeout must be longer than heartbeat")]
+  IdleNotAboveHeartbeat,
   /// A zero limit.
   #[error("{0} must not be zero")]
   Zero(&'static str),

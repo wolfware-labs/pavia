@@ -291,7 +291,13 @@ impl Session {
     for ws_frame in frames {
       let frame = match Frame::from_raw(&ws_frame.frame, &self.limits) {
         Ok(frame) => frame,
-        Err(error) => return self.fail(&error.into()),
+        Err(error) => {
+          self.fail(&error.into());
+          if self.is_ended() {
+            return;
+          }
+          continue;
+        }
       };
       let on_control = ws_frame.stream_id == CONTROL_STREAM;
       match (&self.state, frame) {

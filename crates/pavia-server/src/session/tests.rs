@@ -561,9 +561,13 @@ async fn keeps_reading_the_transport_while_the_authenticator_runs() {
   let authenticator = Recording::answering(None);
   let (mut socket, _, ending) = connect_to(Arc::clone(&authenticator), SessionConfig::default()).await;
   socket.send(Message::binary(bearer_hello())).await.unwrap();
-  while authenticator.seen().is_empty() {
-    tokio::time::sleep(Duration::from_millis(5)).await;
-  }
+  tokio::time::timeout(Duration::from_secs(5), async {
+    while authenticator.seen().is_empty() {
+      tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+  })
+  .await
+  .expect("the authenticator runs");
   socket.send(Message::binary(close_frame(0))).await.unwrap();
   let (_, ws_code, _) = closed(&mut socket).await;
   assert_eq!(ws_code, WsCloseCode::from(4000));

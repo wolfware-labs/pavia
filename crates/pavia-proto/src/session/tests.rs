@@ -868,8 +868,26 @@ type Change = fn(&mut Config);
 
 #[test]
 fn validates_the_config() {
-  let cases: [(Change, Option<ConfigError>); 12] = [
+  let cases: [(Change, Option<ConfigError>); 16] = [
     (|_| {}, None),
+    (
+      |config| {
+        (config.heartbeat, config.idle_timeout) = (Config::MAX_DURATION - Duration::from_millis(1), Config::MAX_DURATION);
+      },
+      None,
+    ),
+    (
+      |config| config.handshake_timeout = Config::MAX_DURATION + Duration::from_millis(1),
+      Some(ConfigError::TooLong("handshake_timeout")),
+    ),
+    (
+      |config| config.idle_timeout = Duration::MAX,
+      Some(ConfigError::TooLong("idle_timeout")),
+    ),
+    (
+      |config| config.idle_timeout = config.heartbeat,
+      Some(ConfigError::IdleNotAboveHeartbeat),
+    ),
     (|config| config.max_frame = Limits::FLOOR, None),
     (|config| config.window = Limits::FLOOR, None),
     (|config| (config.window, config.max_frame) = (Limits::FLOOR, 1 << 20), None),
@@ -905,6 +923,22 @@ fn validates_the_config() {
   let mut config = Config::default();
   (config.max_subs, config.max_dgram) = (0, 0);
   assert_eq!(config.validate().err(), Some(ConfigError::Zero("max_subs")));
+}
+
+#[test]
+fn keeps_reading_a_message_after_a_frame_that_only_fails_its_request() {
+  let (mut session, _) = welcomed(None);
+  let mut bytes = BytesMut::from(&[0x00, 0x08, 0x00, 0x04, 0x03, 0xa1, 0x01, 0x05][..]);
+  bytes.extend_from_slice(&message(&[(0, close(0, None))]));
+  session.feed(Input::Message(bytes.freeze()));
+  assert_eq!(
+    drain(&mut session).last(),
+    Some(&Output::Ended(Ending::Closed {
+      code: CloseCode::Normal,
+      msg: None,
+      by: Side::Client
+    }))
+  );
 }
 
 #[test]
