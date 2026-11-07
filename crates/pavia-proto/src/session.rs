@@ -32,8 +32,8 @@
 //! WELCOME are dropped until the pre-authentication buffer exists (#40). After WELCOME every frame
 //! passes [`caps::check`] and is otherwise ignored until its feature lands.
 //! PING, PONG and CLOSE skip ahead of other queued outputs, in the order they were made (§6.6,
-//! §13.5). Sending CLOSE drops what is still queued behind it, since nothing follows CLOSE on the
-//! transport (§7.7).
+//! §13.5), but never ahead of WELCOME, the server's first frame (§6.2). Sending CLOSE drops what is
+//! still queued behind it, since nothing follows CLOSE on the transport (§7.7).
 //! Only the WebSocket binding exists so far: one [`Output::Transmit`] is one binary message.
 
 use std::collections::VecDeque;

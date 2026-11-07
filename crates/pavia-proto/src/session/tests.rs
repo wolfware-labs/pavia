@@ -854,11 +854,11 @@ fn pong(data: &'static [u8]) -> Frame {
 
 #[test]
 fn sends_welcome_before_a_heartbeat_queued_behind_it() {
-  let accepted = Instant::now();
   let mut session = greeted();
-  session.handle_input(authenticated(None), accepted);
-  session.handle_input(Input::Message(message(&[(0, ping(b"1"))])), accepted);
-  session.handle_input(Input::Timeout, accepted + Duration::from_secs(16));
+  let welcome_sent = Instant::now();
+  session.handle_input(authenticated(None), welcome_sent);
+  session.handle_input(Input::Message(message(&[(0, ping(b"1"))])), welcome_sent);
+  session.handle_input(Input::Timeout, welcome_sent + Duration::from_secs(16));
   let sent = sent_frames(&mut session);
   let types: Vec<_> = sent.iter().map(|(_, frame)| frame.frame_type()).collect();
   assert_eq!(
