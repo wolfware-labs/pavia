@@ -50,7 +50,7 @@ pub async fn run<A: Authenticator>(
         if authenticating.is_some() => {
         answered = true;
         match answer {
-          Ok(principal) => accept(&principal, session_id::generate()),
+          Ok(principal) => authenticated(&principal, session_id::generate()),
           Err(failure) => Input::AuthFailed(failure),
         }
       },
@@ -84,7 +84,7 @@ pub async fn run<A: Authenticator>(
   }
 }
 
-fn accept(principal: &Principal, id: io::Result<SessionId>) -> Input {
+fn authenticated(principal: &Principal, id: io::Result<SessionId>) -> Input {
   match id {
     Ok(session) => Input::Authenticated {
       session,

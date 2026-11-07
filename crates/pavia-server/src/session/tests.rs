@@ -19,7 +19,7 @@ use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode as WsClos
 use tokio_tungstenite::tungstenite::{Message, Utf8Bytes};
 use tokio_tungstenite::{WebSocketStream, client_async};
 
-use super::{accept, run};
+use super::{authenticated, run};
 use crate::auth::{AuthFailure, Authenticator, Permissive, Principal, RequestContext};
 use crate::websocket::{Config, Endpoint, SUBPROTOCOL, Transport};
 
@@ -296,7 +296,7 @@ async fn sends_welcome_and_stops_the_handshake_timer() {
   let Value::Text(id) = &welcome[&19] else {
     panic!("{welcome:?}");
   };
-  assert!(pavia_proto::session_id::SessionId::parse(id).is_ok(), "{id}");
+  assert!(SessionId::parse(id).is_ok(), "{id}");
   assert!(tokio::time::timeout(Duration::from_millis(400), socket.next()).await.is_err());
   socket.send(Message::binary(close_frame(0))).await.unwrap();
   let (binary, ws_code, _) = closed(&mut socket).await;
@@ -591,7 +591,7 @@ async fn closes_a_slow_authenticator_with_handshake_timeout() {
 #[test]
 fn closes_with_internal_when_the_session_id_cannot_be_generated() {
   let failed = std::io::Error::other("no entropy");
-  let input = accept(&Principal::for_user("ada"), Err(failed));
+  let input = authenticated(&Principal::for_user("ada"), Err(failed));
   assert!(matches!(
     input,
     Input::Command(Command::Close {
@@ -604,7 +604,7 @@ fn closes_with_internal_when_the_session_id_cannot_be_generated() {
 #[test]
 fn hands_the_generated_id_and_user_to_the_session() {
   let id = SessionId::from_random([7; 16]);
-  let input = accept(&Principal::for_user("ada"), Ok(id.clone()));
+  let input = authenticated(&Principal::for_user("ada"), Ok(id.clone()));
   assert!(matches!(
     input,
     Input::Authenticated { session, user: Some(user) } if session == id && user == "ada"

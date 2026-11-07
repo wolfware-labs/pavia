@@ -672,7 +672,13 @@ fn authenticated(user: Option<&str>) -> Input {
 }
 
 fn welcomed(user: Option<&str>) -> (Session, Welcome) {
-  let mut session = greeted();
+  welcomed_with(Config::default(), user)
+}
+
+fn welcomed_with(config: Config, user: Option<&str>) -> (Session, Welcome) {
+  let mut session = Session::server(&config.validate().unwrap(), Instant::now());
+  session.feed(Input::Message(message(&[(0, Frame::Hello(hello()))])));
+  assert_eq!(drain(&mut session), ANONYMOUS);
   session.feed(authenticated(user));
   let outputs = drain(&mut session);
   let [Output::Transmit(sent)] = outputs.as_slice() else {
@@ -788,17 +794,7 @@ fn announces_the_configured_values() {
     window: 65_536,
     ..Config::default()
   };
-  let mut session = Session::server(&config.validate().unwrap(), Instant::now());
-  session.feed(Input::Message(message(&[(0, Frame::Hello(hello()))])));
-  session.feed(authenticated(None));
-  let outputs = drain(&mut session);
-  let Some(Output::Transmit(sent)) = outputs.last() else {
-    panic!("{outputs:?}");
-  };
-  let decoded = frames(sent);
-  let [(0, Frame::Welcome(welcome))] = decoded.as_slice() else {
-    panic!("{sent:02x?}");
-  };
+  let (_, welcome) = welcomed_with(config, None);
   assert_eq!((welcome.hb, welcome.idle), (5_000, 12_500));
   assert_eq!(
     (welcome.limits.max_calls, welcome.limits.max_frame, welcome.limits.window),
@@ -872,7 +868,6 @@ type Change = fn(&mut Config);
 
 #[test]
 fn validates_the_config() {
-  let floor = Limits::FLOOR;
   let cases: [(Change, Option<ConfigError>); 12] = [
     (|_| {}, None),
     (|config| config.max_frame = Limits::FLOOR, None),
@@ -905,7 +900,7 @@ fn validates_the_config() {
   for (index, (change, expected)) in cases.into_iter().enumerate() {
     let mut config = Config::default();
     change(&mut config);
-    assert_eq!(config.validate().err(), expected, "case {index}, floor {floor}");
+    assert_eq!(config.validate().err(), expected, "case {index}");
   }
   let mut config = Config::default();
   (config.max_subs, config.max_dgram) = (0, 0);

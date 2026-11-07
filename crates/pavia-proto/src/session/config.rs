@@ -1,3 +1,6 @@
+//! Session settings (§7.2, §16): what the application chooses, and the validated form a session
+//! is built from.
+
 use std::time::Duration;
 
 use thiserror::Error;
@@ -134,8 +137,8 @@ pub enum ConfigError {
   /// A zero limit.
   #[error("{0} must not be zero")]
   Zero(&'static str),
-  /// `max_frame` or `window` below 65,536 bytes.
-  #[error("{0} must be at least 65536 bytes")]
+  /// `max_frame` or `window` below the 64 KiB floor, [`Limits::FLOOR`] (§4.1).
+  #[error("{0} must be at least {floor} bytes", floor = Limits::FLOOR)]
   BelowFloor(&'static str),
   /// No protocol version or no codec.
   #[error("{0} must not be empty")]
