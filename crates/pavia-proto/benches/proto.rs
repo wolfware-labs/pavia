@@ -57,7 +57,7 @@ fn data_codecs(c: &mut Criterion) {
 }
 
 fn session_hello(c: &mut Criterion) {
-  let config = Config::default();
+  let config = Config::default().validate().expect("the default config is valid");
   let hello = hello_ws();
   let now = Instant::now();
   c.bench_function("session/hello", |b| {
