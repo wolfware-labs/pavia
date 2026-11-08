@@ -141,21 +141,22 @@ fn mirrors_every_code_the_peer_closes_with() {
   for code in CODES {
     let mut session = greeted();
     session.feed(Input::Message(message(&[(0, close(u64::from(u16::from(code)), None))])));
-    assert_eq!(
-      drain(&mut session),
-      [
-        Output::CloseTransport {
-          code,
-          reason: String::new()
-        },
-        Output::Ended(Ending::Closed {
-          code,
-          msg: None,
-          by: Side::Client
-        }),
-      ]
-    );
+    assert_eq!(drain(&mut session), mirrored_close(code));
   }
+}
+
+fn mirrored_close(code: CloseCode) -> [Output; 2] {
+  [
+    Output::CloseTransport {
+      code,
+      reason: String::new(),
+    },
+    Output::Ended(Ending::Closed {
+      code,
+      msg: None,
+      by: Side::Client,
+    }),
+  ]
 }
 
 #[test]
@@ -1001,20 +1002,22 @@ fn mirrors_a_close_that_arrives_past_the_idle_deadline() {
   let (mut session, accepted) = welcomed_at(Duration::ZERO);
   let late = accepted + DEFAULT_IDLE + Duration::from_millis(5);
   session.handle_input(Input::Message(message(&[(0, close(0, None))])), late);
-  assert_eq!(
-    drain(&mut session),
-    [
-      Output::CloseTransport {
-        code: CloseCode::Normal,
-        reason: String::new()
-      },
-      Output::Ended(Ending::Closed {
-        code: CloseCode::Normal,
-        msg: None,
-        by: Side::Client
-      }),
-    ]
-  );
+  assert_eq!(drain(&mut session), mirrored_close(CloseCode::Normal));
+}
+
+#[test]
+fn sends_the_due_ping_after_a_message_past_the_heartbeat() {
+  let (mut session, accepted) = welcomed_at(Duration::ZERO);
+  let mut at = accepted;
+  for _ in 0..3 {
+    at += DEFAULT_HB + Duration::from_millis(1);
+    session.handle_input(Input::Message(message(&[(0, pong(b""))])), at);
+    assert_eq!(sent_frames(&mut session), [(0, ping(b""))]);
+    assert_eq!(session.poll_timeout(), Some(at + DEFAULT_HB));
+  }
+  at += DEFAULT_HB;
+  session.handle_input(Input::Message(message(&[(0, ping(b"\x02"))])), at);
+  assert_eq!(sent_frames(&mut session), [(0, pong(b"\x02"))]);
 }
 
 #[test]
@@ -1152,20 +1155,7 @@ fn keeps_reading_a_message_after_a_frame_that_only_fails_its_request() {
   let mut bytes = BytesMut::from(&AUTH_REFRESH_WITHOUT_AUTH[..]);
   bytes.extend_from_slice(&message(&[(0, close(0, None))]));
   session.feed(Input::Message(bytes.freeze()));
-  assert_eq!(
-    drain(&mut session),
-    [
-      Output::CloseTransport {
-        code: CloseCode::Normal,
-        reason: String::new(),
-      },
-      Output::Ended(Ending::Closed {
-        code: CloseCode::Normal,
-        msg: None,
-        by: Side::Client
-      }),
-    ]
-  );
+  assert_eq!(drain(&mut session), mirrored_close(CloseCode::Normal));
 }
 
 #[test]

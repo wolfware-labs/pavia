@@ -32,7 +32,9 @@
 //! After WELCOME every received message, on any stream, moves the idle deadline to `now + idle`;
 //! a timeout at or past it closes with IDLE_TIMEOUT (§7.4). A message that reaches the session
 //! past the deadline is still read and moves it, since the peer is alive and the delay was the
-//! driver's. Sending does not move it: that is the heartbeat timer.
+//! driver's. Sending does not move it: that is the heartbeat timer. A message at or past the
+//! next heartbeat also sends the due PING, so a peer that keeps the driver busy with messages
+//! that need no answer still gets one every `hb` (§7.4).
 //!
 //! Every ending yields exactly one [`Output::Ended`], and after it the session ignores all input.
 //! A text message is a PROTOCOL_ERROR in every state (§4.3). Frames the client pipelines before
@@ -280,7 +282,6 @@ impl Session {
     self.now = now;
     let expired = matches!(self.state, State::AwaitHello { deadline } | State::Handshaking { deadline, .. } if now >= deadline);
     let idle = matches!(self.state, State::Established { idle_at, .. } if now >= idle_at);
-    let ping = matches!(self.state, State::Established { ping_at, .. } if now >= ping_at);
     match input {
       Input::TransportLost => self.end(Ending::TransportLost),
       Input::TextMessage => self.fail(&ProtocolError::TextMessage),
@@ -289,7 +290,10 @@ impl Session {
         self.close(CloseCode::HandshakeTimeout, None);
       }
       Input::Timeout if idle => self.close(CloseCode::IdleTimeout, None),
-      Input::Message(message) => self.receive(message),
+      Input::Message(message) => {
+        self.receive(message);
+        self.send_due_ping();
+      }
       Input::Authenticated { session, user } => self.welcome(&session, user),
       Input::AuthFailed(failure) => {
         if let State::Handshaking { .. } = self.state {
@@ -297,10 +301,7 @@ impl Session {
           self.reject(code, msg);
         }
       }
-      Input::Timeout if ping => self.transmit(&Frame::Ping {
-        data: Heartbeat::default(),
-      }),
-      Input::Timeout => {}
+      Input::Timeout => self.send_due_ping(),
     }
   }
 
@@ -308,6 +309,14 @@ impl Session {
   pub fn poll_output(&mut self) -> Option<Output> {
     self.urgent = self.urgent.saturating_sub(1);
     self.outputs.pop_front()
+  }
+
+  fn send_due_ping(&mut self) {
+    if matches!(self.state, State::Established { ping_at, .. } if self.now >= ping_at) {
+      self.transmit(&Frame::Ping {
+        data: Heartbeat::default(),
+      });
+    }
   }
 
   fn receive(&mut self, message: Bytes) {

@@ -8,6 +8,7 @@ use std::future::Future;
 use std::io;
 use std::pin::Pin;
 
+use futures_util::FutureExt;
 use pavia_proto::frame::Auth;
 use pavia_proto::registry::CloseCode;
 use pavia_proto::session::{Command, Ending, Input, Output, Session, ValidConfig};
@@ -29,9 +30,9 @@ type Authenticating<'a> = Pin<Box<dyn Future<Output = Result<Principal, AuthFail
 /// accepts, the session gets a new ID and sends WELCOME; if the operating system cannot supply
 /// the ID's randomness, the session closes with INTERNAL instead.
 ///
-/// When a deadline has passed and a message is already readable, the message goes in first: a
-/// late poll of this task is not the peer's silence, so it never closes a live session with
-/// IDLE_TIMEOUT or answers a peer's CLOSE with it.
+/// When a deadline has passed and a whole message is already readable, the message goes in
+/// first: a late poll of this task is not the peer's silence, so a message that was waiting does
+/// not end the session with IDLE_TIMEOUT, and a peer's CLOSE that was waiting is mirrored.
 ///
 /// The handshake timer starts at [`Transport::accepted`], before the upgrade. The clock is
 /// tokio's, so a test that pauses time drives the session's timers too.
@@ -49,11 +50,9 @@ pub async fn run<A: Authenticator>(
     let mut answered = false;
     let deadline = session.poll_timeout().map(Instant::from_std);
     let input = tokio::select! {
-      () = sleep_until(deadline.unwrap_or_else(Instant::now)), if deadline.is_some() => tokio::select! {
-        biased;
-        received = transport.recv() => received_input(received),
-        () = std::future::ready(()) => Input::Timeout,
-      },
+      () = sleep_until(deadline.unwrap_or_else(Instant::now)), if deadline.is_some() => {
+        transport.recv().now_or_never().map_or(Input::Timeout, received_input)
+      }
       answer = async { authenticating.as_mut().expect("guarded by the branch condition").await },
         if authenticating.is_some() => {
         answered = true;

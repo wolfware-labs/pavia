@@ -703,8 +703,7 @@ async fn keeps_a_client_that_answers_every_ping() {
 
 #[tokio::test]
 async fn reads_a_waiting_message_before_a_passed_idle_deadline() {
-  let mut config = SessionConfig::default();
-  config.heartbeat = Duration::from_millis(150);
+  let mut config = short_idle();
   config.idle_timeout = Duration::from_millis(200);
   let (mut socket, _) = welcomed(config).await;
   for _ in 0..10 {
