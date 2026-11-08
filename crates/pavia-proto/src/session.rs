@@ -30,8 +30,9 @@
 //! running meanwhile, so a slow authenticator ends in HANDSHAKE_TIMEOUT (§7.1).
 //!
 //! After WELCOME every received message, on any stream, moves the idle deadline to `now + idle`;
-//! an input at or past it closes with IDLE_TIMEOUT (§7.4). Sending does not move it: that is the
-//! heartbeat timer.
+//! a timeout at or past it closes with IDLE_TIMEOUT (§7.4). A message that reaches the session
+//! past the deadline is still read and moves it, since the peer is alive and the delay was the
+//! driver's. Sending does not move it: that is the heartbeat timer.
 //!
 //! Every ending yields exactly one [`Output::Ended`], and after it the session ignores all input.
 //! A text message is a PROTOCOL_ERROR in every state (§4.3). Frames the client pipelines before
@@ -287,13 +288,8 @@ impl Session {
       Input::Message(_) | Input::Timeout | Input::Authenticated { .. } | Input::AuthFailed(_) if expired => {
         self.close(CloseCode::HandshakeTimeout, None);
       }
-      Input::Message(_) | Input::Timeout if idle => self.close(CloseCode::IdleTimeout, None),
-      Input::Message(message) => {
-        if let State::Established { idle_at, .. } = &mut self.state {
-          *idle_at = now + self.config.0.idle_timeout;
-        }
-        self.receive(message);
-      }
+      Input::Timeout if idle => self.close(CloseCode::IdleTimeout, None),
+      Input::Message(message) => self.receive(message),
       Input::Authenticated { session, user } => self.welcome(&session, user),
       Input::AuthFailed(failure) => {
         if let State::Handshaking { .. } = self.state {
@@ -315,6 +311,9 @@ impl Session {
   }
 
   fn receive(&mut self, message: Bytes) {
+    if let State::Established { idle_at, .. } = &mut self.state {
+      *idle_at = self.now + self.config.0.idle_timeout;
+    }
     let frames = match envelope::decode_message(message, self.max_frame) {
       Ok(frames) => frames,
       Err(error) => return self.fail(&error),

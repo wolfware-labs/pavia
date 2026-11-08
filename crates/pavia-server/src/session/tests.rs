@@ -684,7 +684,9 @@ async fn closes_a_silent_client_with_idle_timeout() {
 
 #[tokio::test]
 async fn keeps_a_client_that_answers_every_ping() {
-  let (mut socket, _) = welcomed(short_idle()).await;
+  let mut config = short_idle();
+  config.idle_timeout = Duration::from_secs(1);
+  let (mut socket, _) = welcomed(config).await;
   let held = tokio::time::timeout(Duration::from_secs(2), async {
     loop {
       match socket.next().await.unwrap().unwrap() {
