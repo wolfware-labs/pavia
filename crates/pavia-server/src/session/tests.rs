@@ -720,6 +720,28 @@ async fn reads_a_waiting_message_before_a_passed_idle_deadline() {
 }
 
 #[tokio::test]
+async fn mirrors_a_close_waiting_past_the_idle_deadline() {
+  let mut config = short_idle();
+  config.idle_timeout = Duration::from_millis(200);
+  for _ in 0..10 {
+    let (mut socket, ending) = welcomed(config.clone()).await;
+    socket.send(Message::binary(close_frame(0))).await.unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    let (binary, ws_code, _) = closed(&mut socket).await;
+    assert!(binary.iter().all(|ping| *ping == heartbeat_frame(0x04, &[])), "{binary:02x?}");
+    assert_eq!(ws_code, WsCloseCode::from(4000));
+    assert_eq!(
+      ending.await.unwrap(),
+      Ending::Closed {
+        code: CloseCode::Normal,
+        msg: None,
+        by: Side::Client
+      }
+    );
+  }
+}
+
+#[tokio::test]
 async fn answers_a_ping_with_its_data() {
   let (mut socket, _) = welcomed(SessionConfig::default()).await;
   let data = [1, 2, 3, 4, 5, 6, 7, 8];
