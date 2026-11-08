@@ -702,6 +702,25 @@ async fn keeps_a_client_that_answers_every_ping() {
 }
 
 #[tokio::test]
+async fn reads_a_waiting_message_before_a_passed_idle_deadline() {
+  let mut config = SessionConfig::default();
+  config.heartbeat = Duration::from_millis(150);
+  config.idle_timeout = Duration::from_millis(200);
+  let (mut socket, _) = welcomed(config).await;
+  for _ in 0..10 {
+    socket.send(Message::binary(heartbeat_frame(0x04, &[7]))).await.unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    loop {
+      match socket.next().await.unwrap().unwrap() {
+        Message::Binary(pong) if pong == heartbeat_frame(0x05, &[7]) => break,
+        Message::Binary(ping) if ping == heartbeat_frame(0x04, &[]) => {}
+        other => panic!("unexpected {other:?}"),
+      }
+    }
+  }
+}
+
+#[tokio::test]
 async fn answers_a_ping_with_its_data() {
   let (mut socket, _) = welcomed(SessionConfig::default()).await;
   let data = [1, 2, 3, 4, 5, 6, 7, 8];

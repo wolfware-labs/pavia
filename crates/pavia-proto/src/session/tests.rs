@@ -997,6 +997,27 @@ fn reads_a_message_that_arrives_past_the_idle_deadline() {
 }
 
 #[test]
+fn mirrors_a_close_that_arrives_past_the_idle_deadline() {
+  let (mut session, accepted) = welcomed_at(Duration::ZERO);
+  let late = accepted + DEFAULT_IDLE + Duration::from_millis(5);
+  session.handle_input(Input::Message(message(&[(0, close(0, None))])), late);
+  assert_eq!(
+    drain(&mut session),
+    [
+      Output::CloseTransport {
+        code: CloseCode::Normal,
+        reason: String::new()
+      },
+      Output::Ended(Ending::Closed {
+        code: CloseCode::Normal,
+        msg: None,
+        by: Side::Client
+      }),
+    ]
+  );
+}
+
+#[test]
 fn answers_a_ping_with_the_same_data_and_restarts_the_timer() {
   let (mut session, accepted) = welcomed_at(Duration::ZERO);
   for (seconds, data) in [(3, &b""[..]), (6, b"\x01"), (9, b"\x01\x02\x03\x04\x05\x06\x07\x08")] {
