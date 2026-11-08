@@ -122,6 +122,20 @@ async fn closed(socket: &mut Socket) -> (Vec<Vec<u8>>, WsCloseCode, Utf8Bytes) {
   }
 }
 
+async fn mirrored_client_close(socket: &mut Socket, ending: oneshot::Receiver<Ending>) -> Vec<Vec<u8>> {
+  let (binary, ws_code, _) = closed(socket).await;
+  assert_eq!(ws_code, WsCloseCode::from(4000));
+  assert_eq!(
+    ending.await.unwrap(),
+    Ending::Closed {
+      code: CloseCode::Normal,
+      msg: None,
+      by: Side::Client
+    }
+  );
+  binary
+}
+
 #[tokio::test]
 async fn sends_close_then_closes_with_every_code() {
   for code in CODES {
@@ -158,17 +172,7 @@ async fn mirrors_a_client_close() {
   socket.send(Message::binary(hello_frame())).await.unwrap();
   assert_eq!(next_welcome(&mut socket).await.len(), 7);
   socket.send(Message::binary(close_frame(0))).await.unwrap();
-  let (binary, ws_code, _) = closed(&mut socket).await;
-  assert!(binary.is_empty());
-  assert_eq!(ws_code, WsCloseCode::from(4000));
-  assert_eq!(
-    ending.await.unwrap(),
-    Ending::Closed {
-      code: CloseCode::Normal,
-      msg: None,
-      by: Side::Client
-    }
-  );
+  assert!(mirrored_client_close(&mut socket, ending).await.is_empty());
 }
 
 #[tokio::test]
@@ -226,17 +230,7 @@ async fn keeps_running_after_a_message_that_needs_no_answer() {
   socket.send(Message::binary(hello_frame())).await.unwrap();
   assert_eq!(next_welcome(&mut socket).await.len(), 7);
   socket.send(Message::binary(close_frame(0))).await.unwrap();
-  let (binary, ws_code, _) = closed(&mut socket).await;
-  assert!(binary.is_empty());
-  assert_eq!(ws_code, WsCloseCode::from(4000));
-  assert!(matches!(
-    ending.await.unwrap(),
-    Ending::Closed {
-      code: CloseCode::Normal,
-      by: Side::Client,
-      ..
-    }
-  ));
+  assert!(mirrored_client_close(&mut socket, ending).await.is_empty());
 }
 
 #[tokio::test]
@@ -299,10 +293,7 @@ async fn sends_welcome_and_stops_the_handshake_timer() {
   assert!(SessionId::parse(id).is_ok(), "{id}");
   assert!(tokio::time::timeout(Duration::from_millis(400), socket.next()).await.is_err());
   socket.send(Message::binary(close_frame(0))).await.unwrap();
-  let (binary, ws_code, _) = closed(&mut socket).await;
-  assert!(binary.is_empty());
-  assert_eq!(ws_code, WsCloseCode::from(4000));
-  assert!(matches!(ending.await.unwrap(), Ending::Closed { by: Side::Client, .. }));
+  assert!(mirrored_client_close(&mut socket, ending).await.is_empty());
 }
 
 async fn next_welcome(socket: &mut Socket) -> BTreeMap<u64, Value> {
@@ -547,10 +538,7 @@ async fn gives_the_authenticator_the_credential_and_the_upgrade_request() {
   socket.send(Message::binary(bearer_hello())).await.unwrap();
   assert_eq!(next_welcome(&mut socket).await.get(&36), Some(&Value::Text("u-42".into())));
   socket.send(Message::binary(close_frame(0))).await.unwrap();
-  let (binary, ws_code, _) = closed(&mut socket).await;
-  assert!(binary.is_empty());
-  assert_eq!(ws_code, WsCloseCode::from(4000));
-  assert!(matches!(ending.await.unwrap(), Ending::Closed { by: Side::Client, .. }));
+  assert!(mirrored_client_close(&mut socket, ending).await.is_empty());
   assert_eq!(
     authenticator.seen(),
     [Seen {
@@ -575,9 +563,7 @@ async fn keeps_reading_the_transport_while_the_authenticator_runs() {
   .await
   .expect("the authenticator runs");
   socket.send(Message::binary(close_frame(0))).await.unwrap();
-  let (_, ws_code, _) = closed(&mut socket).await;
-  assert_eq!(ws_code, WsCloseCode::from(4000));
-  assert!(matches!(ending.await.unwrap(), Ending::Closed { by: Side::Client, .. }));
+  mirrored_client_close(&mut socket, ending).await;
   assert_eq!(authenticator.seen().len(), 1);
 }
 
@@ -727,17 +713,8 @@ async fn mirrors_a_close_waiting_past_the_idle_deadline() {
     let (mut socket, ending) = welcomed(config.clone()).await;
     socket.send(Message::binary(close_frame(0))).await.unwrap();
     std::thread::sleep(Duration::from_millis(300));
-    let (binary, ws_code, _) = closed(&mut socket).await;
+    let binary = mirrored_client_close(&mut socket, ending).await;
     assert!(binary.iter().all(|ping| *ping == heartbeat_frame(0x04, &[])), "{binary:02x?}");
-    assert_eq!(ws_code, WsCloseCode::from(4000));
-    assert_eq!(
-      ending.await.unwrap(),
-      Ending::Closed {
-        code: CloseCode::Normal,
-        msg: None,
-        by: Side::Client
-      }
-    );
   }
 }
 
