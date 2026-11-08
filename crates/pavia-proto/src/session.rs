@@ -6,7 +6,8 @@
 //! authenticator (§7.5), WELCOME, the capability gate on every later frame, the heartbeat
 //! (§7.4), and every way a session ends (§7.3, §7.7, §13.4). Time is an input: the session is
 //! built with the accept time, every [`Session::handle_input`] call takes `now`, and
-//! [`Session::poll_timeout`] gives the handshake deadline, then the next heartbeat PING.
+//! [`Session::poll_timeout`] gives the handshake deadline, then the earlier of the next heartbeat
+//! PING and the idle deadline.
 //!
 //! ```text
 //!  AwaitHello ──HELLO──▶ Handshaking ──Authenticated: WELCOME──▶ Established
@@ -20,12 +21,17 @@
 //!  Established               a capability not granted         ▶ CLOSE PROTOCOL_ERROR
 //!  Established               PING with up to 8 bytes          ▶ PONG with the same bytes
 //!  Established               hb with nothing sent             ▶ PING
+//!  Established               idle with nothing received       ▶ CLOSE IDLE_TIMEOUT
 //!  any                       CLOSE received, TransportLost    ▶ Ended
 //! ```
 //!
 //! A validated HELLO yields [`Output::Authenticate`]. The driver runs the authenticator and feeds
 //! its answer back as [`Input::Authenticated`] or [`Input::AuthFailed`]; the handshake timer keeps
 //! running meanwhile, so a slow authenticator ends in HANDSHAKE_TIMEOUT (§7.1).
+//!
+//! After WELCOME every received message, on any stream, moves the idle deadline to `now + idle`;
+//! an input at or past it closes with IDLE_TIMEOUT (§7.4). Sending does not move it: that is the
+//! heartbeat timer.
 //!
 //! Every ending yields exactly one [`Output::Ended`], and after it the session ignores all input.
 //! A text message is a PROTOCOL_ERROR in every state (§4.3). Frames the client pipelines before
@@ -193,6 +199,7 @@ enum State {
     hello: Box<Hello>,
     negotiated: Negotiated,
     ping_at: Instant,
+    idle_at: Instant,
   },
   Ended,
 }
@@ -255,11 +262,10 @@ impl Session {
 
   /// When the driver must feed [`Input::Timeout`], or `None` when no timer is running.
   #[must_use]
-  pub const fn poll_timeout(&self) -> Option<Instant> {
+  pub fn poll_timeout(&self) -> Option<Instant> {
     match self.state {
-      State::AwaitHello { deadline } | State::Handshaking { deadline, .. } | State::Established { ping_at: deadline, .. } => {
-        Some(deadline)
-      }
+      State::AwaitHello { deadline } | State::Handshaking { deadline, .. } => Some(deadline),
+      State::Established { ping_at, idle_at, .. } => Some(ping_at.min(idle_at)),
       State::Ended => None,
     }
   }
@@ -271,8 +277,9 @@ impl Session {
       return;
     }
     self.now = now;
-    let due = self.poll_timeout().is_some_and(|deadline| now >= deadline);
-    let expired = due && matches!(self.state, State::AwaitHello { .. } | State::Handshaking { .. });
+    let expired = matches!(self.state, State::AwaitHello { deadline } | State::Handshaking { deadline, .. } if now >= deadline);
+    let idle = matches!(self.state, State::Established { idle_at, .. } if now >= idle_at);
+    let ping = matches!(self.state, State::Established { ping_at, .. } if now >= ping_at);
     match input {
       Input::TransportLost => self.end(Ending::TransportLost),
       Input::TextMessage => self.fail(&ProtocolError::TextMessage),
@@ -280,7 +287,13 @@ impl Session {
       Input::Message(_) | Input::Timeout | Input::Authenticated { .. } | Input::AuthFailed(_) if expired => {
         self.close(CloseCode::HandshakeTimeout, None);
       }
-      Input::Message(message) => self.receive(message),
+      Input::Message(_) | Input::Timeout if idle => self.close(CloseCode::IdleTimeout, None),
+      Input::Message(message) => {
+        if let State::Established { idle_at, .. } = &mut self.state {
+          *idle_at = now + self.config.0.idle_timeout;
+        }
+        self.receive(message);
+      }
       Input::Authenticated { session, user } => self.welcome(&session, user),
       Input::AuthFailed(failure) => {
         if let State::Handshaking { .. } = self.state {
@@ -288,7 +301,7 @@ impl Session {
           self.reject(code, msg);
         }
       }
-      Input::Timeout if due => self.transmit(&Frame::Ping {
+      Input::Timeout if ping => self.transmit(&Frame::Ping {
         data: Heartbeat::default(),
       }),
       Input::Timeout => {}
@@ -395,6 +408,7 @@ impl Session {
       hello,
       negotiated,
       ping_at: self.now,
+      idle_at: self.now + self.config.0.idle_timeout,
     };
     self.max_frame = self.config.0.max_frame;
     self.transmit(&welcome);

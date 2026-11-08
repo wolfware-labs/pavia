@@ -910,10 +910,86 @@ fn pings_after_a_heartbeat_of_send_silence() {
   assert_eq!(session.poll_timeout(), Some(welcome_sent + hb + hb));
   session.handle_input(Input::Timeout, welcome_sent + hb + hb + Duration::from_millis(5));
   assert_eq!(sent_frames(&mut session), [(0, ping(b""))]);
+  assert_eq!(session.poll_timeout(), Some(welcome_sent + IDLE));
+}
+
+const IDLE: Duration = Duration::from_secs(45);
+
+#[test]
+fn closes_with_idle_timeout_after_idle_with_nothing_received() {
+  let (mut session, accepted) = welcomed_at(Duration::ZERO);
+  for seconds in [15, 30] {
+    session.handle_input(Input::Timeout, accepted + Duration::from_secs(seconds));
+    assert_eq!(sent_frames(&mut session), [(0, ping(b""))]);
+  }
+  assert_eq!(session.poll_timeout(), Some(accepted + IDLE));
+  session.handle_input(Input::Timeout, accepted + IDLE - Duration::from_millis(1));
+  assert!(!session.is_ended());
+  session.handle_input(Input::Timeout, accepted + IDLE);
   assert_eq!(
-    session.poll_timeout(),
-    Some(welcome_sent + hb + hb + Duration::from_millis(5) + hb)
+    drain(&mut session),
+    [
+      Output::Transmit(message(&[(0, close(5, None))])),
+      Output::CloseTransport {
+        code: CloseCode::IdleTimeout,
+        reason: String::new(),
+      },
+      Output::Ended(Ending::Closed {
+        code: CloseCode::IdleTimeout,
+        msg: None,
+        by: Side::Server,
+      }),
+    ]
   );
+}
+
+#[test]
+fn moves_the_idle_deadline_on_a_message_on_any_stream() {
+  for stream in [0, 2] {
+    let (mut session, accepted) = welcomed_at(Duration::ZERO);
+    let heard = accepted + IDLE - Duration::from_millis(1);
+    let frame = if stream == 0 {
+      pong(b"")
+    } else {
+      Frame::Cancel(Cancel { msg: None })
+    };
+    session.handle_input(Input::Message(message(&[(stream, frame)])), heard);
+    session.handle_input(Input::Timeout, heard);
+    assert_eq!(sent_frames(&mut session), [(0, ping(b""))], "stream {stream}");
+    assert_eq!(
+      session.poll_timeout(),
+      Some(heard + Duration::from_secs(15)),
+      "stream {stream}"
+    );
+    session.handle_input(Input::Timeout, heard + IDLE - Duration::from_millis(1));
+    assert_eq!(sent_frames(&mut session), [(0, ping(b""))], "stream {stream}");
+    assert_eq!(session.poll_timeout(), Some(heard + IDLE), "stream {stream}");
+    session.handle_input(Input::Timeout, heard + IDLE);
+    assert!(ended_with(&mut session, CloseCode::IdleTimeout), "stream {stream}");
+  }
+}
+
+#[test]
+fn keeps_a_session_that_only_answers_pings() {
+  let (mut session, accepted) = welcomed_at(Duration::ZERO);
+  let hb = Duration::from_secs(15);
+  let mut at = accepted;
+  for _ in 0..20 {
+    at += hb;
+    session.handle_input(Input::Timeout, at);
+    assert_eq!(sent_frames(&mut session), [(0, ping(b""))]);
+    at += Duration::from_secs(1);
+    session.handle_input(Input::Message(message(&[(0, pong(b""))])), at);
+    assert_eq!(drain(&mut session), []);
+  }
+  assert!(!session.is_ended());
+}
+
+#[test]
+fn closes_with_idle_timeout_on_a_message_past_the_deadline() {
+  let (mut session, accepted) = welcomed_at(Duration::ZERO);
+  session.handle_input(Input::Message(message(&[(0, pong(b""))])), accepted + IDLE);
+  assert!(ended_with(&mut session, CloseCode::IdleTimeout));
 }
 
 #[test]

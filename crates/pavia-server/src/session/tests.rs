@@ -651,6 +651,54 @@ async fn pings_an_idle_session_every_heartbeat() {
   assert!(elapsed < Duration::from_secs(3), "{elapsed:?}");
 }
 
+fn short_idle() -> SessionConfig {
+  let mut config = SessionConfig::default();
+  config.heartbeat = Duration::from_millis(100);
+  config.idle_timeout = Duration::from_millis(300);
+  config
+}
+
+#[tokio::test]
+async fn closes_a_silent_client_with_idle_timeout() {
+  let start = std::time::Instant::now();
+  let (mut socket, ending) = welcomed(short_idle()).await;
+  let (binary, ws_code, _) = tokio::time::timeout(Duration::from_secs(3), closed(&mut socket))
+    .await
+    .expect("the server closes");
+  let elapsed = start.elapsed();
+  assert!(elapsed >= Duration::from_millis(300), "{elapsed:?}");
+  assert!(elapsed < Duration::from_secs(3), "{elapsed:?}");
+  let (close, pings) = binary.split_last().expect("CLOSE was sent");
+  assert!(pings.iter().all(|ping| *ping == heartbeat_frame(0x04, &[])), "{pings:02x?}");
+  assert_eq!(*close, close_frame(5));
+  assert_eq!(ws_code, WsCloseCode::from(4005));
+  assert!(matches!(
+    ending.await.unwrap(),
+    Ending::Closed {
+      code: CloseCode::IdleTimeout,
+      by: Side::Server,
+      ..
+    }
+  ));
+}
+
+#[tokio::test]
+async fn keeps_a_client_that_answers_every_ping() {
+  let (mut socket, _) = welcomed(short_idle()).await;
+  let held = tokio::time::timeout(Duration::from_secs(2), async {
+    loop {
+      match socket.next().await.unwrap().unwrap() {
+        Message::Binary(ping) if ping == heartbeat_frame(0x04, &[]) => {
+          socket.send(Message::binary(heartbeat_frame(0x05, &[]))).await.unwrap();
+        }
+        other => panic!("unexpected {other:?}"),
+      }
+    }
+  })
+  .await;
+  assert!(held.is_err());
+}
+
 #[tokio::test]
 async fn answers_a_ping_with_its_data() {
   let (mut socket, _) = welcomed(SessionConfig::default()).await;
