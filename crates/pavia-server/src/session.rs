@@ -31,8 +31,10 @@ type Authenticating<'a> = Pin<Box<dyn Future<Output = Result<Principal, AuthFail
 /// the ID's randomness, the session closes with INTERNAL instead.
 ///
 /// When a deadline has passed and a whole message is already readable, the message goes in
-/// first: a late poll of this task is not the peer's silence, so a message that was waiting does
-/// not end the session with IDLE_TIMEOUT, and a peer's CLOSE that was waiting is mirrored.
+/// first: a late poll of this task is not the peer's silence. Past the idle deadline, a waiting
+/// message moves it instead of ending the session with IDLE_TIMEOUT, and a waiting CLOSE is
+/// mirrored. Past the handshake deadline the session still closes with HANDSHAKE_TIMEOUT
+/// (§7.1). Time this task spends blocked on a write still counts as the peer's silence.
 ///
 /// The handshake timer starts at [`Transport::accepted`], before the upgrade. The clock is
 /// tokio's, so a test that pauses time drives the session's timers too.
