@@ -1,6 +1,6 @@
 # Sans-IO core and crate layout
 
-Decision record for roadmap C0.7 (#2). Status: accepted, 2026-09-21. Amended 2026-11-01 (#36): `poll_output` returns `None` when drained, and the next deadline comes from `poll_timeout`. Amended 2026-11-01 (#27): `now` is a `handle_input` argument, not a field of each input. Amended 2026-11-01 (#30): authentication is `Output::Authenticate` and its answer an input, because the authenticator is async application code that runs in the driver. Amended 2026-11-01 (#31): the driver supplies the session ID with `Authenticated`, since generating it needs OS randomness.
+Decision record for roadmap C0.7 (#2). Status: accepted, 2026-09-21. Amended 2026-11-01 (#36): `poll_output` returns `None` when drained, and the next deadline comes from `poll_timeout`. Amended 2026-11-01 (#27): `now` is a `handle_input` argument, not a field of each input. Amended 2026-11-01 (#30): authentication is `Output::Authenticate` and its answer an input, because the authenticator is async application code that runs in the driver. Amended 2026-11-01 (#31): the driver supplies the session ID with `Authenticated`, since generating it needs OS randomness. Amended 2026-11-08 (#34): when the timer fires with a message already readable, the driver feeds the message, and the session handles input that arrives past a deadline itself.
 
 ## Decisions
 
@@ -110,6 +110,10 @@ Rules the driver must keep:
 - Drain `poll_output` until `None` after every input. A debug assertion fires if input arrives with outputs still queued.
 - Deliver inputs for one stream in order. Streams are independent.
 - Arm exactly one timer, for `poll_timeout()` read after draining, and feed `Input::Timeout` when it fires. `Session` computes the earliest of heartbeat, idle, handshake, deadlines and ack cadence.
+- When that timer fires while a whole message is already readable, feed the message instead of `Input::Timeout`. A late poll is the driver's delay, not the peer's silence. `Session` handles input that arrives at or past a deadline itself:
+  - past the handshake deadline, any input closes with HANDSHAKE_TIMEOUT;
+  - a message past the idle deadline is read and moves the deadline. Only `Input::Timeout` closes with IDLE_TIMEOUT, so a waiting CLOSE is mirrored;
+  - a message at or past the heartbeat deadline also sends the due PING, so a peer that keeps the driver busy still gets one every `hb` (spec 7.4).
 - On WebSocket, one `Transmit` is one binary message: the session already applied the `WsFrame` envelope, batched frames across streams, and respected the `2 x max_frame` cap. The driver never splits or merges.
 - On WebTransport, `Transmit.stream` names a QUIC stream the driver opened on `OpenStream`; the session never writes to a stream before asking for it.
 
