@@ -262,7 +262,9 @@ async fn first_recv(client: impl AsyncFnOnce(SocketAddr)) -> Option<bool> {
   let endpoint = Endpoint::new(Config::new(PATH), move |mut transport: Transport| {
     let sender = sender.clone();
     async move {
-      let _ = sender.send(transport.recv().await.map(|received| received.is_ok())).await;
+      let received = transport.recv().await.map(|received| received.is_ok());
+      let _ = transport.flush().await;
+      let _ = sender.send(received).await;
     }
   });
   let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

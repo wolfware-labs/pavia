@@ -203,6 +203,7 @@ async fn ends_on_an_abrupt_drop() {
 async fn ends_on_a_websocket_close_without_close_frame() {
   let (mut socket, ending) = connect(None).await;
   socket.close(None).await.unwrap();
+  assert!(matches!(socket.next().await, Some(Ok(Message::Close(_)))));
   assert_eq!(ending.await.unwrap(), Ending::TransportLost);
 }
 

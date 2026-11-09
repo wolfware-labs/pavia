@@ -296,8 +296,9 @@ impl Transport {
     &self.context
   }
 
-  /// The next data message, or `None` once the peer closed the WebSocket, after the close reply
-  /// is flushed, or the connection ended. WebSocket PING and PONG are answered and skipped here;
+  /// The next data message, or `None` once the peer closed the WebSocket or the connection ended.
+  /// The reply to a peer's close is queued, and [`flush`](Self::flush) sends it. Nothing is awaited
+  /// after a message is taken off the socket, so dropping this future loses no message. WebSocket PING and PONG are answered and skipped here;
   /// they are not Pavia's (§7.4). The PONG goes out when the loop reads again.
   ///
   /// # Errors
@@ -308,9 +309,7 @@ impl Transport {
       match self.socket.next().await? {
         Ok(Message::Binary(message)) => return Some(Ok(Received::Binary(message))),
         Ok(Message::Text(_)) => return Some(Ok(Received::Text)),
-        Ok(Message::Close(_)) => {
-          return self.socket.flush().await.err().map(|error| Err(error.into()));
-        }
+        Ok(Message::Close(_)) => return None,
         Ok(Message::Ping(_) | Message::Pong(_) | Message::Frame(_)) => {}
         Err(error) => return Some(Err(error.into())),
       }
@@ -324,6 +323,15 @@ impl Transport {
   /// A [`TransportError`] when the connection fails or is already closed.
   pub async fn send(&mut self, message: Bytes) -> Result<(), TransportError> {
     Ok(self.socket.send(Message::Binary(message)).await?)
+  }
+
+  /// Sends what is still queued, such as the reply to a peer's close.
+  ///
+  /// # Errors
+  ///
+  /// A [`TransportError`] when the connection fails or is already closed.
+  pub async fn flush(&mut self) -> Result<(), TransportError> {
+    Ok(self.socket.flush().await?)
   }
 
   /// Closes the WebSocket with the session close `code` as `4000 + code` (§4.3, §15.1) and

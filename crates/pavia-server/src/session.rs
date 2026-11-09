@@ -2,7 +2,8 @@
 //!
 //! [`run`] feeds every received message, transport event and [`Command`] into the session and
 //! carries out its outputs in order: a CLOSE frame is flushed before the transport closes (§7.7).
-//! It returns the session's [`Ending`], so each session reports its end exactly once (§13.4).
+//! It returns the session's [`Ending`], so each session reports its end exactly once (§13.4),
+//! after flushing what the transport still holds, such as the reply to a peer's WebSocket close.
 
 use std::future::Future;
 use std::io;
@@ -84,7 +85,10 @@ pub async fn run<A: Authenticator>(
           async move { authenticator.authenticate(auth.as_ref(), context).await },
         ));
       }
-      Step::Ended(ending) => return ending,
+      Step::Ended(ending) => {
+        let _ = transport.flush().await;
+        return ending;
+      }
     }
   }
 }
