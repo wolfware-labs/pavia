@@ -2,8 +2,7 @@
 //!
 //! [`run`] feeds every received message, transport event and [`Command`] into the session and
 //! carries out its outputs in order: a CLOSE frame is flushed before the transport closes (§7.7).
-//! It returns the session's [`Ending`], so each session reports its end exactly once (§13.4),
-//! after flushing what the transport still holds, such as the reply to a peer's WebSocket close.
+//! It returns the session's [`Ending`], so each session reports its end exactly once (§13.4).
 
 use std::future::Future;
 use std::io;
@@ -35,7 +34,8 @@ type Authenticating<'a> = Pin<Box<dyn Future<Output = Result<Principal, AuthFail
 /// first: a late poll of this task is not the peer's silence. Past the idle deadline, a waiting
 /// message moves it instead of ending the session with IDLE_TIMEOUT, and a waiting CLOSE is
 /// mirrored. Past the handshake deadline the session still closes with HANDSHAKE_TIMEOUT
-/// (§7.1). Time this task spends blocked on a write still counts as the peer's silence.
+/// (§7.1). Time this task spends blocked on a write still counts as the peer's silence, and
+/// nothing bounds a write to a peer that stops reading.
 ///
 /// The handshake timer starts at [`Transport::accepted`], before the upgrade. The clock is
 /// tokio's, so a test that pauses time drives the session's timers too.
@@ -85,10 +85,7 @@ pub async fn run<A: Authenticator>(
           async move { authenticator.authenticate(auth.as_ref(), context).await },
         ));
       }
-      Step::Ended(ending) => {
-        let _ = transport.flush().await;
-        return ending;
-      }
+      Step::Ended(ending) => return ending,
     }
   }
 }

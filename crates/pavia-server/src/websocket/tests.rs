@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::time::Duration;
 
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
@@ -237,6 +238,31 @@ async fn answers_a_ping_on_its_own() {
 }
 
 #[tokio::test]
+async fn reads_a_peer_close_while_the_reply_cannot_be_written() {
+  let (full, mut filled) = tokio::sync::mpsc::channel(1);
+  let (result, mut read) = tokio::sync::mpsc::channel(1);
+  let endpoint = Endpoint::new(Config::new(PATH), move |mut transport: Transport| {
+    let (full, result) = (full.clone(), result.clone());
+    async move {
+      let message = Bytes::from(vec![0; 1000]);
+      while tokio::time::timeout(Duration::from_millis(20), transport.send(message.clone()))
+        .await
+        .is_ok()
+      {}
+      full.send(()).await.unwrap();
+      let received = tokio::time::timeout(Duration::from_secs(1), transport.recv()).await;
+      result.send(received.ok().map(|received| received.is_none())).await.unwrap();
+    }
+  });
+  let (client, server) = tokio::io::duplex(4096);
+  tokio::spawn(async move { endpoint.serve_connection(server, None).await });
+  let (mut socket, _) = upgrade(client, PATH, &[SUBPROTOCOL]).await.unwrap();
+  filled.recv().await.unwrap();
+  socket.close(None).await.unwrap();
+  assert_eq!(read.recv().await.unwrap(), Some(true));
+}
+
+#[tokio::test]
 async fn serves_an_in_memory_connection() {
   let (client, server) = tokio::io::duplex(65_536);
   tokio::spawn(async move { endpoint().serve_connection(server, None).await });
@@ -262,9 +288,7 @@ async fn first_recv(client: impl AsyncFnOnce(SocketAddr)) -> Option<bool> {
   let endpoint = Endpoint::new(Config::new(PATH), move |mut transport: Transport| {
     let sender = sender.clone();
     async move {
-      let received = transport.recv().await.map(|received| received.is_ok());
-      let _ = transport.flush().await;
-      let _ = sender.send(received).await;
+      let _ = sender.send(transport.recv().await.map(|received| received.is_ok())).await;
     }
   });
   let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
