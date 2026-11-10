@@ -1,6 +1,8 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use pavia_proto::frame::Limits;
+use pavia_proto::session::Config as SessionConfig;
 use tokio::net::TcpListener;
 
 use crate::websocket::{Endpoint, Transport};
@@ -16,6 +18,12 @@ where
   let address = listener.local_addr().unwrap();
   tokio::spawn(endpoint.serve(listener));
   address
+}
+
+pub(crate) fn floor_frame() -> SessionConfig {
+  let mut config = SessionConfig::default();
+  config.max_frame = Limits::FLOOR;
+  config
 }
 
 pub(crate) fn has_ws_close(bytes: &[u8], code: u16) -> bool {

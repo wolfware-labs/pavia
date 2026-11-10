@@ -13,7 +13,7 @@ use std::pin::Pin;
 use futures_util::FutureExt;
 use pavia_proto::frame::Auth;
 use pavia_proto::registry::CloseCode;
-use pavia_proto::session::{Command, Ending, Input, Output, Session, ValidConfig};
+use pavia_proto::session::{Command, Ending, Input, Output, Session};
 use pavia_proto::session_id::SessionId;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, sleep_until};
@@ -39,15 +39,16 @@ type Authenticating<'a> = Pin<Box<dyn Future<Output = Result<Principal, AuthFail
 /// (§7.1). Time this task spends blocked on a write still counts as the peer's silence, and
 /// nothing bounds a write to a peer that stops reading.
 ///
-/// The handshake timer starts at [`Transport::accepted`], before the upgrade. The clock is
-/// tokio's, so a test that pauses time drives the session's timers too.
+/// The session is built from the configuration of the transport's endpoint
+/// ([`Config::session`](crate::websocket::Config::session)), so its limits and the transport's
+/// message cap come from one value. The handshake timer starts at [`Transport::accepted`], before
+/// the upgrade. The clock is tokio's, so a test that pauses time drives the session's timers too.
 pub async fn run<A: Authenticator>(
   mut transport: Transport,
   mut commands: mpsc::Receiver<Command>,
-  config: &ValidConfig,
   authenticator: &A,
 ) -> Ending {
-  let mut session = Session::server(config, transport.accepted().into_std());
+  let mut session = Session::server(transport.session(), transport.accepted().into_std());
   let context = transport.context().clone();
   let mut authenticating: Option<Authenticating<'_>> = None;
   let mut commands_open = true;

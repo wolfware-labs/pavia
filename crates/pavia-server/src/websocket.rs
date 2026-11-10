@@ -53,15 +53,16 @@ const LINGER: Duration = Duration::from_secs(1);
 
 /// Where the endpoint listens.
 ///
-/// The message cap comes from the session configuration only; setting it on its own does not
-/// compile:
+/// It carries the session configuration every transport hands to
+/// [`session::run`](crate::session::run), so the transport's message cap and the session's limits
+/// come from one [`ValidConfig`]. That configuration is set only by [`Config::new`]:
 ///
 /// ```compile_fail,E0616
 /// use pavia_proto::session::ValidConfig;
 /// use pavia_server::websocket::Config;
 ///
 /// let mut config = Config::new("/rt", &ValidConfig::default());
-/// config.max_message = 1;
+/// config.session = ValidConfig::default();
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -76,30 +77,35 @@ pub struct Config {
   /// handshake deadline still counts from accept ([`Transport::accepted`]), so time spent here
   /// comes out of it; keep this at or below the handshake timeout.
   pub header_read_timeout: Duration,
-  /// The session's [`ValidConfig::max_message`], read with [`Config::max_message`].
-  max_message: usize,
+  /// The configuration of the sessions on this endpoint, read with [`Config::session`].
+  session: ValidConfig,
 }
 
 impl Config {
-  /// An endpoint on `path` for sessions built from `session`, the same configuration
-  /// [`session::run`](crate::session::run) gets.
+  /// An endpoint on `path` whose sessions are built from `session`.
   #[must_use]
   pub fn new(path: impl Into<String>, session: &ValidConfig) -> Self {
     Self {
       path: path.into(),
       header_read_timeout: Duration::from_secs(10),
-      max_message: usize::try_from(session.max_message()).unwrap_or(usize::MAX),
+      session: session.clone(),
     }
   }
 
-  /// The largest WebSocket message a transport reads, in bytes: the session's
-  /// [`ValidConfig::max_message`], `2 × max_frame` (§4.3), fixed by [`Config::new`] so the transport
-  /// and the session cannot disagree. A WebSocket frame announcing more is refused from its header,
-  /// before its payload is buffered. A fragmented message is checked as each fragment arrives whole,
-  /// so a connection holds at most `2 × max_message` bytes of it before the refusal.
+  /// The configuration of the sessions on this endpoint.
   #[must_use]
-  pub const fn max_message(&self) -> usize {
-    self.max_message
+  pub fn session(&self) -> &ValidConfig {
+    &self.session
+  }
+
+  /// The largest WebSocket message a transport reads, in bytes: the session's
+  /// [`ValidConfig::max_message`], `2 × max_frame` (§4.3). A WebSocket frame announcing more is
+  /// refused from its header, before its payload is buffered. A fragmented message is checked as each
+  /// fragment arrives whole, so a connection holds at most `2 × max_message` bytes of it before the
+  /// refusal.
+  #[must_use]
+  pub fn max_message(&self) -> usize {
+    usize::try_from(self.session.max_message()).unwrap_or(usize::MAX)
   }
 }
 
@@ -191,9 +197,10 @@ where
     let upgrade = hyper::upgrade::on(&mut request);
     let context = RequestContext::new(request.headers().clone(), peer);
     let handler = self.handler.clone();
+    let config = Arc::clone(&self.config);
     let limits = WebSocketConfig::default()
-      .max_message_size(Some(self.config.max_message))
-      .max_frame_size(Some(self.config.max_message));
+      .max_message_size(Some(self.config.max_message()))
+      .max_frame_size(Some(self.config.max_message()));
     tokio::spawn(async move {
       if let Ok(upgraded) = upgrade.await {
         let socket = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Server, Some(limits)).await;
@@ -201,6 +208,7 @@ where
           socket,
           accepted,
           context,
+          config,
         })
         .await;
       }
@@ -318,6 +326,7 @@ pub struct Transport {
   socket: WebSocketStream<TokioIo<Upgraded>>,
   accepted: Instant,
   context: RequestContext,
+  config: Arc<Config>,
 }
 
 impl Transport {
@@ -326,6 +335,12 @@ impl Transport {
   #[must_use]
   pub const fn accepted(&self) -> Instant {
     self.accepted
+  }
+
+  /// The configuration of the session this transport is for, from its endpoint's [`Config`].
+  #[must_use]
+  pub(crate) fn session(&self) -> &ValidConfig {
+    self.config.session()
   }
 
   /// The upgrade request this transport arrived on.
@@ -337,9 +352,9 @@ impl Transport {
   /// The next data message, or `None` once the peer closed the WebSocket or the connection ended.
   /// The reply to a peer's close goes out at once when the socket can take it. When the send buffer
   /// is full at that moment, the reply and anything still queued are dropped with the transport,
-  /// even if the peer would read them a moment later. Nothing is awaited after a message is taken off the socket, so
-  /// dropping this future loses no message. WebSocket PING and PONG are answered and skipped here;
-  /// they are not Pavia's (§7.4). The PONG goes out when the loop reads again.
+  /// even if the peer would read them a moment later. Nothing is awaited after a message is taken off
+  /// the socket, so dropping this future loses no message. WebSocket PING and PONG are answered and
+  /// skipped here; they are not Pavia's (§7.4). The PONG goes out when the loop reads again.
   ///
   /// # Errors
   ///

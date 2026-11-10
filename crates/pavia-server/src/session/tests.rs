@@ -6,7 +6,7 @@ use std::time::Duration;
 use ciborium::Value;
 use futures_util::{SinkExt, StreamExt};
 use hyper::header::{self, HeaderValue};
-use pavia_proto::frame::{Auth, Limits};
+use pavia_proto::frame::Auth;
 use pavia_proto::registry::CloseCode;
 use pavia_proto::session::{Command, Config as SessionConfig, Ending, Input};
 use pavia_proto::session_id::SessionId;
@@ -23,7 +23,7 @@ use tokio_tungstenite::{WebSocketStream, client_async};
 
 use super::{authenticated, run};
 use crate::auth::{AuthFailure, Authenticator, Permissive, Principal, RequestContext};
-use crate::test_support::{EXPECT_WITHIN, has_ws_close, serve_on_loopback};
+use crate::test_support::{EXPECT_WITHIN, floor_frame, has_ws_close, serve_on_loopback};
 use crate::websocket::{Config, Endpoint, SUBPROTOCOL, Transport};
 
 type Socket = WebSocketStream<TcpStream>;
@@ -60,7 +60,6 @@ async fn listen_with<A: Authenticator + 'static>(
   let endpoint = Endpoint::new(Config::new("/rt", &config), move |transport: Transport| {
     let ended = ended.lock().unwrap().take();
     let command = command.clone();
-    let config = config.clone();
     let authenticator = Arc::clone(&authenticator);
     async move {
       let (commands, receiver) = mpsc::channel(1);
@@ -68,7 +67,7 @@ async fn listen_with<A: Authenticator + 'static>(
         commands.send(command).await.unwrap();
       }
       drop(commands);
-      let ending = run(transport, receiver, &config, &*authenticator).await;
+      let ending = run(transport, receiver, &*authenticator).await;
       if let Some(ended) = ended {
         let _ = ended.send(ending);
       }
@@ -720,12 +719,6 @@ async fn answers_a_ping_with_its_data() {
     socket.next().await.unwrap().unwrap(),
     Message::binary(heartbeat_frame(0x05, &data))
   );
-}
-
-fn floor_frame() -> SessionConfig {
-  let mut config = SessionConfig::default();
-  config.max_frame = Limits::FLOOR;
-  config
 }
 
 #[tokio::test]

@@ -26,12 +26,9 @@ async fn listen() -> SocketAddr {
   let mut config = SessionConfig::default();
   config.max_frame = Limits::FLOOR;
   let config = config.validate().unwrap();
-  let endpoint = Endpoint::new(Config::new("/rt", &config), move |transport: Transport| {
-    let config = config.clone();
-    async move {
-      let (_commands, receiver) = mpsc::channel(1);
-      run(transport, receiver, &config, &Permissive).await;
-    }
+  let endpoint = Endpoint::new(Config::new("/rt", &config), |transport: Transport| async move {
+    let (_commands, receiver) = mpsc::channel(1);
+    run(transport, receiver, &Permissive).await;
   });
   let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
   let address = listener.local_addr().unwrap();

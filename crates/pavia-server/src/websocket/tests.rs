@@ -18,7 +18,7 @@ use tokio_tungstenite::tungstenite::{self, Message};
 use tokio_tungstenite::{WebSocketStream, client_async};
 
 use super::{Config, Endpoint, Received, SUBPROTOCOL, Transport, is_key};
-use crate::test_support::{EXPECT_WITHIN, has_ws_close, serve_on_loopback};
+use crate::test_support::{EXPECT_WITHIN, floor_frame, has_ws_close, serve_on_loopback};
 
 const PATH: &str = "/rt";
 
@@ -375,9 +375,11 @@ async fn records_when_the_connection_was_accepted() {
   assert!(upgraded - accepted >= Duration::from_millis(90));
 }
 
-async fn capped(max_message: usize) -> WebSocketStream<TcpStream> {
-  let mut config = Config::new(PATH, &ValidConfig::default());
-  config.max_message = max_message;
+const CAP: usize = 131_072;
+
+async fn capped() -> WebSocketStream<TcpStream> {
+  let config = Config::new(PATH, &floor_frame().validate().unwrap());
+  assert_eq!(config.max_message(), CAP);
   let endpoint: Endpoint<fn(Transport) -> Session> = Endpoint::new(config, |transport| Box::pin(session(transport)));
   let stream = TcpStream::connect(serve_on_loopback(endpoint).await).await.unwrap();
   upgrade(stream, PATH, &[SUBPROTOCOL]).await.unwrap().0
@@ -398,11 +400,11 @@ async fn send_binary(socket: &mut WebSocketStream<TcpStream>, length: usize, fra
 #[tokio::test]
 async fn reads_a_message_at_the_cap_and_refuses_one_byte_more() {
   for fragmented in [false, true] {
-    let mut socket = capped(1_000).await;
-    send_binary(&mut socket, 1_000, fragmented).await;
+    let mut socket = capped().await;
+    send_binary(&mut socket, CAP, fragmented).await;
     let echo = socket.next().await.unwrap().unwrap();
-    assert_eq!(echo, Message::binary(vec![1; 1_000]), "fragmented: {fragmented}");
-    send_binary(&mut socket, 1_001, fragmented).await;
+    assert_eq!(echo, Message::binary(vec![1; CAP]), "fragmented: {fragmented}");
+    send_binary(&mut socket, CAP + 1, fragmented).await;
     let Some(Ok(Message::Close(Some(frame)))) = socket.next().await else {
       panic!("expected a close, fragmented: {fragmented}");
     };
@@ -412,10 +414,10 @@ async fn reads_a_message_at_the_cap_and_refuses_one_byte_more() {
 
 #[tokio::test]
 async fn refuses_a_frame_above_the_cap_from_its_header() {
-  let socket = capped(1_000).await;
+  let socket = capped().await;
   let mut stream = socket.into_inner();
-  let mut header = vec![0x82, 0xfe];
-  header.extend(1_001_u16.to_be_bytes());
+  let mut header = vec![0x82, 0xff];
+  header.extend((CAP as u64 + 1).to_be_bytes());
   header.extend([0x00; 4]);
   stream.write_all(&header).await.unwrap();
   let mut rest = Vec::new();
@@ -429,5 +431,7 @@ fn takes_the_message_cap_from_the_session() {
   let mut session = pavia_proto::session::Config::default();
   session.max_frame = 100_000;
   let session = session.validate().unwrap();
-  assert_eq!(Config::new(PATH, &session).max_message(), 200_000);
+  let config = Config::new(PATH, &session);
+  assert_eq!(config.max_message(), 200_000);
+  assert_eq!(config.session(), &session);
 }
