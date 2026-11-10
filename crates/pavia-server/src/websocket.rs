@@ -52,6 +52,17 @@ const MAX_CLOSE_REASON: usize = 123;
 const LINGER: Duration = Duration::from_secs(1);
 
 /// Where the endpoint listens.
+///
+/// The message cap comes from the session configuration only; setting it on its own does not
+/// compile:
+///
+/// ```compile_fail,E0616
+/// use pavia_proto::session::ValidConfig;
+/// use pavia_server::websocket::Config;
+///
+/// let mut config = Config::new("/rt", &ValidConfig::default());
+/// config.max_message = 1;
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Config {
@@ -65,12 +76,8 @@ pub struct Config {
   /// handshake deadline still counts from accept ([`Transport::accepted`]), so time spent here
   /// comes out of it; keep this at or below the handshake timeout.
   pub header_read_timeout: Duration,
-  /// The largest WebSocket message a transport reads, in bytes: the session's
-  /// [`ValidConfig::max_message`], `2 × max_frame` (§4.3). A WebSocket frame announcing more is
-  /// refused from its header, before its payload is buffered. A fragmented message is checked as
-  /// each fragment arrives whole, so a connection holds at most `2 × max_message` bytes of it
-  /// before the refusal.
-  pub max_message: usize,
+  /// The session's [`ValidConfig::max_message`], read with [`Config::max_message`].
+  max_message: usize,
 }
 
 impl Config {
@@ -83,6 +90,16 @@ impl Config {
       header_read_timeout: Duration::from_secs(10),
       max_message: usize::try_from(session.max_message()).unwrap_or(usize::MAX),
     }
+  }
+
+  /// The largest WebSocket message a transport reads, in bytes: the session's
+  /// [`ValidConfig::max_message`], `2 × max_frame` (§4.3), fixed by [`Config::new`] so the transport
+  /// and the session cannot disagree. A WebSocket frame announcing more is refused from its header,
+  /// before its payload is buffered. A fragmented message is checked as each fragment arrives whole,
+  /// so a connection holds at most `2 × max_message` bytes of it before the refusal.
+  #[must_use]
+  pub const fn max_message(&self) -> usize {
+    self.max_message
   }
 }
 

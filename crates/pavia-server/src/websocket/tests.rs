@@ -429,5 +429,5 @@ fn takes_the_message_cap_from_the_session() {
   let mut session = pavia_proto::session::Config::default();
   session.max_frame = 100_000;
   let session = session.validate().unwrap();
-  assert_eq!(Config::new(PATH, &session).max_message, 200_000);
+  assert_eq!(Config::new(PATH, &session).max_message(), 200_000);
 }
