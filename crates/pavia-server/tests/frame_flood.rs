@@ -1,6 +1,7 @@
 //! Heap use of the server under floods of oversized WebSocket frames, of WebSocket messages
-//! fragmented past `2 × max_frame`, and of Pavia Lengths above `max_frame` (§4.3, §5.2, §14). The test replaces the
-//! global allocator with a counting one, so it runs as a test binary of its own.
+//! fragmented past `2 × max_frame`, and of Pavia Lengths above `max_frame` (§4.3, §5.2, §14).
+//! The test replaces the global allocator with a counting one, so it runs as a test binary of its
+//! own.
 
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -112,7 +113,8 @@ fn keeps_memory_flat_under_floods_of_oversized_frames_and_messages() {
     announcement.extend([0x00; 16]);
     flood(address, &[(&announcement, 1)], 4001).await;
     let fragment = vec![0x00; 65_536];
-    let unfinished = [(&frame(0x02, &fragment)[..], 1), (&frame(0x00, &fragment)[..], 63)];
+    let fragments = ANNOUNCED as usize / fragment.len();
+    let unfinished = [(&frame(0x02, &fragment)[..], 1), (&frame(0x00, &fragment)[..], fragments - 1)];
     flood(address, &unfinished, 4001).await;
     let prefix_of_65537 = frame(0x82, &[0x00, 0x04, 0x00, 0x80, 0x01, 0x00, 0x01]);
     flood(address, &[(&prefix_of_65537, 1)], 4009).await;

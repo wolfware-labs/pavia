@@ -758,8 +758,7 @@ async fn closes_a_fragmented_message_above_twice_max_frame_with_protocol_error()
 
 fn notify_frame(payload_length: usize) -> Vec<u8> {
   let mut frame = vec![0x02, 0x20, 0x00];
-  frame.extend(u32::try_from(payload_length).unwrap().to_be_bytes());
-  frame[3] |= 0x80;
+  frame.extend((u32::try_from(payload_length).unwrap() | 0x8000_0000).to_be_bytes());
   let mut payload = vec![0x04, 0xa1, 0x02, 0x61, b'm'];
   payload.resize(payload_length, 0);
   frame.extend(payload);

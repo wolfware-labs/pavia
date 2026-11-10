@@ -68,8 +68,8 @@ pub struct Config {
   /// The largest WebSocket message a transport reads, in bytes: the session's
   /// [`ValidConfig::max_message`], `2 × max_frame` (§4.3). A WebSocket frame announcing more is
   /// refused from its header, before its payload is buffered. A fragmented message is checked as
-  /// each fragment arrives whole, so a connection holds at most two such frames' worth before the
-  /// refusal.
+  /// each fragment arrives whole, so a connection holds at most `2 × max_message` bytes of it
+  /// before the refusal.
   pub max_message: usize,
 }
 
@@ -88,7 +88,8 @@ impl Config {
 
 /// A WebSocket endpoint: answers HTTP/1.1 requests on its path and hands every accepted
 /// transport to `handler` on a task of its own. [`session::run`](crate::session::run) ends each
-/// transport with [`Transport::linger`]; a handler that does not use it should do the same.
+/// transport with [`Transport::linger`]; a handler that does not call `run` should end each
+/// transport with it too.
 #[derive(Debug)]
 pub struct Endpoint<H> {
   config: Arc<Config>,
@@ -283,8 +284,9 @@ pub enum Received {
   Binary(Bytes),
   /// A text message, which the session answers with PROTOCOL_ERROR (§4.3).
   Text,
-  /// A message above [`Config::max_message`], refused before it was buffered. The session answers
-  /// it with PROTOCOL_ERROR (§4.3); nothing more can be read.
+  /// A message above [`Config::max_message`], refused before it was buffered whole: from a frame
+  /// header, or from a fragment that takes it past the limit. The session answers it with
+  /// PROTOCOL_ERROR (§4.3); nothing more can be read.
   TooLarge,
 }
 

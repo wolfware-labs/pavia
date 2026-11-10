@@ -12,7 +12,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::handshake::client::Response;
-use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode as WsCloseCode;
+use tokio_tungstenite::tungstenite::protocol::frame::Frame;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::{CloseCode as WsCloseCode, Data, OpCode};
 use tokio_tungstenite::tungstenite::{self, Message};
 use tokio_tungstenite::{WebSocketStream, client_async};
 
@@ -382,4 +383,67 @@ async fn records_when_the_connection_was_accepted() {
   assert!(response.starts_with("HTTP/1.1 101 "), "{response}");
   let accepted = receiver.recv().await.unwrap();
   assert!(upgraded - accepted >= std::time::Duration::from_millis(90));
+}
+
+async fn capped(max_message: usize) -> WebSocketStream<TcpStream> {
+  let mut config = Config::new(PATH, &ValidConfig::default());
+  config.max_message = max_message;
+  let endpoint: Endpoint<fn(Transport) -> Session> = Endpoint::new(config, |transport| Box::pin(session(transport)));
+  let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+  let address = listener.local_addr().unwrap();
+  tokio::spawn(endpoint.serve(listener));
+  let stream = TcpStream::connect(address).await.unwrap();
+  upgrade(stream, PATH, &[SUBPROTOCOL]).await.unwrap().0
+}
+
+async fn send_binary(socket: &mut WebSocketStream<TcpStream>, length: usize, fragmented: bool) {
+  if fragmented {
+    let half = length / 2;
+    let first = Frame::message(vec![1; half], OpCode::Data(Data::Binary), false);
+    let rest = Frame::message(vec![1; length - half], OpCode::Data(Data::Continue), true);
+    socket.send(Message::Frame(first)).await.unwrap();
+    socket.send(Message::Frame(rest)).await.unwrap();
+  } else {
+    socket.send(Message::binary(vec![1; length])).await.unwrap();
+  }
+}
+
+#[tokio::test]
+async fn reads_a_message_at_the_cap_and_refuses_one_byte_more() {
+  for fragmented in [false, true] {
+    let mut socket = capped(1_000).await;
+    send_binary(&mut socket, 1_000, fragmented).await;
+    let echo = socket.next().await.unwrap().unwrap();
+    assert_eq!(echo, Message::binary(vec![1; 1_000]), "fragmented: {fragmented}");
+    send_binary(&mut socket, 1_001, fragmented).await;
+    let Some(Ok(Message::Close(Some(frame)))) = socket.next().await else {
+      panic!("expected a close, fragmented: {fragmented}");
+    };
+    assert_eq!(frame.code, WsCloseCode::from(4001), "fragmented: {fragmented}");
+  }
+}
+
+#[tokio::test]
+async fn refuses_a_frame_above_the_cap_from_its_header() {
+  let socket = capped(1_000).await;
+  let mut stream = socket.into_inner();
+  stream
+    .write_all(&[0x82, 0xfe, 0x03, 0xe9, 0x00, 0x00, 0x00, 0x00])
+    .await
+    .unwrap();
+  let mut rest = Vec::new();
+  let read = tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut rest)).await;
+  assert!(read.is_ok(), "the server waited for the payload");
+  assert!(
+    rest.windows(4).any(|window| window[0] == 0x88 && window[2..] == [0x0f, 0xa1]),
+    "{rest:02x?}"
+  );
+}
+
+#[test]
+fn takes_the_message_cap_from_the_session() {
+  let mut session = pavia_proto::session::Config::default();
+  session.max_frame = 100_000;
+  let session = session.validate().unwrap();
+  assert_eq!(Config::new(PATH, &session).max_message, 200_000);
 }
