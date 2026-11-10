@@ -12,7 +12,7 @@ use pavia_proto::session::{Command, Config as SessionConfig, Ending, Input};
 use pavia_proto::session_id::SessionId;
 use pavia_proto::stream::Side;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::frame::Frame;
@@ -23,6 +23,7 @@ use tokio_tungstenite::{WebSocketStream, client_async};
 
 use super::{authenticated, run};
 use crate::auth::{AuthFailure, Authenticator, Permissive, Principal, RequestContext};
+use crate::test_support::{EXPECT_WITHIN, has_ws_close, serve_on_loopback};
 use crate::websocket::{Config, Endpoint, SUBPROTOCOL, Transport};
 
 type Socket = WebSocketStream<TcpStream>;
@@ -73,10 +74,7 @@ async fn listen_with<A: Authenticator + 'static>(
       }
     }
   });
-  let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-  let address = listener.local_addr().unwrap();
-  tokio::spawn(endpoint.serve(listener));
-  (address, ending)
+  (serve_on_loopback(endpoint).await, ending)
 }
 
 async fn connect_with(command: Option<Command>, config: SessionConfig) -> (Socket, oneshot::Receiver<Ending>) {
@@ -340,7 +338,7 @@ async fn closes_a_slow_hello_with_handshake_timeout() {
     "Sec-WebSocket-Protocol: pavia.1\r\n\r\n",
   );
   stream.write_all(request.as_bytes()).await.unwrap();
-  let head = tokio::time::timeout(Duration::from_secs(5), async {
+  let head = tokio::time::timeout(EXPECT_WITHIN, async {
     let mut received = Vec::new();
     while !received.ends_with(b"\r\n\r\n") {
       received.push(stream.read_u8().await.unwrap());
@@ -358,10 +356,9 @@ async fn closes_a_slow_hello_with_handshake_timeout() {
     tokio::time::sleep(Duration::from_millis(60)).await;
   }
   let mut rest = Vec::new();
-  let read = tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut rest)).await;
+  let read = tokio::time::timeout(EXPECT_WITHIN, stream.read_to_end(&mut rest)).await;
   assert!(read.is_ok(), "the server never closed the connection");
-  let close_4012 = rest.windows(4).any(|window| window[0] == 0x88 && window[2..] == [0x0f, 0xac]);
-  assert!(close_4012, "{rest:02x?}");
+  assert!(has_ws_close(&rest, 4012), "{rest:02x?}");
   assert!(matches!(
     ending.await.unwrap(),
     Ending::Closed {
@@ -551,7 +548,7 @@ async fn keeps_reading_the_transport_while_the_authenticator_runs() {
   let authenticator = Recording::answering(None);
   let (mut socket, _, ending) = connect_to(Arc::clone(&authenticator), SessionConfig::default()).await;
   socket.send(Message::binary(bearer_hello())).await.unwrap();
-  tokio::time::timeout(Duration::from_secs(5), async {
+  tokio::time::timeout(EXPECT_WITHIN, async {
     while authenticator.seen().is_empty() {
       tokio::time::sleep(Duration::from_millis(5)).await;
     }

@@ -9,7 +9,7 @@ use hyper::header::{self, HeaderValue};
 use pavia_proto::registry::CloseCode;
 use pavia_proto::session::ValidConfig;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::handshake::client::Response;
 use tokio_tungstenite::tungstenite::protocol::frame::Frame;
@@ -18,6 +18,7 @@ use tokio_tungstenite::tungstenite::{self, Message};
 use tokio_tungstenite::{WebSocketStream, client_async};
 
 use super::{Config, Endpoint, Received, SUBPROTOCOL, Transport, is_key};
+use crate::test_support::{EXPECT_WITHIN, has_ws_close, serve_on_loopback};
 
 const PATH: &str = "/rt";
 
@@ -55,10 +56,7 @@ fn endpoint() -> Endpoint<fn(Transport) -> Session> {
 }
 
 async fn listen() -> SocketAddr {
-  let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-  let address = listener.local_addr().unwrap();
-  tokio::spawn(endpoint().serve(listener));
-  address
+  serve_on_loopback(endpoint()).await
 }
 
 async fn upgrade<S>(io: S, path: &str, offers: &[&str]) -> Result<(WebSocketStream<S>, Response), tungstenite::Error>
@@ -300,10 +298,7 @@ async fn first_recv(client: impl AsyncFnOnce(SocketAddr)) -> Option<bool> {
       let _ = sender.send(transport.recv().await.map(|received| received.is_ok())).await;
     }
   });
-  let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-  let address = listener.local_addr().unwrap();
-  tokio::spawn(endpoint.serve(listener));
-  client(address).await;
+  client(serve_on_loopback(endpoint).await).await;
   receiver.recv().await.unwrap()
 }
 
@@ -342,18 +337,16 @@ async fn reports_a_broken_frame_as_an_error() {
 #[tokio::test]
 async fn drops_a_connection_that_stalls_before_the_request_head() {
   let mut config = Config::new(PATH, &ValidConfig::default());
-  config.header_read_timeout = std::time::Duration::from_millis(200);
+  config.header_read_timeout = Duration::from_millis(200);
   let endpoint: Endpoint<fn(Transport) -> Session> = Endpoint::new(config, |transport| Box::pin(session(transport)));
-  let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-  let address = listener.local_addr().unwrap();
-  tokio::spawn(endpoint.serve(listener));
+  let address = serve_on_loopback(endpoint).await;
   let started = std::time::Instant::now();
   let mut stream = TcpStream::connect(address).await.unwrap();
   stream.write_all(b"GET /rt HTTP/1.1\r\n").await.unwrap();
   let mut rest = Vec::new();
-  let read = tokio::time::timeout(std::time::Duration::from_secs(5), stream.read_to_end(&mut rest)).await;
+  let read = tokio::time::timeout(EXPECT_WITHIN, stream.read_to_end(&mut rest)).await;
   assert!(read.is_ok(), "the connection stayed open");
-  assert!(started.elapsed() >= std::time::Duration::from_millis(200));
+  assert!(started.elapsed() >= Duration::from_millis(200));
 }
 
 #[tokio::test]
@@ -365,11 +358,8 @@ async fn records_when_the_connection_was_accepted() {
       let _ = sender.send(transport.accepted()).await;
     }
   });
-  let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-  let address = listener.local_addr().unwrap();
-  tokio::spawn(endpoint.serve(listener));
-  let mut stream = TcpStream::connect(address).await.unwrap();
-  tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+  let mut stream = TcpStream::connect(serve_on_loopback(endpoint).await).await.unwrap();
+  tokio::time::sleep(Duration::from_millis(100)).await;
   let upgraded = tokio::time::Instant::now();
   let response = head(
     &mut stream,
@@ -382,17 +372,14 @@ async fn records_when_the_connection_was_accepted() {
   .await;
   assert!(response.starts_with("HTTP/1.1 101 "), "{response}");
   let accepted = receiver.recv().await.unwrap();
-  assert!(upgraded - accepted >= std::time::Duration::from_millis(90));
+  assert!(upgraded - accepted >= Duration::from_millis(90));
 }
 
 async fn capped(max_message: usize) -> WebSocketStream<TcpStream> {
   let mut config = Config::new(PATH, &ValidConfig::default());
   config.max_message = max_message;
   let endpoint: Endpoint<fn(Transport) -> Session> = Endpoint::new(config, |transport| Box::pin(session(transport)));
-  let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-  let address = listener.local_addr().unwrap();
-  tokio::spawn(endpoint.serve(listener));
-  let stream = TcpStream::connect(address).await.unwrap();
+  let stream = TcpStream::connect(serve_on_loopback(endpoint).await).await.unwrap();
   upgrade(stream, PATH, &[SUBPROTOCOL]).await.unwrap().0
 }
 
@@ -427,17 +414,14 @@ async fn reads_a_message_at_the_cap_and_refuses_one_byte_more() {
 async fn refuses_a_frame_above_the_cap_from_its_header() {
   let socket = capped(1_000).await;
   let mut stream = socket.into_inner();
-  stream
-    .write_all(&[0x82, 0xfe, 0x03, 0xe9, 0x00, 0x00, 0x00, 0x00])
-    .await
-    .unwrap();
+  let mut header = vec![0x82, 0xfe];
+  header.extend(1_001_u16.to_be_bytes());
+  header.extend([0x00; 4]);
+  stream.write_all(&header).await.unwrap();
   let mut rest = Vec::new();
-  let read = tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut rest)).await;
+  let read = tokio::time::timeout(EXPECT_WITHIN, stream.read_to_end(&mut rest)).await;
   assert!(read.is_ok(), "the server waited for the payload");
-  assert!(
-    rest.windows(4).any(|window| window[0] == 0x88 && window[2..] == [0x0f, 0xa1]),
-    "{rest:02x?}"
-  );
+  assert!(has_ws_close(&rest, 4001), "{rest:02x?}");
 }
 
 #[test]
