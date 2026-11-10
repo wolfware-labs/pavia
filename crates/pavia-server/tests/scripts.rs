@@ -4,6 +4,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use pavia_proto::registry::CloseCode;
+use pavia_proto::session::ValidConfig;
 use pavia_server::websocket::{Config, Endpoint, Received, Transport};
 use runner::{Failure, Mode, Script, Verdict};
 use serde_json::{Value, json};
@@ -27,7 +28,9 @@ async fn echo(mut transport: Transport) {
 }
 
 fn endpoint() -> Endpoint<fn(Transport) -> Session> {
-  Endpoint::new(Config::new("/rt"), |transport| Box::pin(echo(transport)))
+  Endpoint::new(Config::new("/rt", &ValidConfig::default()), |transport| {
+    Box::pin(echo(transport))
+  })
 }
 
 fn script(steps: Value) -> Script {

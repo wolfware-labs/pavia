@@ -7,6 +7,7 @@ use futures_util::{SinkExt, StreamExt};
 use hyper::StatusCode;
 use hyper::header::{self, HeaderValue};
 use pavia_proto::registry::CloseCode;
+use pavia_proto::session::ValidConfig;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -32,6 +33,10 @@ async fn session(mut transport: Transport) {
       }
       Received::Binary(message) => transport.send(message).await,
       Received::Text => transport.send(Bytes::from_static(b"text")).await,
+      Received::TooLarge => {
+        let _ = transport.close(CloseCode::ProtocolError, "").await;
+        return;
+      }
     };
     if sent.is_err() {
       return;
@@ -42,7 +47,9 @@ async fn session(mut transport: Transport) {
 type Session = Pin<Box<dyn Future<Output = ()> + Send>>;
 
 fn endpoint() -> Endpoint<fn(Transport) -> Session> {
-  Endpoint::new(Config::new(PATH), |transport| Box::pin(session(transport)))
+  Endpoint::new(Config::new(PATH, &ValidConfig::default()), |transport| {
+    Box::pin(session(transport))
+  })
 }
 
 async fn listen() -> SocketAddr {
@@ -241,7 +248,7 @@ async fn answers_a_ping_on_its_own() {
 async fn reads_a_peer_close_while_the_reply_cannot_be_written() {
   let (full, mut filled) = tokio::sync::mpsc::channel(1);
   let (result, mut read) = tokio::sync::mpsc::channel(1);
-  let endpoint = Endpoint::new(Config::new(PATH), move |mut transport: Transport| {
+  let endpoint = Endpoint::new(Config::new(PATH, &ValidConfig::default()), move |mut transport: Transport| {
     let (full, result) = (full.clone(), result.clone());
     async move {
       let message = Bytes::from(vec![0; 1000]);
@@ -285,7 +292,7 @@ fn checks_the_key_shape() {
 
 async fn first_recv(client: impl AsyncFnOnce(SocketAddr)) -> Option<bool> {
   let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
-  let endpoint = Endpoint::new(Config::new(PATH), move |mut transport: Transport| {
+  let endpoint = Endpoint::new(Config::new(PATH, &ValidConfig::default()), move |mut transport: Transport| {
     let sender = sender.clone();
     async move {
       let _ = sender.send(transport.recv().await.map(|received| received.is_ok())).await;
@@ -332,7 +339,7 @@ async fn reports_a_broken_frame_as_an_error() {
 
 #[tokio::test]
 async fn drops_a_connection_that_stalls_before_the_request_head() {
-  let mut config = Config::new(PATH);
+  let mut config = Config::new(PATH, &ValidConfig::default());
   config.header_read_timeout = std::time::Duration::from_millis(200);
   let endpoint: Endpoint<fn(Transport) -> Session> = Endpoint::new(config, |transport| Box::pin(session(transport)));
   let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -350,7 +357,7 @@ async fn drops_a_connection_that_stalls_before_the_request_head() {
 #[tokio::test]
 async fn records_when_the_connection_was_accepted() {
   let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
-  let endpoint = Endpoint::new(Config::new(PATH), move |transport: Transport| {
+  let endpoint = Endpoint::new(Config::new(PATH, &ValidConfig::default()), move |transport: Transport| {
     let sender = sender.clone();
     async move {
       let _ = sender.send(transport.accepted()).await;

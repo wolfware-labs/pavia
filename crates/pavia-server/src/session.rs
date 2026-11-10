@@ -2,7 +2,9 @@
 //!
 //! [`run`] feeds every received message, transport event and [`Command`] into the session and
 //! carries out its outputs in order: a CLOSE frame is flushed before the transport closes (§7.7).
-//! It returns the session's [`Ending`], so each session reports its end exactly once (§13.4).
+//! It returns the session's [`Ending`], so each session reports its end exactly once (§13.4), and
+//! leaves the connection to linger on a task of its own, so the peer reads the close before the
+//! connection drops.
 
 use std::future::Future;
 use std::io;
@@ -85,7 +87,10 @@ pub async fn run<A: Authenticator>(
           async move { authenticator.authenticate(auth.as_ref(), context).await },
         ));
       }
-      Step::Ended(ending) => return ending,
+      Step::Ended(ending) => {
+        tokio::spawn(transport.linger());
+        return ending;
+      }
     }
   }
 }
@@ -94,6 +99,7 @@ fn received_input(received: Option<Result<Received, TransportError>>) -> Input {
   match received {
     Some(Ok(Received::Binary(message))) => Input::Message(message),
     Some(Ok(Received::Text)) => Input::TextMessage,
+    Some(Ok(Received::TooLarge)) => Input::MessageTooLarge,
     Some(Err(_)) | None => Input::TransportLost,
   }
 }

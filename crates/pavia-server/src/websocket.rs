@@ -29,14 +29,16 @@ use hyper::upgrade::Upgraded;
 use hyper::{Method, Request, Response, StatusCode, Version};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use pavia_proto::registry::CloseCode;
-use tokio::io::{AsyncRead, AsyncWrite};
+use pavia_proto::session::ValidConfig;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::time::Instant;
 use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::tungstenite::error::CapacityError;
 use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
-use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::protocol::frame::CloseFrame;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode as WsCloseCode;
+use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
 use tokio_tungstenite::tungstenite::{self, Message};
 
 use crate::auth::RequestContext;
@@ -47,6 +49,7 @@ pub const SUBPROTOCOL: &str = "pavia.1";
 const WEBSOCKET_VERSION: &str = "13";
 const CLOSE_CODE_OFFSET: u16 = 4000;
 const MAX_CLOSE_REASON: usize = 123;
+const LINGER: Duration = Duration::from_secs(1);
 
 /// Where the endpoint listens.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,15 +65,21 @@ pub struct Config {
   /// handshake deadline still counts from accept ([`Transport::accepted`]), so time spent here
   /// comes out of it; keep this at or below the handshake timeout.
   pub header_read_timeout: Duration,
+  /// The largest WebSocket message a transport reads, in bytes: the session's
+  /// [`ValidConfig::max_message`], `2 × max_frame` (§4.3). A longer message, or a single WebSocket
+  /// frame announcing more, is refused from its header, before its payload is buffered.
+  pub max_message: usize,
 }
 
 impl Config {
-  /// An endpoint on `path`.
+  /// An endpoint on `path` for sessions built from `session`, the same configuration
+  /// [`session::run`](crate::session::run) gets.
   #[must_use]
-  pub fn new(path: impl Into<String>) -> Self {
+  pub fn new(path: impl Into<String>, session: &ValidConfig) -> Self {
     Self {
       path: path.into(),
       header_read_timeout: Duration::from_secs(10),
+      max_message: usize::try_from(session.max_message()).unwrap_or(usize::MAX),
     }
   }
 }
@@ -161,9 +170,12 @@ where
     let upgrade = hyper::upgrade::on(&mut request);
     let context = RequestContext::new(request.headers().clone(), peer);
     let handler = self.handler.clone();
+    let limits = WebSocketConfig::default()
+      .max_message_size(Some(self.config.max_message))
+      .max_frame_size(Some(self.config.max_message));
     tokio::spawn(async move {
       if let Ok(upgraded) = upgrade.await {
-        let socket = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Server, None).await;
+        let socket = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Server, Some(limits)).await;
         handler(Transport {
           socket,
           accepted,
@@ -267,6 +279,9 @@ pub enum Received {
   Binary(Bytes),
   /// A text message, which the session answers with PROTOCOL_ERROR (§4.3).
   Text,
+  /// A message above [`Config::max_message`], refused before it was buffered. The session answers
+  /// it with PROTOCOL_ERROR (§4.3); nothing more can be read.
+  TooLarge,
 }
 
 /// Error from the WebSocket connection under a [`Transport`].
@@ -316,6 +331,7 @@ impl Transport {
           return None;
         }
         Ok(Message::Ping(_) | Message::Pong(_) | Message::Frame(_)) => {}
+        Err(tungstenite::Error::Capacity(CapacityError::MessageTooLong { .. })) => return Some(Ok(Received::TooLarge)),
         Err(error) => return Some(Err(error.into())),
       }
     }
@@ -342,6 +358,18 @@ impl Transport {
       reason: truncate(reason, MAX_CLOSE_REASON).into(),
     };
     Ok(self.socket.close(Some(frame)).await?)
+  }
+
+  /// Ends the connection: shuts down the write side, so the peer reads everything sent and then
+  /// end of stream, and reads and drops what the peer still sends until it closes or one second
+  /// has passed. Dropping a TCP connection with unread bytes makes the operating system reset it,
+  /// and the peer can lose a close frame it has not read yet, as after a message refused for
+  /// its size.
+  pub(crate) async fn linger(mut self) {
+    let io = self.socket.get_mut();
+    let _ = io.shutdown().await;
+    let mut discarded = [0; 4096];
+    let _ = tokio::time::timeout(LINGER, async { while matches!(io.read(&mut discarded).await, Ok(1..)) {} }).await;
   }
 }
 

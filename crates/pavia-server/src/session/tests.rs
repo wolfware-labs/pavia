@@ -15,7 +15,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::protocol::frame::Frame;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode as WsCloseCode;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::{Data, OpCode};
 use tokio_tungstenite::tungstenite::{Message, Utf8Bytes};
 use tokio_tungstenite::{WebSocketStream, client_async};
 
@@ -54,7 +56,7 @@ async fn listen_with<A: Authenticator + 'static>(
   let config = config.validate().unwrap();
   let (ended, ending) = oneshot::channel();
   let ended = Arc::new(Mutex::new(Some(ended)));
-  let endpoint = Endpoint::new(Config::new("/rt"), move |transport: Transport| {
+  let endpoint = Endpoint::new(Config::new("/rt", &config), move |transport: Transport| {
     let ended = ended.lock().unwrap().take();
     let command = command.clone();
     let config = config.clone();
@@ -728,4 +730,68 @@ async fn answers_a_ping_with_its_data() {
     socket.next().await.unwrap().unwrap(),
     Message::binary(heartbeat_frame(0x05, &data))
   );
+}
+
+fn floor_frame() -> SessionConfig {
+  let mut config = SessionConfig::default();
+  config.max_frame = 65_536;
+  config
+}
+
+async fn closed_by_server(socket: &mut Socket, ending: oneshot::Receiver<Ending>, code: CloseCode) {
+  let (binary, ws_code, _) = closed(socket).await;
+  assert_eq!(binary, [close_frame(u8::try_from(u16::from(code)).unwrap())]);
+  assert_eq!(ws_code, WsCloseCode::from(4000 + u16::from(code)));
+  let end = tokio::time::timeout(Duration::from_millis(500), socket.next()).await;
+  assert!(matches!(end, Ok(None)), "{end:?}");
+  assert!(matches!(
+    ending.await.unwrap(),
+    Ending::Closed { code: ended, by: Side::Server, .. } if ended == code
+  ));
+}
+
+#[tokio::test]
+async fn closes_a_length_above_max_frame_with_frame_too_large_from_the_prefix() {
+  let (mut socket, ending) = connect_with(None, floor_frame()).await;
+  let prefix_of_65537 = vec![0x00, 0x04, 0x00, 0x80, 0x01, 0x00, 0x01];
+  socket.send(Message::binary(prefix_of_65537)).await.unwrap();
+  closed_by_server(&mut socket, ending, CloseCode::FrameTooLarge).await;
+}
+
+#[tokio::test]
+async fn closes_a_message_above_twice_max_frame_with_protocol_error() {
+  let (mut socket, ending) = connect_with(None, floor_frame()).await;
+  socket.send(Message::binary(vec![0; 131_073])).await.unwrap();
+  closed_by_server(&mut socket, ending, CloseCode::ProtocolError).await;
+}
+
+#[tokio::test]
+async fn closes_a_fragmented_message_above_twice_max_frame_with_protocol_error() {
+  let (mut socket, ending) = connect_with(None, floor_frame()).await;
+  let first = Frame::message(vec![0; 70_000], OpCode::Data(Data::Binary), false);
+  let second = Frame::message(vec![0; 70_000], OpCode::Data(Data::Continue), true);
+  socket.send(Message::Frame(first)).await.unwrap();
+  socket.send(Message::Frame(second)).await.unwrap();
+  closed_by_server(&mut socket, ending, CloseCode::ProtocolError).await;
+}
+
+#[tokio::test]
+async fn accepts_a_max_frame_payload_pipelined_behind_hello() {
+  let (mut socket, ending) = connect_with(None, floor_frame()).await;
+  let mut message = hello_frame();
+  message.extend([0x02, 0x20, 0x00, 0x80, 0x01, 0x00, 0x00]);
+  let notify_payload_start = [0x04, 0xa1, 0x02, 0x61, b'm'];
+  message.extend(notify_payload_start);
+  message.resize(message.len() + 65_536 - notify_payload_start.len(), 0);
+  socket.send(Message::binary(message)).await.unwrap();
+  assert_eq!(next_welcome(&mut socket).await.len(), 7);
+  socket.send(Message::binary(close_frame(0))).await.unwrap();
+  assert!(mirrored_client_close(&mut socket, ending).await.is_empty());
+}
+
+#[tokio::test]
+async fn delivers_the_close_to_a_client_still_sending_a_refused_message() {
+  let (mut socket, ending) = connect_with(None, floor_frame()).await;
+  socket.send(Message::binary(vec![0; 4 << 20])).await.unwrap();
+  closed_by_server(&mut socket, ending, CloseCode::ProtocolError).await;
 }

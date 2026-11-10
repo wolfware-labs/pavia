@@ -7,6 +7,7 @@ use thiserror::Error;
 
 use crate::data::Codec;
 use crate::frame::{Limits, ServerLimits};
+use crate::wire::envelope;
 
 /// Session settings chosen by the application. [`Config::validate`] turns them into the
 /// [`ValidConfig`] a session is built from, so a WELCOME never advertises a value the spec
@@ -123,6 +124,14 @@ impl Config {
 pub struct ValidConfig(pub(super) Config);
 
 impl ValidConfig {
+  /// The largest WebSocket message the session accepts, `2 × max_frame` bytes (§4.3). The
+  /// transport must refuse a longer message before buffering it and report
+  /// [`Input::MessageTooLarge`](super::Input::MessageTooLarge).
+  #[must_use]
+  pub fn max_message(&self) -> u64 {
+    envelope::message_limit(self.0.max_frame)
+  }
+
   pub(super) fn limits(&self) -> ServerLimits {
     ServerLimits {
       max_calls: self.0.max_calls,

@@ -1198,9 +1198,11 @@ fn item(len: usize) -> Bytes {
 }
 
 #[test]
-fn takes_frames_up_to_the_advertised_max_frame_after_welcome() {
+fn takes_frames_up_to_the_configured_max_frame_before_and_after_welcome() {
   let mut session = greeted();
   session.feed(Input::Message(item(70_000)));
+  assert_eq!(drain(&mut session), []);
+  session.feed(Input::Message(item(1 << 20)));
   assert!(ended_with(&mut session, CloseCode::FrameTooLarge));
   let (mut session, _) = welcomed(None);
   session.feed(Input::Message(item(70_000)));
@@ -1260,4 +1262,66 @@ fn sends_close_ahead_of_queued_frames_and_drops_them() {
   };
   assert_eq!(frames(first), [(0, pong(b"\x01"))]);
   assert_eq!(frames(second), [(0, close(1, None))]);
+}
+
+fn floor_config() -> ValidConfig {
+  Config {
+    max_frame: MAX_FRAME_FLOOR,
+    ..Config::default()
+  }
+  .validate()
+  .unwrap()
+}
+
+fn prefix(stream: u64, frame_type: u8, length: u64) -> Vec<u8> {
+  let mut out = BytesMut::new();
+  varint::encode(stream, &mut out).unwrap();
+  out.extend_from_slice(&[frame_type, 0x00]);
+  varint::encode(length, &mut out).unwrap();
+  out.to_vec()
+}
+
+fn notify(stream: u64, payload_length: u64) -> Vec<u8> {
+  let mut out = prefix(stream, 0x20, payload_length);
+  let mut payload = vec![0x04, 0xa1, 0x02, 0x61, b'm'];
+  payload.resize(usize::try_from(payload_length).unwrap(), 0);
+  out.extend(payload);
+  out
+}
+
+#[test]
+fn accepts_a_max_frame_payload_pipelined_behind_hello_at_the_floor() {
+  let mut session = Session::server(&floor_config(), Instant::now());
+  let mut bytes = message(&[(0, Frame::Hello(hello()))]).to_vec();
+  bytes.extend(notify(2, MAX_FRAME_FLOOR));
+  session.feed(Input::Message(Bytes::from(bytes)));
+  assert_eq!(drain(&mut session), ANONYMOUS);
+}
+
+#[test]
+fn closes_with_frame_too_large_on_a_length_above_max_frame_from_the_prefix_alone() {
+  let mut session = Session::server(&floor_config(), Instant::now());
+  session.feed(Input::Message(Bytes::from(prefix(0, 0x04, MAX_FRAME_FLOOR + 1))));
+  assert!(ended_with(&mut session, CloseCode::FrameTooLarge));
+}
+
+#[test]
+fn closes_with_protocol_error_on_a_message_above_twice_max_frame() {
+  let mut session = Session::server(&floor_config(), Instant::now());
+  let length = usize::try_from(2 * MAX_FRAME_FLOOR + 1).unwrap();
+  session.feed(Input::Message(Bytes::from(vec![0; length])));
+  assert!(ended_with(&mut session, CloseCode::ProtocolError));
+}
+
+#[test]
+fn closes_with_protocol_error_when_the_transport_refuses_a_message() {
+  let mut session = server();
+  session.feed(Input::MessageTooLarge);
+  assert!(ended_with(&mut session, CloseCode::ProtocolError));
+}
+
+#[test]
+fn allows_messages_of_twice_max_frame() {
+  assert_eq!(floor_config().max_message(), 131_072);
+  assert_eq!(ValidConfig::default().max_message(), 2 << 20);
 }

@@ -37,6 +37,9 @@
 //! that need no answer still gets one every `hb` (§7.4).
 //!
 //! Every ending yields exactly one [`Output::Ended`], and after it the session ignores all input.
+//! Every message, HELLO and frames pipelined behind it included, is checked against the
+//! configured `max_frame`: a Length above it closes with FRAME_TOO_LARGE before any payload byte
+//! is read (§5.2), and a message above [`ValidConfig::max_message`] with PROTOCOL_ERROR (§4.3).
 //! A text message is a PROTOCOL_ERROR in every state (§4.3). Frames the client pipelines before
 //! WELCOME are dropped until the pre-authentication buffer exists (#40). After WELCOME every frame
 //! passes [`caps::check`] and is otherwise ignored until its feature lands.
@@ -58,7 +61,7 @@ use crate::negotiate;
 use crate::registry::CloseCode;
 use crate::session_id::SessionId;
 use crate::stream::Side;
-use crate::wire::envelope::{self, MAX_FRAME_FLOOR};
+use crate::wire::envelope;
 use crate::wire::header::DecodeLimits;
 use crate::wire::varint;
 
@@ -76,6 +79,9 @@ pub enum Input {
   Message(Bytes),
   /// A text WebSocket message, which closes the session with PROTOCOL_ERROR at any point (§4.3).
   TextMessage,
+  /// A WebSocket message above `2 × max_frame` that the transport refused before buffering it,
+  /// which closes the session with PROTOCOL_ERROR (§4.3).
+  MessageTooLarge,
   /// The transport closed or failed without CLOSE.
   TransportLost,
   /// The time from [`Session::poll_timeout`] has come.
@@ -213,7 +219,6 @@ pub struct Session {
   local: Side,
   now: Instant,
   config: ValidConfig,
-  max_frame: u64,
   limits: DecodeLimits,
   state: State,
   outputs: VecDeque<Output>,
@@ -229,7 +234,6 @@ impl Session {
       local: Side::Server,
       now,
       config: config.clone(),
-      max_frame: MAX_FRAME_FLOOR,
       limits: DecodeLimits::default(),
       state: State::AwaitHello {
         deadline: now + config.0.handshake_timeout,
@@ -285,6 +289,7 @@ impl Session {
     match input {
       Input::TransportLost => self.end(Ending::TransportLost),
       Input::TextMessage => self.fail(&ProtocolError::TextMessage),
+      Input::MessageTooLarge => self.fail(&ProtocolError::MessageTooLarge),
       Input::Command(Command::Close { code, msg }) => self.close(code, msg),
       Input::Message(_) | Input::Timeout | Input::Authenticated { .. } | Input::AuthFailed(_) if expired => {
         self.close(CloseCode::HandshakeTimeout, None);
@@ -323,7 +328,7 @@ impl Session {
     if let State::Established { idle_at, .. } = &mut self.state {
       *idle_at = self.now + self.config.0.idle_timeout;
     }
-    let frames = match envelope::decode_message(message, self.max_frame) {
+    let frames = match envelope::decode_message(message, self.config.0.max_frame) {
       Ok(frames) => frames,
       Err(error) => return self.fail(&error),
     };
@@ -418,7 +423,6 @@ impl Session {
       ping_at: self.now,
       idle_at: self.now + self.config.0.idle_timeout,
     };
-    self.max_frame = self.config.0.max_frame;
     self.transmit(&welcome);
     self.urgent = self.outputs.len();
   }
