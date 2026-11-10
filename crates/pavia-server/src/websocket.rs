@@ -66,8 +66,10 @@ pub struct Config {
   /// comes out of it; keep this at or below the handshake timeout.
   pub header_read_timeout: Duration,
   /// The largest WebSocket message a transport reads, in bytes: the session's
-  /// [`ValidConfig::max_message`], `2 × max_frame` (§4.3). A longer message, or a single WebSocket
-  /// frame announcing more, is refused from its header, before its payload is buffered.
+  /// [`ValidConfig::max_message`], `2 × max_frame` (§4.3). A WebSocket frame announcing more is
+  /// refused from its header, before its payload is buffered. A fragmented message is checked as
+  /// each fragment arrives whole, so a connection holds at most two such frames' worth before the
+  /// refusal.
   pub max_message: usize,
 }
 
@@ -85,7 +87,8 @@ impl Config {
 }
 
 /// A WebSocket endpoint: answers HTTP/1.1 requests on its path and hands every accepted
-/// transport to `handler` on a task of its own.
+/// transport to `handler` on a task of its own. [`session::run`](crate::session::run) ends each
+/// transport with [`Transport::linger`]; a handler that does not use it should do the same.
 #[derive(Debug)]
 pub struct Endpoint<H> {
   config: Arc<Config>,
@@ -274,6 +277,7 @@ fn switching_protocols(accept: &str) -> Response<Empty<Bytes>> {
 
 /// What [`Transport::recv`] read.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Received {
   /// One whole binary message: one or more `WsFrame`s (§5.4).
   Binary(Bytes),
@@ -361,11 +365,11 @@ impl Transport {
   }
 
   /// Ends the connection: shuts down the write side, so the peer reads everything sent and then
-  /// end of stream, and reads and drops what the peer still sends until it closes or one second
-  /// has passed. Dropping a TCP connection with unread bytes makes the operating system reset it,
+  /// end of stream, and reads and drops what the peer still sends until it closes, for at most one
+  /// second. Dropping a TCP connection with unread bytes makes the operating system reset it,
   /// and the peer can lose a close frame it has not read yet, as after a message refused for
   /// its size.
-  pub(crate) async fn linger(mut self) {
+  pub async fn linger(mut self) {
     let io = self.socket.get_mut();
     let _ = io.shutdown().await;
     let mut discarded = [0; 4096];

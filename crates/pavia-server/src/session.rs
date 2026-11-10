@@ -3,8 +3,8 @@
 //! [`run`] feeds every received message, transport event and [`Command`] into the session and
 //! carries out its outputs in order: a CLOSE frame is flushed before the transport closes (§7.7).
 //! It returns the session's [`Ending`], so each session reports its end exactly once (§13.4), and
-//! leaves the connection to linger on a task of its own, so the peer reads the close before the
-//! connection drops.
+//! leaves the connection to [`Transport::linger`] on a task of its own, so the peer reads the
+//! close before the connection drops.
 
 use std::future::Future;
 use std::io;

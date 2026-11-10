@@ -35,6 +35,7 @@ async fn session(mut transport: Transport) {
       Received::Text => transport.send(Bytes::from_static(b"text")).await,
       Received::TooLarge => {
         let _ = transport.close(CloseCode::ProtocolError, "").await;
+        transport.linger().await;
         return;
       }
     };

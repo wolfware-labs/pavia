@@ -1274,11 +1274,11 @@ fn floor_config() -> ValidConfig {
 }
 
 fn prefix(stream: u64, frame_type: u8, length: u64) -> Vec<u8> {
-  let mut out = BytesMut::new();
+  let mut out = Vec::new();
   varint::encode(stream, &mut out).unwrap();
-  out.extend_from_slice(&[frame_type, 0x00]);
+  out.extend([frame_type, 0x00]);
   varint::encode(length, &mut out).unwrap();
-  out.to_vec()
+  out
 }
 
 fn notify(stream: u64, payload_length: u64) -> Vec<u8> {

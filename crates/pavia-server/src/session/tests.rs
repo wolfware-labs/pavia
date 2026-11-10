@@ -6,7 +6,7 @@ use std::time::Duration;
 use ciborium::Value;
 use futures_util::{SinkExt, StreamExt};
 use hyper::header::{self, HeaderValue};
-use pavia_proto::frame::Auth;
+use pavia_proto::frame::{Auth, Limits};
 use pavia_proto::registry::CloseCode;
 use pavia_proto::session::{Command, Config as SessionConfig, Ending, Input};
 use pavia_proto::session_id::SessionId;
@@ -138,6 +138,18 @@ async fn mirrored_client_close(socket: &mut Socket, ending: oneshot::Receiver<En
   binary
 }
 
+async fn closed_by_server(socket: &mut Socket, ending: oneshot::Receiver<Ending>, code: CloseCode) {
+  let (binary, ws_code, _) = closed(socket).await;
+  assert_eq!(binary, [close_frame(u8::try_from(u16::from(code)).unwrap())]);
+  assert_eq!(ws_code, WsCloseCode::from(4000 + u16::from(code)));
+  let end = tokio::time::timeout(Duration::from_millis(500), socket.next()).await;
+  assert!(matches!(end, Ok(None)), "{end:?}");
+  assert!(matches!(
+    ending.await.unwrap(),
+    Ending::Closed { code: ended, by: Side::Server, .. } if ended == code
+  ));
+}
+
 #[tokio::test]
 async fn sends_close_then_closes_with_every_code() {
   for code in CODES {
@@ -266,18 +278,8 @@ fn short_timeout() -> SessionConfig {
 async fn closes_with_handshake_timeout_when_nothing_arrives() {
   let started = std::time::Instant::now();
   let (mut socket, ending) = connect_with(None, short_timeout()).await;
-  let (binary, ws_code, _) = closed(&mut socket).await;
+  closed_by_server(&mut socket, ending, CloseCode::HandshakeTimeout).await;
   assert!(started.elapsed() >= Duration::from_millis(200));
-  assert_eq!(binary, [close_frame(12)]);
-  assert_eq!(ws_code, WsCloseCode::from(4012));
-  assert!(matches!(
-    ending.await.unwrap(),
-    Ending::Closed {
-      code: CloseCode::HandshakeTimeout,
-      by: Side::Server,
-      ..
-    }
-  ));
 }
 
 #[tokio::test]
@@ -373,16 +375,7 @@ async fn closes_a_slow_hello_with_handshake_timeout() {
 async fn closes_with_protocol_error_when_the_first_frame_is_not_hello() {
   let (mut socket, ending) = connect(None).await;
   socket.send(Message::binary(heartbeat_frame(0x04, &[]))).await.unwrap();
-  let (binary, ws_code, _) = closed(&mut socket).await;
-  assert_eq!(binary, [close_frame(1)]);
-  assert_eq!(ws_code, WsCloseCode::from(4001));
-  assert!(matches!(
-    ending.await.unwrap(),
-    Ending::Closed {
-      code: CloseCode::ProtocolError,
-      ..
-    }
-  ));
+  closed_by_server(&mut socket, ending, CloseCode::ProtocolError).await;
 }
 
 fn raw_frame(frame_type: u8, header: &[u8]) -> Vec<u8> {
@@ -734,20 +727,8 @@ async fn answers_a_ping_with_its_data() {
 
 fn floor_frame() -> SessionConfig {
   let mut config = SessionConfig::default();
-  config.max_frame = 65_536;
+  config.max_frame = Limits::FLOOR;
   config
-}
-
-async fn closed_by_server(socket: &mut Socket, ending: oneshot::Receiver<Ending>, code: CloseCode) {
-  let (binary, ws_code, _) = closed(socket).await;
-  assert_eq!(binary, [close_frame(u8::try_from(u16::from(code)).unwrap())]);
-  assert_eq!(ws_code, WsCloseCode::from(4000 + u16::from(code)));
-  let end = tokio::time::timeout(Duration::from_millis(500), socket.next()).await;
-  assert!(matches!(end, Ok(None)), "{end:?}");
-  assert!(matches!(
-    ending.await.unwrap(),
-    Ending::Closed { code: ended, by: Side::Server, .. } if ended == code
-  ));
 }
 
 #[tokio::test]
@@ -775,18 +756,39 @@ async fn closes_a_fragmented_message_above_twice_max_frame_with_protocol_error()
   closed_by_server(&mut socket, ending, CloseCode::ProtocolError).await;
 }
 
-#[tokio::test]
-async fn accepts_a_max_frame_payload_pipelined_behind_hello() {
+fn notify_frame(payload_length: usize) -> Vec<u8> {
+  let mut frame = vec![0x02, 0x20, 0x00];
+  frame.extend(u32::try_from(payload_length).unwrap().to_be_bytes());
+  frame[3] |= 0x80;
+  let mut payload = vec![0x04, 0xa1, 0x02, 0x61, b'm'];
+  payload.resize(payload_length, 0);
+  frame.extend(payload);
+  frame
+}
+
+async fn welcomes_a_pipelined_message(message: Vec<u8>) {
   let (mut socket, ending) = connect_with(None, floor_frame()).await;
-  let mut message = hello_frame();
-  message.extend([0x02, 0x20, 0x00, 0x80, 0x01, 0x00, 0x00]);
-  let notify_payload_start = [0x04, 0xa1, 0x02, 0x61, b'm'];
-  message.extend(notify_payload_start);
-  message.resize(message.len() + 65_536 - notify_payload_start.len(), 0);
   socket.send(Message::binary(message)).await.unwrap();
   assert_eq!(next_welcome(&mut socket).await.len(), 7);
   socket.send(Message::binary(close_frame(0))).await.unwrap();
   assert!(mirrored_client_close(&mut socket, ending).await.is_empty());
+}
+
+#[tokio::test]
+async fn accepts_a_max_frame_payload_pipelined_behind_hello() {
+  let mut message = hello_frame();
+  message.extend(notify_frame(65_536));
+  welcomes_a_pipelined_message(message).await;
+}
+
+#[tokio::test]
+async fn accepts_a_message_of_exactly_twice_max_frame() {
+  let mut message = hello_frame();
+  message.extend(notify_frame(65_536));
+  let rest = 131_072 - message.len();
+  message.extend(notify_frame(rest - 7));
+  assert_eq!(message.len(), 131_072);
+  welcomes_a_pipelined_message(message).await;
 }
 
 #[tokio::test]
