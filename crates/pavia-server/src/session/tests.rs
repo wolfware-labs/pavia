@@ -122,6 +122,20 @@ async fn closed(socket: &mut Socket) -> (Vec<Vec<u8>>, WsCloseCode, Utf8Bytes) {
   }
 }
 
+async fn mirrored_client_close(socket: &mut Socket, ending: oneshot::Receiver<Ending>) -> Vec<Vec<u8>> {
+  let (binary, ws_code, _) = closed(socket).await;
+  assert_eq!(ws_code, WsCloseCode::from(4000));
+  assert_eq!(
+    ending.await.unwrap(),
+    Ending::Closed {
+      code: CloseCode::Normal,
+      msg: None,
+      by: Side::Client
+    }
+  );
+  binary
+}
+
 #[tokio::test]
 async fn sends_close_then_closes_with_every_code() {
   for code in CODES {
@@ -158,17 +172,7 @@ async fn mirrors_a_client_close() {
   socket.send(Message::binary(hello_frame())).await.unwrap();
   assert_eq!(next_welcome(&mut socket).await.len(), 7);
   socket.send(Message::binary(close_frame(0))).await.unwrap();
-  let (binary, ws_code, _) = closed(&mut socket).await;
-  assert!(binary.is_empty());
-  assert_eq!(ws_code, WsCloseCode::from(4000));
-  assert_eq!(
-    ending.await.unwrap(),
-    Ending::Closed {
-      code: CloseCode::Normal,
-      msg: None,
-      by: Side::Client
-    }
-  );
+  assert!(mirrored_client_close(&mut socket, ending).await.is_empty());
 }
 
 #[tokio::test]
@@ -199,6 +203,7 @@ async fn ends_on_an_abrupt_drop() {
 async fn ends_on_a_websocket_close_without_close_frame() {
   let (mut socket, ending) = connect(None).await;
   socket.close(None).await.unwrap();
+  assert!(matches!(socket.next().await, Some(Ok(Message::Close(_)))));
   assert_eq!(ending.await.unwrap(), Ending::TransportLost);
 }
 
@@ -226,17 +231,7 @@ async fn keeps_running_after_a_message_that_needs_no_answer() {
   socket.send(Message::binary(hello_frame())).await.unwrap();
   assert_eq!(next_welcome(&mut socket).await.len(), 7);
   socket.send(Message::binary(close_frame(0))).await.unwrap();
-  let (binary, ws_code, _) = closed(&mut socket).await;
-  assert!(binary.is_empty());
-  assert_eq!(ws_code, WsCloseCode::from(4000));
-  assert!(matches!(
-    ending.await.unwrap(),
-    Ending::Closed {
-      code: CloseCode::Normal,
-      by: Side::Client,
-      ..
-    }
-  ));
+  assert!(mirrored_client_close(&mut socket, ending).await.is_empty());
 }
 
 #[tokio::test]
@@ -299,10 +294,7 @@ async fn sends_welcome_and_stops_the_handshake_timer() {
   assert!(SessionId::parse(id).is_ok(), "{id}");
   assert!(tokio::time::timeout(Duration::from_millis(400), socket.next()).await.is_err());
   socket.send(Message::binary(close_frame(0))).await.unwrap();
-  let (binary, ws_code, _) = closed(&mut socket).await;
-  assert!(binary.is_empty());
-  assert_eq!(ws_code, WsCloseCode::from(4000));
-  assert!(matches!(ending.await.unwrap(), Ending::Closed { by: Side::Client, .. }));
+  assert!(mirrored_client_close(&mut socket, ending).await.is_empty());
 }
 
 async fn next_welcome(socket: &mut Socket) -> BTreeMap<u64, Value> {
@@ -547,10 +539,7 @@ async fn gives_the_authenticator_the_credential_and_the_upgrade_request() {
   socket.send(Message::binary(bearer_hello())).await.unwrap();
   assert_eq!(next_welcome(&mut socket).await.get(&36), Some(&Value::Text("u-42".into())));
   socket.send(Message::binary(close_frame(0))).await.unwrap();
-  let (binary, ws_code, _) = closed(&mut socket).await;
-  assert!(binary.is_empty());
-  assert_eq!(ws_code, WsCloseCode::from(4000));
-  assert!(matches!(ending.await.unwrap(), Ending::Closed { by: Side::Client, .. }));
+  assert!(mirrored_client_close(&mut socket, ending).await.is_empty());
   assert_eq!(
     authenticator.seen(),
     [Seen {
@@ -575,9 +564,7 @@ async fn keeps_reading_the_transport_while_the_authenticator_runs() {
   .await
   .expect("the authenticator runs");
   socket.send(Message::binary(close_frame(0))).await.unwrap();
-  let (_, ws_code, _) = closed(&mut socket).await;
-  assert_eq!(ws_code, WsCloseCode::from(4000));
-  assert!(matches!(ending.await.unwrap(), Ending::Closed { by: Side::Client, .. }));
+  mirrored_client_close(&mut socket, ending).await;
   assert_eq!(authenticator.seen().len(), 1);
 }
 
@@ -649,6 +636,87 @@ async fn pings_an_idle_session_every_heartbeat() {
   let elapsed = start.elapsed();
   assert!(elapsed >= Duration::from_millis(700), "{elapsed:?}");
   assert!(elapsed < Duration::from_secs(3), "{elapsed:?}");
+}
+
+fn short_idle() -> SessionConfig {
+  let mut config = SessionConfig::default();
+  config.heartbeat = Duration::from_millis(100);
+  config.idle_timeout = Duration::from_millis(300);
+  config
+}
+
+#[tokio::test]
+async fn closes_a_silent_client_with_idle_timeout() {
+  let start = std::time::Instant::now();
+  let (mut socket, ending) = welcomed(short_idle()).await;
+  let (binary, ws_code, _) = tokio::time::timeout(Duration::from_secs(3), closed(&mut socket))
+    .await
+    .expect("the server closes");
+  let elapsed = start.elapsed();
+  assert!(elapsed >= Duration::from_millis(300), "{elapsed:?}");
+  assert!(elapsed < Duration::from_secs(3), "{elapsed:?}");
+  let (close, pings) = binary.split_last().expect("CLOSE was sent");
+  assert!(pings.iter().all(|ping| *ping == heartbeat_frame(0x04, &[])), "{pings:02x?}");
+  assert_eq!(*close, close_frame(5));
+  assert_eq!(ws_code, WsCloseCode::from(4005));
+  assert!(matches!(
+    ending.await.unwrap(),
+    Ending::Closed {
+      code: CloseCode::IdleTimeout,
+      by: Side::Server,
+      ..
+    }
+  ));
+}
+
+#[tokio::test]
+async fn keeps_a_client_that_answers_every_ping() {
+  let mut config = short_idle();
+  config.idle_timeout = Duration::from_secs(1);
+  let (mut socket, _) = welcomed(config).await;
+  let held = tokio::time::timeout(Duration::from_secs(2), async {
+    loop {
+      match socket.next().await.unwrap().unwrap() {
+        Message::Binary(ping) if ping == heartbeat_frame(0x04, &[]) => {
+          socket.send(Message::binary(heartbeat_frame(0x05, &[]))).await.unwrap();
+        }
+        other => panic!("unexpected {other:?}"),
+      }
+    }
+  })
+  .await;
+  assert!(held.is_err());
+}
+
+#[tokio::test]
+async fn reads_a_waiting_message_before_a_passed_idle_deadline() {
+  let mut config = short_idle();
+  config.idle_timeout = Duration::from_millis(200);
+  let (mut socket, _) = welcomed(config).await;
+  for _ in 0..10 {
+    socket.send(Message::binary(heartbeat_frame(0x04, &[7]))).await.unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    loop {
+      match socket.next().await.unwrap().unwrap() {
+        Message::Binary(pong) if pong == heartbeat_frame(0x05, &[7]) => break,
+        Message::Binary(ping) if ping == heartbeat_frame(0x04, &[]) => {}
+        other => panic!("unexpected {other:?}"),
+      }
+    }
+  }
+}
+
+#[tokio::test]
+async fn mirrors_a_close_waiting_past_the_idle_deadline() {
+  let mut config = short_idle();
+  config.idle_timeout = Duration::from_millis(200);
+  for _ in 0..10 {
+    let (mut socket, ending) = welcomed(config.clone()).await;
+    socket.send(Message::binary(close_frame(0))).await.unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    let binary = mirrored_client_close(&mut socket, ending).await;
+    assert!(binary.iter().all(|ping| *ping == heartbeat_frame(0x04, &[])), "{binary:02x?}");
+  }
 }
 
 #[tokio::test]

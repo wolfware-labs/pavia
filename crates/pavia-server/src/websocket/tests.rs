@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::time::Duration;
 
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
@@ -234,6 +235,31 @@ async fn answers_a_ping_on_its_own() {
   let (mut socket, _) = upgrade_tcp(&[SUBPROTOCOL]).await.unwrap();
   socket.send(Message::Ping(Bytes::from_static(b"p"))).await.unwrap();
   assert_eq!(socket.next().await.unwrap().unwrap(), Message::Pong(Bytes::from_static(b"p")));
+}
+
+#[tokio::test]
+async fn reads_a_peer_close_while_the_reply_cannot_be_written() {
+  let (full, mut filled) = tokio::sync::mpsc::channel(1);
+  let (result, mut read) = tokio::sync::mpsc::channel(1);
+  let endpoint = Endpoint::new(Config::new(PATH), move |mut transport: Transport| {
+    let (full, result) = (full.clone(), result.clone());
+    async move {
+      let message = Bytes::from(vec![0; 1000]);
+      while tokio::time::timeout(Duration::from_millis(20), transport.send(message.clone()))
+        .await
+        .is_ok()
+      {}
+      full.send(()).await.unwrap();
+      let received = tokio::time::timeout(Duration::from_secs(1), transport.recv()).await;
+      result.send(received.ok().map(|received| received.is_none())).await.unwrap();
+    }
+  });
+  let (client, server) = tokio::io::duplex(4096);
+  tokio::spawn(async move { endpoint.serve_connection(server, None).await });
+  let (mut socket, _) = upgrade(client, PATH, &[SUBPROTOCOL]).await.unwrap();
+  filled.recv().await.unwrap();
+  socket.close(None).await.unwrap();
+  assert_eq!(read.recv().await.unwrap(), Some(true));
 }
 
 #[tokio::test]

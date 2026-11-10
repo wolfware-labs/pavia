@@ -141,21 +141,22 @@ fn mirrors_every_code_the_peer_closes_with() {
   for code in CODES {
     let mut session = greeted();
     session.feed(Input::Message(message(&[(0, close(u64::from(u16::from(code)), None))])));
-    assert_eq!(
-      drain(&mut session),
-      [
-        Output::CloseTransport {
-          code,
-          reason: String::new()
-        },
-        Output::Ended(Ending::Closed {
-          code,
-          msg: None,
-          by: Side::Client
-        }),
-      ]
-    );
+    assert_eq!(drain(&mut session), mirrored_close(code));
   }
+}
+
+fn mirrored_close(code: CloseCode) -> [Output; 2] {
+  [
+    Output::CloseTransport {
+      code,
+      reason: String::new(),
+    },
+    Output::Ended(Ending::Closed {
+      code,
+      msg: None,
+      by: Side::Client,
+    }),
+  ]
 }
 
 #[test]
@@ -831,6 +832,10 @@ fn stops_the_handshake_timer_at_welcome() {
   assert!(!session.is_ended());
 }
 
+const DEFAULT_HB: Duration = Duration::from_secs(15);
+
+const DEFAULT_IDLE: Duration = Duration::from_secs(45);
+
 fn welcomed_at(after: Duration) -> (Session, Instant) {
   let accepted = Instant::now();
   let mut session = Session::server(&ValidConfig::default(), accepted);
@@ -858,7 +863,7 @@ fn sends_welcome_before_a_heartbeat_queued_behind_it() {
   let welcome_sent = Instant::now();
   session.handle_input(authenticated(None), welcome_sent);
   session.handle_input(Input::Message(message(&[(0, ping(b"1"))])), welcome_sent);
-  session.handle_input(Input::Timeout, welcome_sent + Duration::from_secs(16));
+  session.handle_input(Input::Timeout, welcome_sent + DEFAULT_HB + Duration::from_secs(1));
   let sent = sent_frames(&mut session);
   let types: Vec<_> = sent.iter().map(|(_, frame)| frame.frame_type()).collect();
   assert_eq!(
@@ -900,20 +905,119 @@ fn sent_frames(session: &mut Session) -> Vec<(u64, Frame)> {
 #[test]
 fn pings_after_a_heartbeat_of_send_silence() {
   let (mut session, accepted) = welcomed_at(Duration::from_secs(1));
-  let hb = Duration::from_secs(15);
   let welcome_sent = accepted + Duration::from_secs(1);
-  assert_eq!(session.poll_timeout(), Some(welcome_sent + hb));
-  session.handle_input(Input::Timeout, welcome_sent + hb - Duration::from_millis(1));
+  assert_eq!(session.poll_timeout(), Some(welcome_sent + DEFAULT_HB));
+  session.handle_input(Input::Timeout, welcome_sent + DEFAULT_HB - Duration::from_millis(1));
   assert_eq!(drain(&mut session), []);
-  session.handle_input(Input::Timeout, welcome_sent + hb);
+  session.handle_input(Input::Timeout, welcome_sent + DEFAULT_HB);
   assert_eq!(sent_frames(&mut session), [(0, ping(b""))]);
-  assert_eq!(session.poll_timeout(), Some(welcome_sent + hb + hb));
-  session.handle_input(Input::Timeout, welcome_sent + hb + hb + Duration::from_millis(5));
-  assert_eq!(sent_frames(&mut session), [(0, ping(b""))]);
-  assert_eq!(
-    session.poll_timeout(),
-    Some(welcome_sent + hb + hb + Duration::from_millis(5) + hb)
+  assert_eq!(session.poll_timeout(), Some(welcome_sent + DEFAULT_HB + DEFAULT_HB));
+  session.handle_input(
+    Input::Timeout,
+    welcome_sent + DEFAULT_HB + DEFAULT_HB + Duration::from_millis(5),
   );
+  assert_eq!(sent_frames(&mut session), [(0, ping(b""))]);
+  assert_eq!(session.poll_timeout(), Some(welcome_sent + DEFAULT_IDLE));
+}
+
+#[test]
+fn closes_with_idle_timeout_after_idle_with_nothing_received() {
+  let (mut session, accepted) = welcomed_at(Duration::ZERO);
+  for after in [DEFAULT_HB, DEFAULT_HB + DEFAULT_HB] {
+    session.handle_input(Input::Timeout, accepted + after);
+    assert_eq!(sent_frames(&mut session), [(0, ping(b""))]);
+  }
+  assert_eq!(session.poll_timeout(), Some(accepted + DEFAULT_IDLE));
+  session.handle_input(Input::Timeout, accepted + DEFAULT_IDLE - Duration::from_millis(1));
+  assert!(!session.is_ended());
+  session.handle_input(Input::Timeout, accepted + DEFAULT_IDLE);
+  assert_eq!(
+    drain(&mut session),
+    [
+      Output::Transmit(message(&[(0, close(5, None))])),
+      Output::CloseTransport {
+        code: CloseCode::IdleTimeout,
+        reason: String::new(),
+      },
+      Output::Ended(Ending::Closed {
+        code: CloseCode::IdleTimeout,
+        msg: None,
+        by: Side::Server,
+      }),
+    ]
+  );
+}
+
+#[test]
+fn moves_the_idle_deadline_on_a_message_on_any_stream() {
+  for stream in [0, 2] {
+    let (mut session, accepted) = welcomed_at(Duration::ZERO);
+    let heard = accepted + DEFAULT_IDLE - Duration::from_millis(1);
+    let frame = if stream == 0 {
+      pong(b"")
+    } else {
+      Frame::Cancel(Cancel { msg: None })
+    };
+    session.handle_input(Input::Message(message(&[(stream, frame)])), heard);
+    session.handle_input(Input::Timeout, heard);
+    assert_eq!(sent_frames(&mut session), [(0, ping(b""))], "stream {stream}");
+    assert_eq!(session.poll_timeout(), Some(heard + DEFAULT_HB), "stream {stream}");
+    session.handle_input(Input::Timeout, heard + DEFAULT_IDLE - Duration::from_millis(1));
+    assert_eq!(sent_frames(&mut session), [(0, ping(b""))], "stream {stream}");
+    assert_eq!(session.poll_timeout(), Some(heard + DEFAULT_IDLE), "stream {stream}");
+    session.handle_input(Input::Timeout, heard + DEFAULT_IDLE);
+    assert!(ended_with(&mut session, CloseCode::IdleTimeout), "stream {stream}");
+  }
+}
+
+#[test]
+fn keeps_a_session_that_only_answers_pings() {
+  let (mut session, accepted) = welcomed_at(Duration::ZERO);
+  let mut at = accepted;
+  for _ in 0..20 {
+    at += DEFAULT_HB;
+    session.handle_input(Input::Timeout, at);
+    assert_eq!(sent_frames(&mut session), [(0, ping(b""))]);
+    at += Duration::from_secs(1);
+    session.handle_input(Input::Message(message(&[(0, pong(b""))])), at);
+    assert_eq!(drain(&mut session), []);
+  }
+  assert!(!session.is_ended());
+}
+
+#[test]
+fn reads_a_message_that_arrives_past_the_idle_deadline() {
+  let (mut session, accepted) = welcomed_at(Duration::ZERO);
+  let late = accepted + DEFAULT_IDLE + Duration::from_millis(5);
+  session.handle_input(Input::Message(message(&[(0, ping(b"\x01"))])), late);
+  assert_eq!(sent_frames(&mut session), [(0, pong(b"\x01"))]);
+  session.handle_input(Input::Timeout, late + DEFAULT_IDLE - Duration::from_millis(1));
+  assert_eq!(sent_frames(&mut session), [(0, ping(b""))]);
+  session.handle_input(Input::Timeout, late + DEFAULT_IDLE);
+  assert!(ended_with(&mut session, CloseCode::IdleTimeout));
+}
+
+#[test]
+fn mirrors_a_close_that_arrives_past_the_idle_deadline() {
+  let (mut session, accepted) = welcomed_at(Duration::ZERO);
+  let late = accepted + DEFAULT_IDLE + Duration::from_millis(5);
+  session.handle_input(Input::Message(message(&[(0, close(0, None))])), late);
+  assert_eq!(drain(&mut session), mirrored_close(CloseCode::Normal));
+}
+
+#[test]
+fn sends_the_due_ping_after_a_message_past_the_heartbeat() {
+  let (mut session, accepted) = welcomed_at(Duration::ZERO);
+  let mut at = accepted;
+  for _ in 0..3 {
+    at += DEFAULT_HB + Duration::from_millis(1);
+    session.handle_input(Input::Message(message(&[(0, pong(b""))])), at);
+    assert_eq!(sent_frames(&mut session), [(0, ping(b""))]);
+    assert_eq!(session.poll_timeout(), Some(at + DEFAULT_HB));
+  }
+  at += DEFAULT_HB;
+  session.handle_input(Input::Message(message(&[(0, ping(b"\x02"))])), at);
+  assert_eq!(sent_frames(&mut session), [(0, pong(b"\x02"))]);
 }
 
 #[test]
@@ -923,7 +1027,7 @@ fn answers_a_ping_with_the_same_data_and_restarts_the_timer() {
     let at = accepted + Duration::from_secs(seconds);
     session.handle_input(Input::Message(message(&[(0, ping(data))])), at);
     assert_eq!(sent_frames(&mut session), [(0, pong(data))], "{data:02x?}");
-    assert_eq!(session.poll_timeout(), Some(at + Duration::from_secs(15)));
+    assert_eq!(session.poll_timeout(), Some(at + DEFAULT_HB));
   }
 }
 
@@ -937,7 +1041,7 @@ fn keeps_the_ping_timer_when_only_receiving() {
     );
     assert_eq!(drain(&mut session), []);
   }
-  assert_eq!(session.poll_timeout(), Some(accepted + Duration::from_secs(15)));
+  assert_eq!(session.poll_timeout(), Some(accepted + DEFAULT_HB));
 }
 
 #[test]
@@ -1051,20 +1155,7 @@ fn keeps_reading_a_message_after_a_frame_that_only_fails_its_request() {
   let mut bytes = BytesMut::from(&AUTH_REFRESH_WITHOUT_AUTH[..]);
   bytes.extend_from_slice(&message(&[(0, close(0, None))]));
   session.feed(Input::Message(bytes.freeze()));
-  assert_eq!(
-    drain(&mut session),
-    [
-      Output::CloseTransport {
-        code: CloseCode::Normal,
-        reason: String::new(),
-      },
-      Output::Ended(Ending::Closed {
-        code: CloseCode::Normal,
-        msg: None,
-        by: Side::Client
-      }),
-    ]
-  );
+  assert_eq!(drain(&mut session), mirrored_close(CloseCode::Normal));
 }
 
 #[test]

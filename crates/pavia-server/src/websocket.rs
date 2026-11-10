@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{FutureExt, SinkExt, StreamExt};
 use http_body_util::Empty;
 use hyper::body::Incoming;
 use hyper::header::{self, HeaderMap, HeaderName, HeaderValue};
@@ -296,8 +296,11 @@ impl Transport {
     &self.context
   }
 
-  /// The next data message, or `None` once the peer closed the WebSocket, after the close reply
-  /// is flushed, or the connection ended. WebSocket PING and PONG are answered and skipped here;
+  /// The next data message, or `None` once the peer closed the WebSocket or the connection ended.
+  /// The reply to a peer's close goes out at once when the socket can take it. When the send buffer
+  /// is full at that moment, the reply and anything still queued are dropped with the transport,
+  /// even if the peer would read them a moment later. Nothing is awaited after a message is taken off the socket, so
+  /// dropping this future loses no message. WebSocket PING and PONG are answered and skipped here;
   /// they are not Pavia's (§7.4). The PONG goes out when the loop reads again.
   ///
   /// # Errors
@@ -309,7 +312,8 @@ impl Transport {
         Ok(Message::Binary(message)) => return Some(Ok(Received::Binary(message))),
         Ok(Message::Text(_)) => return Some(Ok(Received::Text)),
         Ok(Message::Close(_)) => {
-          return self.socket.flush().await.err().map(|error| Err(error.into()));
+          let _ = self.socket.flush().now_or_never();
+          return None;
         }
         Ok(Message::Ping(_) | Message::Pong(_) | Message::Frame(_)) => {}
         Err(error) => return Some(Err(error.into())),
