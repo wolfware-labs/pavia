@@ -6,6 +6,7 @@
 pub mod auth;
 pub mod session;
 mod session_id;
+pub mod sessions;
 #[cfg(test)]
 mod test_support;
 pub mod websocket;

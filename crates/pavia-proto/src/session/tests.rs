@@ -677,9 +677,10 @@ fn welcomed_with(config: Config, user: Option<&str>) -> (Session, Welcome) {
   assert_eq!(drain(&mut session), ANONYMOUS);
   session.feed(authenticated(user));
   let outputs = drain(&mut session);
-  let [Output::Transmit(sent)] = outputs.as_slice() else {
+  let [Output::Established { session: id }, Output::Transmit(sent)] = outputs.as_slice() else {
     panic!("{outputs:?}");
   };
+  assert_eq!(*id, session_id());
   let decoded = frames(sent);
   let [(0, Frame::Welcome(welcome))] = decoded.as_slice() else {
     panic!("{sent:02x?}");
@@ -841,7 +842,10 @@ fn welcomed_at(after: Duration) -> (Session, Instant) {
   let mut session = Session::server(&ValidConfig::default(), accepted);
   session.handle_input(Input::Message(message(&[(0, Frame::Hello(hello()))])), accepted);
   session.handle_input(authenticated(None), accepted + after);
-  assert_eq!(drain(&mut session).len(), 2);
+  let outputs = drain(&mut session);
+  let [Output::Authenticate { .. }, Output::Established { .. }, Output::Transmit(_)] = outputs.as_slice() else {
+    panic!("{outputs:?}");
+  };
   (session, accepted)
 }
 
@@ -862,6 +866,7 @@ fn sends_welcome_before_a_heartbeat_queued_behind_it() {
   let mut session = greeted();
   let welcome_sent = Instant::now();
   session.handle_input(authenticated(None), welcome_sent);
+  assert_eq!(session.poll_output(), Some(Output::Established { session: session_id() }));
   session.handle_input(Input::Message(message(&[(0, ping(b"1"))])), welcome_sent);
   session.handle_input(Input::Timeout, welcome_sent + DEFAULT_HB + Duration::from_secs(1));
   let sent = sent_frames(&mut session);
@@ -1184,7 +1189,13 @@ fn sends_the_default_welcome_vector() {
     .collect();
   let mut session = greeted();
   session.feed(authenticated(None));
-  assert_eq!(drain(&mut session), [Output::Transmit(Bytes::from(expected))]);
+  assert_eq!(
+    drain(&mut session),
+    [
+      Output::Established { session: session_id() },
+      Output::Transmit(Bytes::from(expected))
+    ]
+  );
 }
 
 fn item(len: usize) -> Bytes {

@@ -1,0 +1,129 @@
+//! The session registry (§13.3, §13.4): every established session on this server, by session ID.
+//!
+//! [`session::run`](crate::session::run) registers a session once the WELCOME that establishes
+//! it is written, and the session leaves the registry when `run` returns, whatever ended it.
+//! Before WELCOME a session is not reachable from here (§14), so a command sent to it through the
+//! registry can never arrive ahead of WELCOME.
+//!
+//! ```text
+//!  HELLO ─▶ authenticator ─▶ WELCOME written: register ─▶ … ─▶ run returns: removed
+//!                          ╰─▶ REJECT or close: never registered
+//! ```
+//!
+//! Group joins staged by the on-connect hook will commit under the same lock as the registration
+//! (§13.4, #100, #104), so no observer sees one without the other.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+use pavia_proto::session::Command;
+use pavia_proto::session_id::SessionId;
+use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::SendError;
+
+/// A handle to one running session: commands sent through it reach the session's task in order.
+#[derive(Debug, Clone)]
+pub struct Handle(mpsc::Sender<Command>);
+
+impl Handle {
+  #[must_use]
+  pub(crate) const fn new(commands: mpsc::Sender<Command>) -> Self {
+    Self(commands)
+  }
+
+  /// Sends `command` to the session, waiting while its command queue is full.
+  ///
+  /// # Errors
+  ///
+  /// Gives the command back when the session has ended.
+  pub async fn send(&self, command: Command) -> Result<(), SendError<Command>> {
+    self.0.send(command).await
+  }
+}
+
+/// Every established session on this server. Cloning it gives another view of the same sessions.
+#[derive(Debug, Clone, Default)]
+pub struct Registry {
+  inner: Arc<Mutex<Inner>>,
+}
+
+#[derive(Debug, Default)]
+struct Inner {
+  sessions: HashMap<SessionId, Entry>,
+  registrations: u64,
+}
+
+#[derive(Debug)]
+struct Entry {
+  handle: Handle,
+  registration: u64,
+}
+
+impl Registry {
+  /// An empty registry.
+  #[must_use]
+  pub fn new() -> Self {
+    Self::default()
+  }
+
+  /// The number of established sessions.
+  #[must_use]
+  pub fn len(&self) -> usize {
+    self.lock().sessions.len()
+  }
+
+  /// Whether no session is established.
+  #[must_use]
+  pub fn is_empty(&self) -> bool {
+    self.lock().sessions.is_empty()
+  }
+
+  /// The handle of the established session `id`, if it is still running.
+  #[must_use]
+  pub fn get(&self, id: &SessionId) -> Option<Handle> {
+    self.lock().sessions.get(id).map(|entry| entry.handle.clone())
+  }
+
+  /// Registers the session `id`, reachable through `handle`, until the returned guard is dropped.
+  pub(crate) fn register(&self, id: SessionId, handle: Handle) -> Registration {
+    let mut inner = self.lock();
+    inner.registrations += 1;
+    let registration = inner.registrations;
+    inner.sessions.insert(id.clone(), Entry { handle, registration });
+    Registration {
+      registry: self.clone(),
+      id,
+      registration,
+    }
+  }
+
+  fn lock(&self) -> MutexGuard<'_, Inner> {
+    self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+  }
+}
+
+/// A registered session. Dropping it removes the session, once, and only the entry this
+/// registration made: a later registration under the same ID stays, even with the same handle.
+#[derive(Debug)]
+#[must_use = "dropping the registration removes the session"]
+pub(crate) struct Registration {
+  registry: Registry,
+  id: SessionId,
+  registration: u64,
+}
+
+impl Drop for Registration {
+  fn drop(&mut self) {
+    let mut inner = self.registry.lock();
+    if inner
+      .sessions
+      .get(&self.id)
+      .is_some_and(|entry| entry.registration == self.registration)
+    {
+      inner.sessions.remove(&self.id);
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests;

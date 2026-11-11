@@ -27,7 +27,9 @@
 //!
 //! A validated HELLO yields [`Output::Authenticate`]. The driver runs the authenticator and feeds
 //! its answer back as [`Input::Authenticated`] or [`Input::AuthFailed`]; the handshake timer keeps
-//! running meanwhile, so a slow authenticator ends in HANDSHAKE_TIMEOUT (§7.1).
+//! running meanwhile, so a slow authenticator ends in HANDSHAKE_TIMEOUT (§7.1). Right before
+//! WELCOME it yields [`Output::Established`] with the new session ID; the driver makes the session
+//! reachable once that WELCOME is written, never before (§13.4, §14).
 //!
 //! After WELCOME every received message, on any stream, moves the idle deadline to `now + idle`;
 //! a timeout at or past it closes with IDLE_TIMEOUT (§7.4). A message that reaches the session
@@ -125,6 +127,13 @@ pub enum Output {
   Authenticate {
     /// HELLO `auth`.
     auth: Option<Auth>,
+  },
+  /// The session is established under `session`; the next output is the WELCOME that says so.
+  /// The driver makes the session reachable once that WELCOME is written, never before: nothing
+  /// sent to the session ahead of WELCOME may reach it (§13.4, §14).
+  Established {
+    /// The session ID WELCOME carries.
+    session: SessionId,
   },
   /// Close the transport. On WebSocket the close code is `4000 + code` and the reason is cut
   /// to 123 bytes on a character boundary (§4.3, §7.7).
@@ -423,6 +432,9 @@ impl Session {
       ping_at: self.now,
       idle_at: self.now + self.config.0.idle_timeout,
     };
+    self.outputs.push_back(Output::Established {
+      session: session.clone(),
+    });
     self.transmit(&welcome);
     self.urgent = self.outputs.len();
   }
