@@ -1562,3 +1562,17 @@ fn bounds_answers_by_one_mebibyte_when_the_client_advertises_no_max_frame() {
   let sent = sent_frames(&mut session);
   assert!(matches!(sent.as_slice(), [(2, Frame::Error(error))] if error.code == 8));
 }
+
+#[test]
+fn never_sends_an_error_with_the_ok_code() {
+  let (mut session, _) = welcomed(None);
+  called(&mut session, 2);
+  session.feed(Input::Command(Command::Error {
+    stream: 2,
+    code: StatusCode::Ok,
+    msg: "done".into(),
+    nx: false,
+  }));
+  let sent = sent_frames(&mut session);
+  assert!(matches!(sent.as_slice(), [(2, Frame::Error(error))] if error.code == u64::from(StatusCode::Internal)));
+}

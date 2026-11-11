@@ -1426,3 +1426,20 @@ async fn drops_running_handlers_when_the_session_ends() {
   drop(socket);
   eventually(|| dropped.load(Ordering::SeqCst), "the handler is dropped with the session").await;
 }
+
+#[tokio::test]
+async fn refuses_a_call_whose_shape_differs_from_the_method() {
+  let mut methods = MethodRegistry::new();
+  methods
+    .register_server_method(
+      "chat/history",
+      MethodEntry::call(Handler::new(0, |_| async { Arg::Null })).with_shape(pavia_proto::stream::Shape::ServerStream),
+    )
+    .unwrap();
+  let mut socket = serving(Arc::new(methods)).await;
+  socket
+    .send(Message::binary(call_frame(2, "chat/history", &[0x80])))
+    .await
+    .unwrap();
+  assert_refused(&next_answer(&mut socket).await, 2, 3);
+}

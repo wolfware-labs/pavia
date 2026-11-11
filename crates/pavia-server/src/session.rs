@@ -19,6 +19,7 @@ use pavia_proto::frame::{Auth, Call};
 use pavia_proto::registry::{CloseCode, StatusCode};
 use pavia_proto::session::{Command, Ending, Input, Output, Session};
 use pavia_proto::session_id::SessionId;
+use pavia_proto::stream::Shape;
 use tokio::sync::mpsc;
 use tokio::task::{self, JoinError, JoinSet};
 use tokio::time::{Instant, sleep_until};
@@ -180,8 +181,11 @@ impl Calls<'_> {
     let Some(method) = self.methods.server_method(&call.method) else {
       return refuse(StatusCode::Unimplemented, "unknown method");
     };
-    if !matches!(method.kind, Kind::Call { .. }) {
+    let Kind::Call { shape, .. } = method.kind else {
       return refuse(StatusCode::InvalidArgument, "method takes NOTIFY, not CALL");
+    };
+    if Shape::try_from(call.shape) != Ok(shape) {
+      return refuse(StatusCode::InvalidArgument, "shape does not match the method");
     }
     let arguments = match data::decode(&call.data, codec, &DecodeLimits::default()) {
       Ok(Value::Array(arguments)) => arguments,

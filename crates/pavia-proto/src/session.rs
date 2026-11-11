@@ -129,7 +129,7 @@ pub enum Command {
     data: Bytes,
   },
   /// Answer the call on `stream` with ERROR (§8.4). Ignored once the call has its answer or has
-  /// gone.
+  /// gone. ERROR never carries OK, so [`StatusCode::Ok`] is sent as INTERNAL.
   Error {
     /// The call stream, from [`Output::Call`].
     stream: u64,
@@ -653,6 +653,7 @@ impl Session {
 }
 
 fn call_error(code: StatusCode, msg: String, nx: bool) -> Frame {
+  let code = if code == StatusCode::Ok { StatusCode::Internal } else { code };
   Frame::Error(CallError {
     code: u64::from(code),
     msg,
