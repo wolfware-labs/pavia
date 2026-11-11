@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -11,10 +12,11 @@ use pavia_proto::registry::CloseCode;
 use pavia_proto::session::{Command, Config as SessionConfig, Ending, Input};
 use pavia_proto::session_id::SessionId;
 use pavia_proto::stream::Side;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream};
 use tokio::net::TcpStream;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::handshake::client::Request;
 use tokio_tungstenite::tungstenite::protocol::frame::Frame;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode as WsCloseCode;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::{Data, OpCode};
@@ -23,7 +25,7 @@ use tokio_tungstenite::{WebSocketStream, client_async};
 
 use super::{authenticated, run};
 use crate::auth::{AuthFailure, Authenticator, Permissive, Principal, RequestContext};
-use crate::registry::Registry;
+use crate::sessions::Registry;
 use crate::test_support::{EXPECT_WITHIN, floor_frame, has_ws_close, serve_on_loopback};
 use crate::websocket::{Config, Endpoint, SUBPROTOCOL, Transport};
 
@@ -78,14 +80,29 @@ async fn connect_with(config: SessionConfig) -> (Socket, oneshot::Receiver<Endin
 
 async fn connect_on(registry: Registry, config: SessionConfig) -> (Socket, oneshot::Receiver<Ending>) {
   let (address, ending) = listen_with(registry, config, Arc::new(Permissive)).await;
+  (open(TcpStream::connect(address).await.unwrap()).await, ending)
+}
+
+fn request() -> Request {
   let mut request = "ws://localhost/rt".into_client_request().unwrap();
   request
     .headers_mut()
     .insert(header::SEC_WEBSOCKET_PROTOCOL, HeaderValue::from_static(SUBPROTOCOL));
-  let (socket, _) = client_async(request, TcpStream::connect(address).await.unwrap())
-    .await
-    .unwrap();
-  (socket, ending)
+  request
+}
+
+async fn open<S: AsyncRead + AsyncWrite + Unpin>(io: S) -> WebSocketStream<S> {
+  client_async(request(), io).await.unwrap().0
+}
+
+async fn eventually(condition: impl Fn() -> bool, what: &str) {
+  tokio::time::timeout(EXPECT_WITHIN, async {
+    while !condition() {
+      tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+  })
+  .await
+  .expect(what);
 }
 
 async fn connect() -> (Socket, oneshot::Receiver<Ending>) {
@@ -147,10 +164,12 @@ async fn closed_by_server(socket: &mut Socket, ending: oneshot::Receiver<Ending>
   ));
 }
 
-async fn welcomed_in(registry: &Registry) -> (Socket, oneshot::Receiver<Ending>, SessionId) {
-  let (mut socket, ending) = connect_on(registry.clone(), SessionConfig::default()).await;
+async fn welcomed_in(registry: &Registry, config: SessionConfig) -> (Socket, oneshot::Receiver<Ending>, SessionId) {
+  let (mut socket, ending) = connect_on(registry.clone(), config).await;
   socket.send(Message::binary(hello_frame())).await.unwrap();
-  let Value::Text(id) = &next_welcome(&mut socket).await[&19] else {
+  let welcome = next_welcome(&mut socket).await;
+  assert_eq!(welcome.len(), 7);
+  let Value::Text(id) = &welcome[&19] else {
     panic!("WELCOME without a session ID");
   };
   (socket, ending, SessionId::parse(id).unwrap())
@@ -158,7 +177,7 @@ async fn welcomed_in(registry: &Registry) -> (Socket, oneshot::Receiver<Ending>,
 
 async fn commanded(command: Command) -> (Socket, oneshot::Receiver<Ending>) {
   let registry = Registry::new();
-  let (socket, ending, id) = welcomed_in(&registry).await;
+  let (socket, ending, id) = welcomed_in(&registry, SessionConfig::default()).await;
   registry.get(&id).unwrap().send(command).await.unwrap();
   (socket, ending)
 }
@@ -514,9 +533,8 @@ async fn connect_to(
   config: SessionConfig,
 ) -> (Socket, SocketAddr, oneshot::Receiver<Ending>) {
   let (address, ending) = listen_with(registry, config, authenticator).await;
-  let mut request = "ws://localhost/rt".into_client_request().unwrap();
+  let mut request = request();
   let headers = request.headers_mut();
-  headers.insert(header::SEC_WEBSOCKET_PROTOCOL, HeaderValue::from_static(SUBPROTOCOL));
   headers.insert("x-pavia-test", HeaderValue::from_static("yes"));
   headers.insert(header::COOKIE, HeaderValue::from_static("theme=dark; session=c00kie"));
   let stream = TcpStream::connect(address).await.unwrap();
@@ -572,13 +590,7 @@ async fn keeps_reading_the_transport_while_the_authenticator_runs() {
   let authenticator = Recording::answering(None);
   let (mut socket, _, ending) = connect_to(Registry::new(), Arc::clone(&authenticator), SessionConfig::default()).await;
   socket.send(Message::binary(bearer_hello())).await.unwrap();
-  tokio::time::timeout(EXPECT_WITHIN, async {
-    while authenticator.seen().is_empty() {
-      tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-  })
-  .await
-  .expect("the authenticator runs");
+  eventually(|| !authenticator.seen().is_empty(), "the authenticator runs").await;
   socket.send(Message::binary(close_frame(0))).await.unwrap();
   mirrored_client_close(&mut socket, ending).await;
   assert_eq!(authenticator.seen().len(), 1);
@@ -631,9 +643,7 @@ fn fast_heartbeat() -> SessionConfig {
 }
 
 async fn welcomed(config: SessionConfig) -> (Socket, oneshot::Receiver<Ending>) {
-  let (mut socket, ending) = connect_with(config).await;
-  socket.send(Message::binary(hello_frame())).await.unwrap();
-  assert_eq!(next_welcome(&mut socket).await.len(), 7);
+  let (socket, ending, _) = welcomed_in(&Registry::new(), config).await;
   (socket, ending)
 }
 
@@ -818,15 +828,9 @@ async fn registers_at_welcome_and_removes_when_the_session_ends() {
   let authenticator = Recording::answering(None);
   let (mut socket, _, _) = connect_to(registry.clone(), Arc::clone(&authenticator), SessionConfig::default()).await;
   socket.send(Message::binary(bearer_hello())).await.unwrap();
-  tokio::time::timeout(EXPECT_WITHIN, async {
-    while authenticator.seen().is_empty() {
-      tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-  })
-  .await
-  .expect("the authenticator runs");
+  eventually(|| !authenticator.seen().is_empty(), "the authenticator runs").await;
   assert!(registry.is_empty());
-  let (mut socket, ending, id) = welcomed_in(&registry).await;
+  let (mut socket, ending, id) = welcomed_in(&registry, SessionConfig::default()).await;
   assert_eq!(registry.len(), 1);
   assert!(registry.get(&id).is_some());
   socket.send(Message::binary(close_frame(0))).await.unwrap();
@@ -846,7 +850,29 @@ async fn never_registers_a_rejected_session() {
   assert!(registry.is_empty());
 }
 
-async fn connect_and_end<H, F>(endpoint: &Endpoint<H>, with_close: bool)
+type Boxed = Pin<Box<dyn Future<Output = ()> + Send>>;
+
+fn recording(
+  registry: &Registry,
+  config: SessionConfig,
+) -> (
+  Endpoint<impl Fn(Transport) -> Boxed + Clone + Send + Sync + 'static>,
+  mpsc::UnboundedReceiver<Ending>,
+) {
+  let (ended, endings) = mpsc::unbounded_channel();
+  let registry = registry.clone();
+  let config = config.validate().unwrap();
+  let endpoint = Endpoint::new(Config::new("/rt", &config), move |transport: Transport| -> Boxed {
+    let registry = registry.clone();
+    let ended = ended.clone();
+    Box::pin(async move {
+      let _ = ended.send(run(transport, &registry, &Permissive).await);
+    })
+  });
+  (endpoint, endings)
+}
+
+async fn welcomed_over_duplex<H, F>(endpoint: &Endpoint<H>) -> (WebSocketStream<DuplexStream>, SessionId)
 where
   H: Fn(Transport) -> F + Clone + Send + Sync + 'static,
   F: Future<Output = ()> + Send + 'static,
@@ -854,83 +880,102 @@ where
   let (client, server) = tokio::io::duplex(4096);
   let endpoint = endpoint.clone();
   tokio::spawn(async move { endpoint.serve_connection(server, None).await });
-  let mut request = "ws://localhost/rt".into_client_request().unwrap();
-  request
-    .headers_mut()
-    .insert(header::SEC_WEBSOCKET_PROTOCOL, HeaderValue::from_static(SUBPROTOCOL));
-  let (mut socket, _) = client_async(request, client).await.unwrap();
+  let mut socket = open(client).await;
   socket.send(Message::binary(hello_frame())).await.unwrap();
-  let Some(Ok(Message::Binary(_))) = socket.next().await else {
+  let Some(Ok(Message::Binary(message))) = socket.next().await else {
     panic!("no WELCOME");
   };
-  if with_close {
-    socket.send(Message::binary(close_frame(0))).await.unwrap();
-    while let Some(Ok(message)) = socket.next().await {
-      if message.is_close() {
-        break;
-      }
+  let Value::Text(id) = &welcome(&message)[&19] else {
+    panic!("WELCOME without a session ID");
+  };
+  (socket, SessionId::parse(id).unwrap())
+}
+
+async fn collect(endings: &mut mpsc::UnboundedReceiver<Ending>, count: usize) -> Vec<Ending> {
+  let mut collected = Vec::with_capacity(count);
+  tokio::time::timeout(EXPECT_WITHIN, async {
+    while collected.len() < count {
+      collected.push(endings.recv().await.expect("a session task ended without its Ending"));
     }
-  }
+  })
+  .await
+  .unwrap_or_else(|_| panic!("{} of {count} sessions reported an ending", collected.len()));
+  collected
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn leaves_the_registry_empty_after_ten_thousand_sessions() {
   let registry = Registry::new();
-  let config = SessionConfig::default().validate().unwrap();
-  let sessions = registry.clone();
-  let endpoint = Endpoint::new(Config::new("/rt", &config), move |transport: Transport| {
-    let registry = sessions.clone();
-    async move {
-      run(transport, &registry, &Permissive).await;
-    }
-  });
+  let (endpoint, mut endings) = recording(&registry, SessionConfig::default());
   let mut clients = tokio::task::JoinSet::new();
   for client in 0..50 {
     let endpoint = endpoint.clone();
+    let registry = registry.clone();
     clients.spawn(async move {
       for cycle in 0..200 {
-        connect_and_end(&endpoint, (client + cycle) % 2 == 0).await;
+        let (mut socket, id) = welcomed_over_duplex(&endpoint).await;
+        assert!(registry.get(&id).is_some(), "session {id:?} not registered after WELCOME");
+        if (client + cycle) % 2 == 0 {
+          socket.send(Message::binary(close_frame(0))).await.unwrap();
+          while let Some(Ok(message)) = socket.next().await {
+            if message.is_close() {
+              break;
+            }
+          }
+        }
       }
     });
   }
   while let Some(finished) = clients.join_next().await {
     finished.unwrap();
   }
-  tokio::time::timeout(EXPECT_WITHIN, async {
-    while !registry.is_empty() {
-      tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-  })
-  .await
-  .expect("every session leaves the registry");
+  assert_eq!(collect(&mut endings, 10_000).await.len(), 10_000);
+  eventually(|| registry.is_empty(), "every session leaves the registry").await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn removes_a_session_once_when_its_close_meets_the_idle_timeout() {
   let registry = Registry::new();
   let mut config = SessionConfig::default();
   config.heartbeat = Duration::from_millis(1);
   config.idle_timeout = Duration::from_millis(2);
-  let (address, _) = listen_with(registry.clone(), config, Arc::new(Permissive)).await;
-  for _ in 0..200 {
-    let mut request = "ws://localhost/rt".into_client_request().unwrap();
-    request
-      .headers_mut()
-      .insert(header::SEC_WEBSOCKET_PROTOCOL, HeaderValue::from_static(SUBPROTOCOL));
-    let (mut socket, _) = client_async(request, TcpStream::connect(address).await.unwrap())
-      .await
-      .unwrap();
-    socket.send(Message::binary(hello_frame())).await.unwrap();
-    next_welcome(&mut socket).await;
-    tokio::time::sleep(Duration::from_millis(2)).await;
+  let (endpoint, mut endings) = recording(&registry, config);
+  for cycle in 0..200 {
+    let (mut socket, _) = welcomed_over_duplex(&endpoint).await;
+    tokio::time::sleep(Duration::from_micros(cycle * 15)).await;
     let _ = socket.send(Message::binary(close_frame(0))).await;
     drop(socket);
   }
-  tokio::time::timeout(EXPECT_WITHIN, async {
-    while !registry.is_empty() {
-      tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-  })
-  .await
-  .expect("every session leaves the registry");
+  let endings = collect(&mut endings, 200).await;
+  let idle = endings
+    .iter()
+    .filter(|ending| {
+      matches!(
+        ending,
+        Ending::Closed {
+          code: CloseCode::IdleTimeout,
+          by: Side::Server,
+          ..
+        }
+      )
+    })
+    .count();
+  let by_client = endings
+    .iter()
+    .filter(|ending| {
+      matches!(
+        ending,
+        Ending::Closed {
+          code: CloseCode::Normal,
+          by: Side::Client,
+          ..
+        }
+      )
+    })
+    .count();
+  assert!(
+    idle > 0 && by_client > 0,
+    "idle {idle}, client close {by_client}: the close never met the timer"
+  );
+  eventually(|| registry.is_empty(), "every session leaves the registry").await;
 }

@@ -26,6 +26,7 @@ use tokio::sync::mpsc::error::SendError;
 pub struct Handle(mpsc::Sender<Command>);
 
 impl Handle {
+  #[must_use]
   pub(crate) const fn new(commands: mpsc::Sender<Command>) -> Self {
     Self(commands)
   }
@@ -89,6 +90,7 @@ impl Registry {
 /// A registered session. Dropping it removes the session, once, and only the entry it made: a
 /// later registration under the same ID stays.
 #[derive(Debug)]
+#[must_use = "dropping the registration removes the session"]
 pub(crate) struct Registration {
   registry: Registry,
   id: SessionId,

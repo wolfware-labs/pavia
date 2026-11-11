@@ -1,6 +1,6 @@
 # Sans-IO core and crate layout
 
-Decision record for roadmap C0.7 (#2). Status: accepted, 2026-09-21. Amended 2026-11-01 (#36): `poll_output` returns `None` when drained, and the next deadline comes from `poll_timeout`. Amended 2026-11-01 (#27): `now` is a `handle_input` argument, not a field of each input. Amended 2026-11-01 (#30): authentication is `Output::Authenticate` and its answer an input, because the authenticator is async application code that runs in the driver. Amended 2026-11-01 (#31): the driver supplies the session ID with `Authenticated`, since generating it needs OS randomness. Amended 2026-11-08 (#34): when the timer fires with a message already readable, the driver feeds the message, and the session handles input that arrives past a deadline itself. Amended 2026-11-09 (#35): the transport refuses a WebSocket message above `2 x max_frame` from its frame headers and reports it as `Input::MessageTooLarge`, and the driver lingers on the connection after the session ends. Amended 2026-11-11 (#37): the session reports `Output::Established { session }` right before WELCOME is queued, and the server driver registers the session there and nowhere earlier.
+Decision record for roadmap C0.7 (#2). Status: accepted, 2026-09-21. Amended 2026-11-01 (#36): `poll_output` returns `None` when drained, and the next deadline comes from `poll_timeout`. Amended 2026-11-01 (#27): `now` is a `handle_input` argument, not a field of each input. Amended 2026-11-01 (#30): authentication is `Output::Authenticate` and its answer an input, because the authenticator is async application code that runs in the driver. Amended 2026-11-01 (#31): the driver supplies the session ID with `Authenticated`, since generating it needs OS randomness. Amended 2026-11-08 (#34): when the timer fires with a message already readable, the driver feeds the message, and the session handles input that arrives past a deadline itself. Amended 2026-11-09 (#35): the transport refuses a WebSocket message above `2 x max_frame` from its frame headers and reports it as `Input::MessageTooLarge`, and the driver lingers on the connection after the session ends. Amended 2026-11-10 (#37): the session reports `Output::Established { session }` right before WELCOME is queued, and the server driver registers the session there and nowhere earlier.
 
 ## Decisions
 
@@ -81,6 +81,7 @@ pub enum Output {
     Datagram(Bytes),
     CloseTransport { code: CloseCode, reason: String },
     Authenticate { auth: Option<Auth> },                      // run the authenticator on HELLO auth (7.5)
+    Established { session: SessionId },                       // right before WELCOME; reachable from here on (13.4)
     Event(Event),                                             // to the application
     Ended(Ending),                                            // last output, exactly once (§13.4)
 }

@@ -1,10 +1,11 @@
 //! The task that drives one [`pavia_proto::session::Session`] over a WebSocket [`Transport`].
 //!
-//! [`run`] feeds every received message, transport event and [`Command`] into the session and
-//! carries out its outputs in order: a CLOSE frame is flushed before the transport closes (§7.7).
-//! It returns the session's [`Ending`], so each session reports its end exactly once (§13.4), and
-//! leaves the connection to [`Transport::linger`] on a task of its own, so the peer reads the
-//! close before the connection drops.
+//! [`run`] feeds every received message, transport event and [`Command`] sent through the
+//! session's [`Handle`] into the session and carries out its outputs in order: a CLOSE frame is
+//! flushed before the transport closes (§7.7). It returns the session's [`Ending`], so each
+//! session reports its end exactly once (§13.4), and leaves the connection to
+//! [`Transport::linger`] on a task of its own, so the peer reads the close before the connection
+//! drops.
 
 use std::future::Future;
 use std::io;
@@ -19,8 +20,8 @@ use tokio::sync::mpsc;
 use tokio::time::{Instant, sleep_until};
 
 use crate::auth::{AuthFailure, Authenticator, Principal};
-use crate::registry::{Handle, Registration, Registry};
 use crate::session_id;
+use crate::sessions::{Handle, Registration, Registry};
 use crate::websocket::{Received, Transport, TransportError};
 
 const COMMAND_QUEUE: usize = 32;

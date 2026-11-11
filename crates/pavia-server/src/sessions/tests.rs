@@ -27,7 +27,8 @@ async fn reaches_a_registered_session_until_its_registration_drops() {
   assert_eq!(registry.len(), 1);
   assert!(!registry.is_empty());
   registry.get(&id("s_a")).unwrap().send(CLOSE).await.unwrap();
-  assert_eq!(commands.recv().await, Some(CLOSE));
+  let received = tokio::time::timeout(std::time::Duration::from_secs(5), commands.recv()).await;
+  assert_eq!(received, Ok(Some(CLOSE)));
   assert!(registry.get(&id("s_b")).is_none());
   drop(registration);
   assert!(registry.is_empty());
@@ -38,8 +39,9 @@ async fn reaches_a_registered_session_until_its_registration_drops() {
 fn shares_the_sessions_between_clones() {
   let registry = Registry::new();
   let view = registry.clone();
-  let _registration = registry.register(id("s_a"), handle().0);
-  assert_eq!(view.len(), 1);
+  let _first = registry.register(id("s_a"), handle().0);
+  let _second = registry.register(id("s_b"), handle().0);
+  assert_eq!(view.len(), 2);
 }
 
 #[test]
