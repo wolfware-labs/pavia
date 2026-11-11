@@ -53,6 +53,22 @@ impl MethodName {
   pub fn as_str(&self) -> &str {
     &self.0
   }
+
+  /// The service segment, before the `/`.
+  #[must_use]
+  pub fn service(&self) -> &str {
+    self.halves().0
+  }
+
+  /// The method segment, after the `/`.
+  #[must_use]
+  pub fn method(&self) -> &str {
+    self.halves().1
+  }
+
+  fn halves(&self) -> (&str, &str) {
+    self.0.split_once('/').unwrap_or((&self.0, ""))
+  }
 }
 
 fn is_segment(segment: &str) -> bool {
@@ -86,13 +102,20 @@ impl fmt::Display for MethodName {
 #[error("invalid method name {0:?}: expected \"<service>/<method>\", each segment [A-Za-z_][A-Za-z0-9_]*")]
 pub struct InvalidMethodName(pub String);
 
-/// Whether a method answers CALL or takes NOTIFY (§8.2, §9.1). A CALL naming a `Notify` method is
-/// refused, and a NOTIFY naming a `Call` method is treated as one to an unknown method.
+/// Whether a method answers CALL or takes NOTIFY. A CALL naming a `Notify` method is answered
+/// INVALID_ARGUMENT (§8.2 check 3, #48), and a NOTIFY naming a `Call` method is handled like one to
+/// an unknown method (§9.1, #55); the registry only records the kind. Only a CALL method has a
+/// shape and can be idempotent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Kind {
   /// Invoked with CALL; the callee answers.
-  Call,
+  Call {
+    /// Who streams in the call (§8.1).
+    shape: Shape,
+    /// Whether a caller may retry the call (§12.2).
+    idempotent: bool,
+  },
   /// Invoked with NOTIFY; nothing answers.
   Notify,
 }
@@ -100,49 +123,51 @@ pub enum Kind {
 /// One registered method: its handler and the facts about it the session reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct Method<H> {
+pub struct MethodEntry<H> {
   /// What runs when the method is invoked.
   pub handler: H,
-  /// CALL or NOTIFY.
+  /// CALL, with its shape and idempotence, or NOTIFY.
   pub kind: Kind,
-  /// Who streams in a call (§8.1); [`Method::notify`] sets [`Shape::Unary`].
-  pub shape: Shape,
-  /// Whether a caller may retry the call (§12.2).
-  pub idempotent: bool,
 }
 
-impl<H> Method<H> {
+impl<H> MethodEntry<H> {
   /// A unary CALL method, not idempotent.
+  #[must_use]
   pub const fn call(handler: H) -> Self {
     Self {
       handler,
-      kind: Kind::Call,
-      shape: Shape::Unary,
-      idempotent: false,
+      kind: Kind::Call {
+        shape: Shape::Unary,
+        idempotent: false,
+      },
     }
   }
 
   /// A NOTIFY method.
+  #[must_use]
   pub const fn notify(handler: H) -> Self {
     Self {
       handler,
       kind: Kind::Notify,
-      shape: Shape::Unary,
-      idempotent: false,
     }
   }
 
-  /// The same method with `shape`.
+  /// The same method with `shape`. A NOTIFY method has no shape and comes back unchanged.
   #[must_use]
   pub const fn with_shape(mut self, shape: Shape) -> Self {
-    self.shape = shape;
+    if let Kind::Call { idempotent, .. } = self.kind {
+      self.kind = Kind::Call { shape, idempotent };
+    }
     self
   }
 
-  /// The same method, marked idempotent.
+  /// The same method, marked idempotent. A NOTIFY method is never retried and comes back
+  /// unchanged.
   #[must_use]
   pub const fn idempotent(mut self) -> Self {
-    self.idempotent = true;
+    if let Kind::Call { shape, .. } = self.kind {
+      self.kind = Kind::Call { shape, idempotent: true };
+    }
     self
   }
 }
@@ -162,8 +187,8 @@ pub enum RegisterError {
 /// The methods of both sides, built once when the application starts and then only read.
 #[derive(Debug, Clone)]
 pub struct MethodRegistry<H> {
-  server: HashMap<MethodName, Method<H>>,
-  client: HashMap<MethodName, Method<H>>,
+  server: HashMap<MethodName, MethodEntry<H>>,
+  client: HashMap<MethodName, MethodEntry<H>>,
 }
 
 impl<H> Default for MethodRegistry<H> {
@@ -188,7 +213,7 @@ impl<H> MethodRegistry<H> {
   ///
   /// [`RegisterError`] for a name that breaks §8.1 or that the server side already has; the
   /// registered method stays as it was.
-  pub fn register_server_method(&mut self, name: &str, method: Method<H>) -> Result<(), RegisterError> {
+  pub fn register_server_method(&mut self, name: &str, method: MethodEntry<H>) -> Result<(), RegisterError> {
     self.register(Side::Server, name, method)
   }
 
@@ -198,23 +223,33 @@ impl<H> MethodRegistry<H> {
   ///
   /// [`RegisterError`] for a name that breaks §8.1 or that the client side already has; the
   /// registered method stays as it was.
-  pub fn register_client_method(&mut self, name: &str, method: Method<H>) -> Result<(), RegisterError> {
+  pub fn register_client_method(&mut self, name: &str, method: MethodEntry<H>) -> Result<(), RegisterError> {
     self.register(Side::Client, name, method)
   }
 
   /// The server method `name`, which a CALL or NOTIFY from the client resolves to.
   #[must_use]
-  pub fn server_method(&self, name: &str) -> Option<&Method<H>> {
+  pub fn server_method(&self, name: &str) -> Option<&MethodEntry<H>> {
     self.server.get(name)
   }
 
   /// The client method `name`, which a CALL or NOTIFY from the server resolves to.
   #[must_use]
-  pub fn client_method(&self, name: &str) -> Option<&Method<H>> {
+  pub fn client_method(&self, name: &str) -> Option<&MethodEntry<H>> {
     self.client.get(name)
   }
 
-  fn register(&mut self, side: Side, name: &str, method: Method<H>) -> Result<(), RegisterError> {
+  /// Every server method, in no particular order.
+  pub fn server_methods(&self) -> impl Iterator<Item = (&MethodName, &MethodEntry<H>)> {
+    self.server.iter()
+  }
+
+  /// Every client method, in no particular order.
+  pub fn client_methods(&self) -> impl Iterator<Item = (&MethodName, &MethodEntry<H>)> {
+    self.client.iter()
+  }
+
+  fn register(&mut self, side: Side, name: &str, method: MethodEntry<H>) -> Result<(), RegisterError> {
     let name = MethodName::parse(name)?;
     let table = match side {
       Side::Server => &mut self.server,

@@ -20,7 +20,8 @@ impl Frame {
   /// - [`FrameError::HeartbeatTooLarge`] for a PING or PONG data section over 8 bytes.
   /// - [`FrameError::Field`] for a missing or ill-typed field.
   ///
-  /// Every error converts into the [`ProtocolError`] the session acts on.
+  /// Every error converts into the
+  /// [`ProtocolError`](crate::error::ProtocolError) the session acts on.
   pub(crate) fn from_raw(raw: &RawFrame, limits: &DecodeLimits) -> Result<Self, FrameError> {
     let Ok(frame_type) = FrameType::try_from(raw.frame_type) else {
       return if raw.frame_type >= 0x80 {
