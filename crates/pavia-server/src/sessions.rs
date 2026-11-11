@@ -1,12 +1,12 @@
 //! The session registry (§13.3, §13.4): every established session on this server, by session ID.
 //!
-//! [`session::run`](crate::session::run) registers a session when the session reports it
-//! established, right before WELCOME is queued, and the session leaves the registry when `run`
-//! returns, whatever ended it. Before WELCOME a session is not reachable from here (§14), so a
-//! command sent to it through the registry can never arrive ahead of WELCOME.
+//! [`session::run`](crate::session::run) registers a session once the WELCOME that establishes
+//! it is written, and the session leaves the registry when `run` returns, whatever ended it.
+//! Before WELCOME a session is not reachable from here (§14), so a command sent to it through the
+//! registry can never arrive ahead of WELCOME.
 //!
 //! ```text
-//!  HELLO ─▶ authenticator ─▶ Established: register ─▶ WELCOME ─▶ … ─▶ run returns: removed
+//!  HELLO ─▶ authenticator ─▶ WELCOME written: register ─▶ … ─▶ run returns: removed
 //!                          ╰─▶ REJECT or close: never registered
 //! ```
 //!

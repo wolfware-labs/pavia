@@ -183,6 +183,7 @@ async fn welcomed_in(registry: &Registry, config: SessionConfig) -> (Socket, one
 async fn commanded(command: Command) -> (Socket, oneshot::Receiver<Ending>) {
   let registry = Registry::new();
   let (socket, ending, id) = welcomed_in(&registry, SessionConfig::default()).await;
+  eventually(|| registry.get(&id).is_some(), "the session is registered after WELCOME").await;
   registry.get(&id).unwrap().send(command).await.unwrap();
   (socket, ending)
 }
@@ -835,7 +836,7 @@ async fn registers_at_welcome_and_removes_when_the_session_ends() {
   eventually(|| !authenticator.seen().is_empty(), "the authenticator runs").await;
   assert!(registry.is_empty());
   let (mut socket, ending, id) = welcomed_in(&registry, SessionConfig::default()).await;
-  assert_eq!(registry.len(), 1);
+  eventually(|| registry.len() == 1, "the session is registered after WELCOME").await;
   assert!(registry.get(&id).is_some());
   socket.send(Message::binary(close_frame(0))).await.unwrap();
   mirrored_client_close(&mut socket, ending).await;
@@ -922,7 +923,7 @@ async fn leaves_the_registry_empty_after_ten_thousand_sessions() {
     clients.spawn(async move {
       for cycle in 0..200 {
         let (mut socket, id) = welcomed_over_duplex(&endpoint).await;
-        assert!(registry.get(&id).is_some(), "session {id:?} not registered after WELCOME");
+        eventually(|| registry.get(&id).is_some(), "the session is registered after WELCOME").await;
         if (client + cycle) % 2 == 0 {
           socket.send(Message::binary(close_frame(0))).await.unwrap();
           while let Some(Ok(message)) = socket.next().await {

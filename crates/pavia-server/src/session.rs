@@ -30,9 +30,10 @@ type Authenticating<'a> = Pin<Box<dyn Future<Output = Result<Principal, AuthFail
 
 /// Runs a server session on `transport` until it ends.
 ///
-/// The session joins `registry` when it is established, right before WELCOME is queued, and
-/// leaves it when this returns, however it ended (§13.4). The application reaches it through
-/// [`Registry::get`] in between; before WELCOME nothing can reach it (§14).
+/// The session joins `registry` once its WELCOME is written, and leaves it when this returns,
+/// however it ended (§13.4). The application reaches it through [`Registry::get`] in between;
+/// before WELCOME nothing can reach it (§14), and a session whose WELCOME cannot be written never
+/// joins.
 ///
 /// `authenticator` runs once, after HELLO (§7.5). The transport keeps being read while it runs,
 /// so a CLOSE, a transport loss or the handshake deadline still ends the session. When it
@@ -55,6 +56,7 @@ pub async fn run<A: Authenticator>(mut transport: Transport, registry: &Registry
   let mut membership = Membership {
     registry,
     handle: Handle::new(sender),
+    welcoming: None,
     registration: None,
   };
   let mut session = Session::server(transport.session(), transport.accepted().into_std());
@@ -124,7 +126,16 @@ fn authenticated(principal: &Principal, id: io::Result<SessionId>) -> Input {
 struct Membership<'a> {
   registry: &'a Registry,
   handle: Handle,
+  welcoming: Option<SessionId>,
   registration: Option<Registration>,
+}
+
+impl Membership<'_> {
+  fn sent(&mut self) {
+    if let Some(id) = self.welcoming.take() {
+      self.registration = Some(self.registry.register(id, self.handle.clone()));
+    }
+  }
 }
 
 enum Step {
@@ -138,7 +149,9 @@ async fn carry_out(session: &mut Session, transport: &mut Transport, membership:
   while let Some(output) = session.poll_output() {
     match output {
       Output::Transmit(message) => {
-        if transport.send(message).await.is_err() {
+        if transport.send(message).await.is_ok() {
+          membership.sent();
+        } else {
           session.handle_input(Input::TransportLost, Instant::now().into_std());
         }
       }
@@ -146,9 +159,7 @@ async fn carry_out(session: &mut Session, transport: &mut Transport, membership:
         let _ = transport.close(code, &reason).await;
       }
       Output::Authenticate { auth } => step = Step::Authenticate(auth),
-      Output::Established { session } => {
-        membership.registration = Some(membership.registry.register(session, membership.handle.clone()));
-      }
+      Output::Established { session } => membership.welcoming = Some(session),
       Output::Ended(ending) => return Step::Ended(ending),
       _ => {}
     }

@@ -128,9 +128,9 @@ pub enum Output {
     /// HELLO `auth`.
     auth: Option<Auth>,
   },
-  /// The session is established under `session`, right before WELCOME is queued. The driver
-  /// makes it reachable from here on, never before: nothing sent to the session ahead of WELCOME
-  /// may reach it (§13.4, §14).
+  /// The session is established under `session`; the next output is the WELCOME that says so.
+  /// The driver makes the session reachable once that WELCOME is written, never before: nothing
+  /// sent to the session ahead of WELCOME may reach it (§13.4, §14).
   Established {
     /// The session ID WELCOME carries.
     session: SessionId,
