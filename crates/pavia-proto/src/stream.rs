@@ -13,6 +13,8 @@ pub(crate) mod ids;
 #[cfg_attr(not(test), expect(dead_code, reason = "used by the session from #24 onwards"))]
 pub(crate) mod call;
 
+pub use call::Shape;
+
 /// The transport a session runs on (§4.2, §4.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Binding {

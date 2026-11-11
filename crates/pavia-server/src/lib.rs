@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 pub mod auth;
+pub mod methods;
 pub mod session;
 mod session_id;
 pub mod sessions;
