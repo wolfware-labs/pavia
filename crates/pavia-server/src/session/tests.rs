@@ -1316,3 +1316,113 @@ async fn answers_a_fast_call_while_a_slow_one_runs() {
   release.send(true).unwrap();
   assert_eq!(next_answer(&mut socket).await.stream, 2);
 }
+
+#[tokio::test]
+async fn answers_internal_when_the_result_does_not_encode() {
+  let mut methods = MethodRegistry::new();
+  methods
+    .register_server_method("chat/odd", MethodEntry::call(Handler::new(0, |_| async { Arg::Simple(25) })))
+    .unwrap();
+  let mut socket = serving(Arc::new(methods)).await;
+  socket
+    .send(Message::binary(call_frame(2, "chat/odd", &[0x80])))
+    .await
+    .unwrap();
+  let answer = next_answer(&mut socket).await;
+  assert_eq!((answer.stream, answer.frame_type), (2, 0x14));
+  assert_eq!(answer.header[&6], Value::from(13));
+}
+
+#[tokio::test]
+async fn answers_internal_when_a_handler_panics_before_its_future_runs() {
+  let mut methods = MethodRegistry::new();
+  methods
+    .register_server_method(
+      "chat/early",
+      MethodEntry::call(Handler::new(0, |_| -> std::future::Ready<Arg> {
+        panic!("the handler fails before it returns a future")
+      })),
+    )
+    .unwrap();
+  methods
+    .register_server_method("chat/ping", MethodEntry::call(Handler::new(0, |_| async { Arg::Null })))
+    .unwrap();
+  let mut socket = serving(Arc::new(methods)).await;
+  socket
+    .send(Message::binary(call_frame(2, "chat/early", &[0x80])))
+    .await
+    .unwrap();
+  let answer = next_answer(&mut socket).await;
+  assert_eq!((answer.stream, answer.frame_type), (2, 0x14));
+  assert_eq!(answer.header[&6], Value::from(13));
+  socket
+    .send(Message::binary(call_frame(4, "chat/ping", &[0x80])))
+    .await
+    .unwrap();
+  assert_eq!(next_answer(&mut socket).await.frame_type, 0x13);
+}
+
+#[tokio::test]
+async fn answers_calls_in_json_when_the_session_negotiated_it() {
+  let (methods, _) = chat();
+  let mut config = SessionConfig::default();
+  config.codecs = vec![pavia_proto::data::Codec::Json];
+  let (address, _) = listen_serving(Registry::new(), methods, config, Arc::new(Permissive)).await;
+  let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
+  let header = [0xa2, 0x0e, 0x81, 0x01, 0x10, 0x81, 0x64, b'j', b's', b'o', b'n'];
+  let mut hello = vec![0x00, 0x01, 0x00, header.len() as u8 + 1, header.len() as u8];
+  hello.extend(header);
+  socket.send(Message::binary(hello)).await.unwrap();
+  next_welcome(&mut socket).await;
+  socket
+    .send(Message::binary(call_frame(2, "chat/send", br#"["general","hello"]"#)))
+    .await
+    .unwrap();
+  let answer = next_answer(&mut socket).await;
+  assert_eq!((answer.frame_type, answer.data), (0x13, br#""general:hello""#.to_vec()));
+  socket.send(Message::binary(call_frame(4, "chat/ping", b"[]"))).await.unwrap();
+  assert_eq!(next_answer(&mut socket).await.data, b"null".to_vec());
+  socket
+    .send(Message::binary(call_frame(6, "chat/send", br#""general""#)))
+    .await
+    .unwrap();
+  assert_refused(&next_answer(&mut socket).await, 6, 3);
+}
+
+struct Dropped(Arc<AtomicBool>);
+
+impl Drop for Dropped {
+  fn drop(&mut self) {
+    self.0.store(true, Ordering::SeqCst);
+  }
+}
+
+#[tokio::test]
+async fn drops_running_handlers_when_the_session_ends() {
+  let dropped = Arc::new(AtomicBool::new(false));
+  let started = Arc::new(AtomicBool::new(false));
+  let (flag, running) = (Arc::clone(&dropped), Arc::clone(&started));
+  let mut methods = MethodRegistry::new();
+  methods
+    .register_server_method(
+      "chat/forever",
+      MethodEntry::call(Handler::new(0, move |_| {
+        let guard = Dropped(Arc::clone(&flag));
+        running.store(true, Ordering::SeqCst);
+        async move {
+          let _guard = guard;
+          std::future::pending::<Arg>().await
+        }
+      })),
+    )
+    .unwrap();
+  let mut socket = serving(Arc::new(methods)).await;
+  socket
+    .send(Message::binary(call_frame(2, "chat/forever", &[0x80])))
+    .await
+    .unwrap();
+  eventually(|| started.load(Ordering::SeqCst), "the handler starts").await;
+  assert!(!dropped.load(Ordering::SeqCst));
+  drop(socket);
+  eventually(|| dropped.load(Ordering::SeqCst), "the handler is dropped with the session").await;
+}

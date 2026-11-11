@@ -192,7 +192,8 @@ impl Calls<'_> {
       let msg = format!("expected {} arguments, got {}", method.handler.params(), arguments.len());
       return refuse(StatusCode::InvalidArgument, &msg);
     }
-    let task = self.running.spawn(method.handler.run(arguments));
+    let handler = method.handler.clone();
+    let task = self.running.spawn(async move { handler.run(arguments).await });
     self.streams.insert(task.id(), stream);
     None
   }

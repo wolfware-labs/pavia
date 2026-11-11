@@ -20,8 +20,8 @@ pub struct Config {
   pub handshake_timeout: Duration,
   /// The protocol major versions this server speaks. Default `[1]`.
   pub versions: Vec<u64>,
-  /// The data-section codecs this server supports. Default `[Codec::Cbor]`; `json` waits for
-  /// its data-section codec (#59).
+  /// The data-section codecs this server supports, in its order of preference. Default
+  /// `[Codec::Cbor]`; add [`Codec::Json`] to offer `json` too.
   pub codecs: Vec<Codec>,
   /// WELCOME `hb`, the heartbeat interval (§7.4). Default 15 s.
   pub heartbeat: Duration,

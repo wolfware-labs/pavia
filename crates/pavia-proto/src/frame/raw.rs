@@ -4,7 +4,7 @@ use bytes::{BufMut, Bytes};
 
 use super::fields::{self, Bad, Entries, Fields, MapBody, Problem, encode_map, entry_count};
 use super::*;
-use crate::wire::frame::{Frame as RawFrame, put_prefix};
+use crate::wire::frame::{Frame as RawFrame, payload_length, put_prefix};
 use crate::wire::header::{self, DecodeLimits, Measure, Out, Sink};
 
 impl Frame {
@@ -73,13 +73,7 @@ impl Frame {
       return Ok(());
     }
     let frame_type = self.frame_type().expect("every other variant is registered");
-    let header_length = if entry_count(self) == 0 {
-      0
-    } else {
-      let mut measure = Measure::default();
-      encode_map(self, &mut measure);
-      measure.0
-    };
+    let header_length = self.header_length();
     let data = self.data();
     put_prefix(frame_type.into(), 0, header_length, data.len(), out)?;
     if header_length > 0 {
@@ -87,6 +81,30 @@ impl Frame {
     }
     out.put_slice(data);
     Ok(())
+  }
+
+  /// The payload length [`encode`](Self::encode) writes in the Length field: HeaderLength, header
+  /// and data, the size the receiver checks against its `max_frame` (§5.2).
+  ///
+  /// # Errors
+  ///
+  /// [`EncodeError::PayloadTooLarge`] if the payload is above 2^62 − 1 bytes.
+  pub(crate) fn payload_length(&self) -> Result<u64, EncodeError> {
+    let length = match self {
+      Self::Extension(extension) => payload_length(extension.header.len(), extension.data.len())?,
+      _ => payload_length(self.header_length(), self.data().len())?,
+    };
+    Ok(length)
+  }
+
+  fn header_length(&self) -> usize {
+    if entry_count(self) == 0 {
+      0
+    } else {
+      let mut measure = Measure::default();
+      encode_map(self, &mut measure);
+      measure.0
+    }
   }
 
   /// The rules `from_raw` enforces that the field types alone do not.

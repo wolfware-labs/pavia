@@ -67,7 +67,7 @@ use crate::frame::{Auth, Call, CallError, CallResult, Close, Frame, Heartbeat, H
 use crate::negotiate;
 use crate::registry::{CloseCode, StatusCode};
 use crate::session_id::SessionId;
-use crate::stream::call::CallState;
+use crate::stream::call::{CallState, Step};
 use crate::stream::ids::{self, Admitted, StreamIds};
 use crate::stream::{Role, Shape, Side};
 use crate::wire::envelope;
@@ -79,6 +79,7 @@ mod config;
 pub use config::{Config, ConfigError, ValidConfig};
 
 const CONTROL_STREAM: u64 = 0;
+const DEFAULT_MAX_FRAME: u64 = 1 << 20;
 
 /// What the driver tells the session.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -254,7 +255,6 @@ enum State {
     negotiated: Negotiated,
     ping_at: Instant,
     idle_at: Instant,
-    calls: Calls,
   },
   Ended,
 }
@@ -265,6 +265,15 @@ struct Calls {
   open: HashMap<u64, CallState>,
 }
 
+impl Calls {
+  fn settle(&mut self, stream: u64) {
+    if self.open.get(&stream).is_some_and(CallState::is_complete) {
+      self.open.remove(&stream);
+      self.ids.close(stream);
+    }
+  }
+}
+
 /// One server session.
 #[derive(Debug)]
 pub struct Session {
@@ -272,6 +281,7 @@ pub struct Session {
   now: Instant,
   config: ValidConfig,
   limits: DecodeLimits,
+  calls: Calls,
   state: State,
   outputs: VecDeque<Output>,
   urgent: usize,
@@ -287,12 +297,22 @@ impl Session {
       now,
       config: config.clone(),
       limits: DecodeLimits::default(),
+      calls: Calls {
+        ids: StreamIds::new(Side::Server),
+        open: HashMap::new(),
+      },
       state: State::AwaitHello {
         deadline: now + config.0.handshake_timeout,
       },
       outputs: VecDeque::new(),
       urgent: 0,
     }
+  }
+
+  /// How many calls are open: opened by CALL and not complete yet (§6.3).
+  #[must_use]
+  pub fn open_calls(&self) -> usize {
+    self.calls.open.len()
   }
 
   /// Whether the session has ended. Every later input is ignored.
@@ -498,10 +518,6 @@ impl Session {
       negotiated,
       ping_at: self.now,
       idle_at: self.now + self.config.0.idle_timeout,
-      calls: Calls {
-        ids: StreamIds::new(self.local),
-        open: HashMap::new(),
-      },
     };
     self.outputs.push_back(Output::Established {
       session: session.clone(),
@@ -565,42 +581,30 @@ impl Session {
   }
 
   fn on_call_stream(&mut self, stream: u64, frame: Frame) {
-    let State::Established { calls, .. } = &mut self.state else {
-      return;
-    };
     let Some(frame_type) = frame.frame_type() else {
       return;
     };
-    let outcome = match calls.ids.receive(stream, ids::opens_stream(frame_type)) {
-      Err(error) => Err(error),
-      Ok(Admitted::Opened) => match frame {
-        Frame::Call(call) => return self.open_call(stream, call),
-        _ => Ok(()),
-      },
-      Ok(Admitted::Open) => match calls.open.get_mut(&stream) {
-        Some(call) => {
-          let step = call.on_frame(Role::Caller, frame_type).map(|_| ());
-          if call.is_complete() {
-            calls.open.remove(&stream);
-            calls.ids.close(stream);
-          }
-          step
+    match (self.calls.ids.receive(stream, ids::opens_stream(frame_type)), frame) {
+      (Err(error), _) => self.fail(&error),
+      (Ok(Admitted::Opened), Frame::Call(call)) => self.open_call(stream, call),
+      (Ok(_), _) => {
+        let step = self
+          .calls
+          .open
+          .get_mut(&stream)
+          .map_or(Ok(Step::Ignored), |call| call.on_frame(Role::Caller, frame_type));
+        self.calls.settle(stream);
+        if let Err(error) = step {
+          self.fail(&error);
         }
-        None => Ok(()),
-      },
-      Ok(Admitted::Control) => Ok(()),
-    };
-    if let Err(error) = outcome {
-      self.fail(&error);
+      }
     }
   }
 
   fn open_call(&mut self, stream: u64, call: Call) {
-    let State::Established { calls, .. } = &mut self.state else {
-      return;
-    };
     let shape = Shape::try_from(call.shape);
-    calls
+    self
+      .calls
       .open
       .insert(stream, CallState::new(shape.unwrap_or(Shape::Unary), Role::Callee));
     if shape.is_ok() {
@@ -620,20 +624,29 @@ impl Session {
   }
 
   fn answer(&mut self, stream: u64, frame: &Frame) {
-    let State::Established { calls, .. } = &mut self.state else {
-      return;
-    };
-    let (Some(call), Some(frame_type)) = (calls.open.get_mut(&stream), frame.frame_type()) else {
-      return;
-    };
-    if call.on_frame(Role::Callee, frame_type).is_err() {
-      return;
+    let fits = frame.payload_length().is_ok_and(|length| length <= self.peer_max_frame());
+    let too_large = Frame::Error(CallError {
+      code: u64::from(u16::from(StatusCode::ResourceExhausted)),
+      msg: "answer above the client's max_frame".to_owned(),
+      nx: None,
+      meta: None,
+      data: Bytes::new(),
+    });
+    let frame = if fits { frame } else { &too_large };
+    if let (Some(call), Some(frame_type)) = (self.calls.open.get_mut(&stream), frame.frame_type())
+      && call.on_frame(Role::Callee, frame_type).is_ok()
+    {
+      self.calls.settle(stream);
+      self.transmit_on(stream, frame);
     }
-    if call.is_complete() {
-      calls.open.remove(&stream);
-      calls.ids.close(stream);
-    }
-    self.transmit_on(stream, frame);
+  }
+
+  fn peer_max_frame(&self) -> u64 {
+    self
+      .hello()
+      .and_then(|hello| hello.limits.as_ref())
+      .and_then(|limits| limits.max_frame)
+      .unwrap_or(DEFAULT_MAX_FRAME)
   }
 
   fn transmit(&mut self, frame: &Frame) {
@@ -642,9 +655,7 @@ impl Session {
 
   fn transmit_on(&mut self, stream: u64, frame: &Frame) {
     let mut message = BytesMut::new();
-    if varint::encode(stream, &mut message).is_err() {
-      return;
-    }
+    varint::encode(stream, &mut message).expect("stream IDs come from varints, so they fit one");
     if frame.encode(&mut message).is_ok() {
       let output = Output::Transmit(message.freeze());
       if matches!(frame, Frame::Ping { .. } | Frame::Pong { .. } | Frame::Close(_)) {

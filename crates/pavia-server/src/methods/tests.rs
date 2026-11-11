@@ -1,6 +1,8 @@
 use pavia_proto::stream::Shape;
 
-use super::{InvalidMethodName, Kind, MethodEntry, MethodName, MethodRegistry, RegisterError};
+use pavia_proto::data::Value;
+
+use super::{Handler, InvalidMethodName, Kind, MethodEntry, MethodName, MethodRegistry, RegisterError};
 
 #[test]
 fn accepts_names_that_follow_the_rule() {
@@ -175,4 +177,11 @@ fn explains_what_went_wrong() {
     "method chat/send is already registered"
   );
   assert!(InvalidMethodName("chat".into()).to_string().contains("\"chat\""));
+}
+
+#[test]
+fn shows_how_many_parameters_a_handler_takes() {
+  let handler = Handler::new(2, |_| async { Value::Null });
+  assert_eq!(handler.params(), 2);
+  assert_eq!(format!("{handler:?}"), "Handler { params: 2, .. }");
 }

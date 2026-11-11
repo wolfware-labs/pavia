@@ -1389,8 +1389,10 @@ fn hands_a_call_to_the_driver_and_sends_its_result() {
   let received = called(&mut session, 2, call("chat/send", 0, &[0x80]));
   assert_eq!(received.method, "chat/send");
   assert_eq!(received.data, Bytes::from_static(&[0x80]));
+  assert_eq!(session.open_calls(), 1);
   session.feed(answer(2, &[0xf6]));
   assert_eq!(sent_frames(&mut session), [(2, result(&[0xf6]))]);
+  assert_eq!(session.open_calls(), 0);
 }
 
 #[test]
@@ -1417,6 +1419,7 @@ fn sends_an_error_with_nx_only_when_the_handler_never_ran() {
         })
       )]
     );
+    assert_eq!(session.open_calls(), 0);
   }
 }
 
@@ -1475,4 +1478,92 @@ fn ignores_a_call_before_welcome() {
   assert_eq!(drain(&mut session), []);
   session.feed(answer(2, &[0xf6]));
   assert_eq!(drain(&mut session), []);
+}
+
+#[test]
+fn drops_an_extension_frame_on_any_stream() {
+  let (mut session, _) = welcomed(None);
+  for stream in [2, 9] {
+    session.feed(Input::Message(Bytes::from(vec![stream, 0x80, 0x00, 0x01, 0x00])));
+    assert_eq!(drain(&mut session), [], "stream {stream}");
+  }
+  assert!(!session.is_ended());
+  called(&mut session, 2, call("chat/send", 0, &[0x80]));
+}
+
+#[test]
+fn ignores_a_call_frame_on_the_control_stream() {
+  let (mut session, _) = welcomed(None);
+  session.feed(Input::Message(message(&[(0, Frame::Cancel(Cancel { msg: None }))])));
+  assert_eq!(drain(&mut session), []);
+  assert!(!session.is_ended());
+}
+
+#[test]
+fn closes_on_an_item_from_the_caller_of_a_unary_call() {
+  let (mut session, _) = welcomed(None);
+  called(&mut session, 2, call("chat/send", 0, &[0x80]));
+  let item = Frame::Item(Item {
+    meta: None,
+    data: Bytes::from_static(&[0xf6]),
+  });
+  session.feed(Input::Message(message(&[(2, item)])));
+  assert!(ended_with(&mut session, CloseCode::ProtocolError));
+}
+
+fn welcomed_by_a_client_with(max_frame: u64) -> Session {
+  let mut session = server();
+  let hello = Hello {
+    limits: Some(Limits {
+      max_calls: None,
+      max_frame: Some(max_frame),
+      max_subs: None,
+      max_dgram: None,
+      window: None,
+    }),
+    ..hello()
+  };
+  session.feed(Input::Message(message(&[(0, Frame::Hello(hello))])));
+  session.feed(authenticated(None));
+  drain(&mut session);
+  session
+}
+
+#[test]
+fn refuses_an_answer_above_the_client_max_frame_and_keeps_the_session() {
+  let mut session = welcomed_by_a_client_with(MAX_FRAME_FLOOR);
+  let fitting = usize::try_from(MAX_FRAME_FLOOR).unwrap() - 1;
+  for (stream, length, code) in [(2, fitting, 0x13), (4, fitting + 1, 0x14)] {
+    called(&mut session, stream, call("chat/send", 0, &[0x80]));
+    session.feed(Input::Command(Command::Result {
+      stream,
+      data: Bytes::from(vec![0; length]),
+    }));
+    let sent = sent_frames(&mut session);
+    let [(sent_stream, frame)] = sent.as_slice() else {
+      panic!("{} frames", sent.len());
+    };
+    assert_eq!(
+      (*sent_stream, frame.frame_type().map(u8::from)),
+      (stream, Some(code)),
+      "{length}"
+    );
+    if let Frame::Error(error) = frame {
+      assert_eq!((error.code, error.nx), (8, None));
+    }
+  }
+  assert_eq!(session.open_calls(), 0);
+  assert!(!session.is_ended());
+}
+
+#[test]
+fn bounds_answers_by_one_mebibyte_when_the_client_advertises_no_max_frame() {
+  let (mut session, _) = welcomed(None);
+  called(&mut session, 2, call("chat/send", 0, &[0x80]));
+  session.feed(Input::Command(Command::Result {
+    stream: 2,
+    data: Bytes::from(vec![0; 1 << 20]),
+  }));
+  let sent = sent_frames(&mut session);
+  assert!(matches!(sent.as_slice(), [(2, Frame::Error(error))] if error.code == 8));
 }
