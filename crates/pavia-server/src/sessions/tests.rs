@@ -4,6 +4,7 @@ use pavia_proto::session_id::SessionId;
 use tokio::sync::mpsc;
 
 use super::{Handle, Registry};
+use crate::test_support::EXPECT_WITHIN;
 
 fn id(text: &str) -> SessionId {
   SessionId::parse(text).unwrap()
@@ -27,7 +28,7 @@ async fn reaches_a_registered_session_until_its_registration_drops() {
   assert_eq!(registry.len(), 1);
   assert!(!registry.is_empty());
   registry.get(&id("s_a")).unwrap().send(CLOSE).await.unwrap();
-  let received = tokio::time::timeout(std::time::Duration::from_secs(5), commands.recv()).await;
+  let received = tokio::time::timeout(EXPECT_WITHIN, commands.recv()).await;
   assert_eq!(received, Ok(Some(CLOSE)));
   assert!(registry.get(&id("s_b")).is_none());
   drop(registration);

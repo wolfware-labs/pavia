@@ -164,15 +164,20 @@ async fn closed_by_server(socket: &mut Socket, ending: oneshot::Receiver<Ending>
   ));
 }
 
-async fn welcomed_in(registry: &Registry, config: SessionConfig) -> (Socket, oneshot::Receiver<Ending>, SessionId) {
-  let (mut socket, ending) = connect_on(registry.clone(), config).await;
+async fn established<S: AsyncRead + AsyncWrite + Unpin>(socket: &mut WebSocketStream<S>) -> SessionId {
   socket.send(Message::binary(hello_frame())).await.unwrap();
-  let welcome = next_welcome(&mut socket).await;
+  let welcome = next_welcome(socket).await;
   assert_eq!(welcome.len(), 7);
   let Value::Text(id) = &welcome[&19] else {
     panic!("WELCOME without a session ID");
   };
-  (socket, ending, SessionId::parse(id).unwrap())
+  SessionId::parse(id).unwrap()
+}
+
+async fn welcomed_in(registry: &Registry, config: SessionConfig) -> (Socket, oneshot::Receiver<Ending>, SessionId) {
+  let (mut socket, ending) = connect_on(registry.clone(), config).await;
+  let id = established(&mut socket).await;
+  (socket, ending, id)
 }
 
 async fn commanded(command: Command) -> (Socket, oneshot::Receiver<Ending>) {
@@ -215,8 +220,7 @@ async fn cuts_the_close_reason_on_a_character_boundary() {
 #[tokio::test]
 async fn mirrors_a_client_close() {
   let (mut socket, ending) = connect().await;
-  socket.send(Message::binary(hello_frame())).await.unwrap();
-  assert_eq!(next_welcome(&mut socket).await.len(), 7);
+  established(&mut socket).await;
   socket.send(Message::binary(close_frame(0))).await.unwrap();
   assert!(mirrored_client_close(&mut socket, ending).await.is_empty());
 }
@@ -274,8 +278,8 @@ async fn closes_with_protocol_error_on_a_malformed_message() {
 #[tokio::test]
 async fn keeps_running_after_a_message_that_needs_no_answer() {
   let (mut socket, ending) = connect().await;
-  socket.send(Message::binary(hello_frame())).await.unwrap();
-  assert_eq!(next_welcome(&mut socket).await.len(), 7);
+  established(&mut socket).await;
+  socket.send(Message::binary(heartbeat_frame(0x05, b"x"))).await.unwrap();
   socket.send(Message::binary(close_frame(0))).await.unwrap();
   assert!(mirrored_client_close(&mut socket, ending).await.is_empty());
 }
@@ -333,7 +337,7 @@ async fn sends_welcome_and_stops_the_handshake_timer() {
   assert!(mirrored_client_close(&mut socket, ending).await.is_empty());
 }
 
-async fn next_welcome(socket: &mut Socket) -> BTreeMap<u64, Value> {
+async fn next_welcome<S: AsyncRead + AsyncWrite + Unpin>(socket: &mut WebSocketStream<S>) -> BTreeMap<u64, Value> {
   match socket.next().await.unwrap().unwrap() {
     Message::Binary(message) => welcome(&message),
     other => panic!("expected WELCOME, got {other:?}"),
@@ -881,26 +885,30 @@ where
   let endpoint = endpoint.clone();
   tokio::spawn(async move { endpoint.serve_connection(server, None).await });
   let mut socket = open(client).await;
-  socket.send(Message::binary(hello_frame())).await.unwrap();
-  let Some(Ok(Message::Binary(message))) = socket.next().await else {
-    panic!("no WELCOME");
-  };
-  let Value::Text(id) = &welcome(&message)[&19] else {
-    panic!("WELCOME without a session ID");
-  };
-  (socket, SessionId::parse(id).unwrap())
+  let id = established(&mut socket).await;
+  (socket, id)
 }
 
 async fn collect(endings: &mut mpsc::UnboundedReceiver<Ending>, count: usize) -> Vec<Ending> {
   let mut collected = Vec::with_capacity(count);
-  tokio::time::timeout(EXPECT_WITHIN, async {
+  let _ = tokio::time::timeout(EXPECT_WITHIN, async {
     while collected.len() < count {
-      collected.push(endings.recv().await.expect("a session task ended without its Ending"));
+      let Some(ending) = endings.recv().await else {
+        break;
+      };
+      collected.push(ending);
     }
   })
-  .await
-  .unwrap_or_else(|_| panic!("{} of {count} sessions reported an ending", collected.len()));
+  .await;
+  assert_eq!(collected.len(), count, "sessions that reported an ending");
   collected
+}
+
+fn closed_with(endings: &[Ending], code: CloseCode, by: Side) -> usize {
+  endings
+    .iter()
+    .filter(|ending| matches!(ending, Ending::Closed { code: ended, by: side, .. } if *ended == code && *side == by))
+    .count()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -929,7 +937,7 @@ async fn leaves_the_registry_empty_after_ten_thousand_sessions() {
   while let Some(finished) = clients.join_next().await {
     finished.unwrap();
   }
-  assert_eq!(collect(&mut endings, 10_000).await.len(), 10_000);
+  collect(&mut endings, 10_000).await;
   eventually(|| registry.is_empty(), "every session leaves the registry").await;
 }
 
@@ -937,42 +945,18 @@ async fn leaves_the_registry_empty_after_ten_thousand_sessions() {
 async fn removes_a_session_once_when_its_close_meets_the_idle_timeout() {
   let registry = Registry::new();
   let mut config = SessionConfig::default();
-  config.heartbeat = Duration::from_millis(1);
-  config.idle_timeout = Duration::from_millis(2);
+  config.heartbeat = Duration::from_millis(5);
+  config.idle_timeout = Duration::from_millis(20);
   let (endpoint, mut endings) = recording(&registry, config);
   for cycle in 0..200 {
     let (mut socket, _) = welcomed_over_duplex(&endpoint).await;
-    tokio::time::sleep(Duration::from_micros(cycle * 15)).await;
+    tokio::time::sleep(Duration::from_micros(cycle * 200)).await;
     let _ = socket.send(Message::binary(close_frame(0))).await;
     drop(socket);
   }
   let endings = collect(&mut endings, 200).await;
-  let idle = endings
-    .iter()
-    .filter(|ending| {
-      matches!(
-        ending,
-        Ending::Closed {
-          code: CloseCode::IdleTimeout,
-          by: Side::Server,
-          ..
-        }
-      )
-    })
-    .count();
-  let by_client = endings
-    .iter()
-    .filter(|ending| {
-      matches!(
-        ending,
-        Ending::Closed {
-          code: CloseCode::Normal,
-          by: Side::Client,
-          ..
-        }
-      )
-    })
-    .count();
+  let idle = closed_with(&endings, CloseCode::IdleTimeout, Side::Server);
+  let by_client = closed_with(&endings, CloseCode::Normal, Side::Client);
   assert!(
     idle > 0 && by_client > 0,
     "idle {idle}, client close {by_client}: the close never met the timer"
