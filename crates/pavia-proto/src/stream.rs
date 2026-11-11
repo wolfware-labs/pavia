@@ -3,6 +3,8 @@
 //! [`allowed`] answers whether a type may ever appear on a stream. Whether it may appear now, such
 //! as ITEM after END, is the call state machine's question; capabilities and the handshake are
 //! session checks.
+//!
+//! [`Shape`], who streams in a call (§8.1), is public so method registries can record it.
 
 use crate::error::ProtocolError;
 use crate::frame::FrameType;
@@ -12,6 +14,8 @@ pub(crate) mod ids;
 
 #[cfg_attr(not(test), expect(dead_code, reason = "used by the session from #24 onwards"))]
 pub(crate) mod call;
+
+pub use call::Shape;
 
 /// The transport a session runs on (§4.2, §4.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -5,10 +5,10 @@
 //! [`error`] and [`registry`] are public because the session drivers in other crates match on
 //! [`error::Outcome`] and convert the registry codes. [`data`] is public because handlers receive
 //! and return data-section values. [`stream`] is public so a driver can reject a frame on the
-//! wrong kind of stream as soon as it decodes one. [`session`] is the state machine every driver
-//! runs, and [`negotiate`] and [`caps`] hold its version, codec and capability selection, which
-//! clients share. [`session_id`] is the format of the public session ID. The wire layer stays
-//! private.
+//! wrong kind of stream as soon as it decodes one, and so a method registry can record each
+//! method's [`stream::Shape`]. [`session`] is the state machine every driver runs, and
+//! [`negotiate`] and [`caps`] hold its version, codec and capability selection, which clients
+//! share. [`session_id`] is the format of the public session ID. The wire layer stays private.
 #![forbid(unsafe_code)]
 
 pub mod caps;
