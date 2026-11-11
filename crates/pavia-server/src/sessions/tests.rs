@@ -55,6 +55,16 @@ fn keeps_a_later_registration_under_the_same_id() {
   assert_eq!(registry.len(), 1);
 }
 
+#[test]
+fn keeps_a_later_registration_of_the_same_handle() {
+  let registry = Registry::new();
+  let (handle, _commands) = handle();
+  let earlier = registry.register(id("s_a"), handle.clone());
+  let _later = registry.register(id("s_a"), handle);
+  drop(earlier);
+  assert_eq!(registry.len(), 1);
+}
+
 #[tokio::test]
 async fn gives_the_command_back_once_the_session_has_ended() {
   let registry = Registry::new();
@@ -71,7 +81,7 @@ fn removes_an_entry_even_after_a_panic_poisoned_the_lock() {
   let registration = registry.register(id("s_a"), handle().0);
   let poisoner = registry.clone();
   let _ = std::thread::spawn(move || {
-    let _guard = poisoner.sessions.lock().unwrap();
+    let _guard = poisoner.inner.lock().unwrap();
     panic!("poison the registry lock");
   })
   .join();

@@ -44,7 +44,19 @@ impl Handle {
 /// Every established session on this server. Cloning it gives another view of the same sessions.
 #[derive(Debug, Clone, Default)]
 pub struct Registry {
-  sessions: Arc<Mutex<HashMap<SessionId, Handle>>>,
+  inner: Arc<Mutex<Inner>>,
+}
+
+#[derive(Debug, Default)]
+struct Inner {
+  sessions: HashMap<SessionId, Entry>,
+  registrations: u64,
+}
+
+#[derive(Debug)]
+struct Entry {
+  handle: Handle,
+  registration: u64,
 }
 
 impl Registry {
@@ -57,54 +69,58 @@ impl Registry {
   /// The number of established sessions.
   #[must_use]
   pub fn len(&self) -> usize {
-    self.lock().len()
+    self.lock().sessions.len()
   }
 
   /// Whether no session is established.
   #[must_use]
   pub fn is_empty(&self) -> bool {
-    self.lock().is_empty()
+    self.lock().sessions.is_empty()
   }
 
   /// The handle of the established session `id`, if it is still running.
   #[must_use]
   pub fn get(&self, id: &SessionId) -> Option<Handle> {
-    self.lock().get(id).cloned()
+    self.lock().sessions.get(id).map(|entry| entry.handle.clone())
   }
 
   /// Registers the session `id`, reachable through `handle`, until the returned guard is dropped.
   pub(crate) fn register(&self, id: SessionId, handle: Handle) -> Registration {
-    self.lock().insert(id.clone(), handle.clone());
+    let mut inner = self.lock();
+    inner.registrations += 1;
+    let registration = inner.registrations;
+    inner.sessions.insert(id.clone(), Entry { handle, registration });
     Registration {
       registry: self.clone(),
       id,
-      handle,
+      registration,
     }
   }
 
-  fn lock(&self) -> MutexGuard<'_, HashMap<SessionId, Handle>> {
-    self.sessions.lock().unwrap_or_else(PoisonError::into_inner)
+  fn lock(&self) -> MutexGuard<'_, Inner> {
+    self.inner.lock().unwrap_or_else(PoisonError::into_inner)
   }
 }
 
-/// A registered session. Dropping it removes the session, once, and only the entry it made: a
-/// later registration under the same ID stays.
+/// A registered session. Dropping it removes the session, once, and only the entry this
+/// registration made: a later registration under the same ID stays, even with the same handle.
 #[derive(Debug)]
 #[must_use = "dropping the registration removes the session"]
 pub(crate) struct Registration {
   registry: Registry,
   id: SessionId,
-  handle: Handle,
+  registration: u64,
 }
 
 impl Drop for Registration {
   fn drop(&mut self) {
-    let mut sessions = self.registry.lock();
-    if sessions
+    let mut inner = self.registry.lock();
+    if inner
+      .sessions
       .get(&self.id)
-      .is_some_and(|entry| entry.0.same_channel(&self.handle.0))
+      .is_some_and(|entry| entry.registration == self.registration)
     {
-      sessions.remove(&self.id);
+      inner.sessions.remove(&self.id);
     }
   }
 }
