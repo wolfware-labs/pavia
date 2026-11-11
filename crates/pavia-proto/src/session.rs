@@ -79,7 +79,6 @@ mod config;
 pub use config::{Config, ConfigError, ValidConfig};
 
 const CONTROL_STREAM: u64 = 0;
-const DEFAULT_MAX_FRAME: u64 = 1 << 20;
 
 /// What the driver tells the session.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,7 +138,7 @@ pub enum Command {
     /// The message.
     msg: String,
     /// `nx`: the handler never ran.
-    not_executed: bool,
+    nx: bool,
   },
 }
 
@@ -366,21 +365,7 @@ impl Session {
       Input::Command(Command::Result { stream, data }) => {
         self.answer(stream, &Frame::Result(CallResult { meta: None, data }));
       }
-      Input::Command(Command::Error {
-        stream,
-        code,
-        msg,
-        not_executed,
-      }) => self.answer(
-        stream,
-        &Frame::Error(CallError {
-          code: u64::from(u16::from(code)),
-          msg,
-          nx: not_executed.then_some(true),
-          meta: None,
-          data: Bytes::new(),
-        }),
-      ),
+      Input::Command(Command::Error { stream, code, msg, nx }) => self.answer(stream, &call_error(code, msg, nx)),
       Input::Message(_) | Input::Timeout | Input::Authenticated { .. } | Input::AuthFailed(_) if expired => {
         self.close(CloseCode::HandshakeTimeout, None);
       }
@@ -548,7 +533,7 @@ impl Session {
   fn close(&mut self, code: CloseCode, msg: Option<String>) {
     self.outputs.truncate(self.urgent);
     let close = Frame::Close(Close {
-      code: u64::from(u16::from(code)),
+      code: u64::from(code),
       msg: msg.clone(),
     });
     self.transmit(&close);
@@ -565,7 +550,7 @@ impl Session {
 
   fn reject(&mut self, code: CloseCode, msg: &str) {
     let reject = Frame::Reject(Reject {
-      code: u64::from(u16::from(code)),
+      code: u64::from(code),
       msg: msg.to_owned(),
       retry: None,
     });
@@ -602,37 +587,28 @@ impl Session {
   }
 
   fn open_call(&mut self, stream: u64, call: Call) {
-    let shape = Shape::try_from(call.shape);
-    self
-      .calls
-      .open
-      .insert(stream, CallState::new(shape.unwrap_or(Shape::Unary), Role::Callee));
-    if shape.is_ok() {
+    if let Ok(shape) = Shape::try_from(call.shape) {
+      self.calls.open.insert(stream, CallState::new(shape, Role::Callee));
       self.outputs.push_back(Output::Call { stream, call });
     } else {
-      self.answer(
-        stream,
-        &Frame::Error(CallError {
-          code: u64::from(u16::from(StatusCode::InvalidArgument)),
-          msg: "unknown call shape".to_owned(),
-          nx: Some(true),
-          meta: None,
-          data: Bytes::new(),
-        }),
-      );
+      self.calls.ids.close(stream);
+      let refusal = call_error(StatusCode::InvalidArgument, "unknown call shape".to_owned(), true);
+      self.transmit_on(stream, &refusal);
     }
   }
 
   fn answer(&mut self, stream: u64, frame: &Frame) {
-    let fits = frame.payload_length().is_ok_and(|length| length <= self.peer_max_frame());
-    let too_large = Frame::Error(CallError {
-      code: u64::from(u16::from(StatusCode::ResourceExhausted)),
-      msg: "answer above the client's max_frame".to_owned(),
-      nx: None,
-      meta: None,
-      data: Bytes::new(),
-    });
-    let frame = if fits { frame } else { &too_large };
+    let too_large;
+    let frame = if frame.payload_length().is_ok_and(|length| length <= self.peer_max_frame()) {
+      frame
+    } else {
+      too_large = call_error(
+        StatusCode::ResourceExhausted,
+        "answer above the client's max_frame".to_owned(),
+        false,
+      );
+      &too_large
+    };
     if let (Some(call), Some(frame_type)) = (self.calls.open.get_mut(&stream), frame.frame_type())
       && call.on_frame(Role::Callee, frame_type).is_ok()
     {
@@ -646,7 +622,7 @@ impl Session {
       .hello()
       .and_then(|hello| hello.limits.as_ref())
       .and_then(|limits| limits.max_frame)
-      .unwrap_or(DEFAULT_MAX_FRAME)
+      .unwrap_or(config::DEFAULT_MAX_FRAME)
   }
 
   fn transmit(&mut self, frame: &Frame) {
@@ -674,6 +650,16 @@ impl Session {
     self.state = State::Ended;
     self.outputs.push_back(Output::Ended(ending));
   }
+}
+
+fn call_error(code: StatusCode, msg: String, nx: bool) -> Frame {
+  Frame::Error(CallError {
+    code: u64::from(code),
+    msg,
+    nx: nx.then_some(true),
+    meta: None,
+    data: Bytes::new(),
+  })
 }
 
 #[cfg(test)]

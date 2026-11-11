@@ -4,7 +4,8 @@
 //! names are case-sensitive. Server methods, which the client calls, and client methods, which
 //! the server calls, are separate namespaces, so one name can be both. A name is checked when it
 //! is registered, so a bad or duplicate name fails when the application builds its registry, not
-//! when a peer first calls it.
+//! when a peer first calls it. A [`Handler`] is the code behind a method: the session runs it
+//! with the CALL arguments as dynamic values.
 //!
 //! ```text
 //!  register_server_method("chat/send") ─▶ name rule ─▶ not on the server side yet ─▶ stored
@@ -175,11 +176,13 @@ impl<H> MethodEntry<H> {
   }
 }
 
-type Run = dyn Fn(Vec<Value>) -> Pin<Box<dyn Future<Output = Value> + Send>> + Send + Sync;
+type Running = Pin<Box<dyn Future<Output = Value> + Send>>;
+
+type Run = dyn Fn(Vec<Value>) -> Running + Send + Sync;
 
 /// The code behind a method: it takes the CALL arguments as dynamic values (§8.2, §12.3) and
 /// returns the RESULT value. A method with no return value returns [`Value::Null`], the codec's
-/// unit value. Typed handlers arrive with the contract (M4).
+/// unit value. Typed handlers arrive with the typed codec mapping (#66).
 #[derive(Clone)]
 pub struct Handler {
   params: usize,
@@ -206,7 +209,7 @@ impl Handler {
     self.params
   }
 
-  pub(crate) fn run(&self, arguments: Vec<Value>) -> Pin<Box<dyn Future<Output = Value> + Send>> {
+  pub(crate) fn run(&self, arguments: Vec<Value>) -> Running {
     (self.run)(arguments)
   }
 }

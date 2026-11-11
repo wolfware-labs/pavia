@@ -125,7 +125,12 @@ async fn connect() -> (Socket, oneshot::Receiver<Ending>) {
 }
 
 fn hello_frame() -> Vec<u8> {
-  let header = [0xa2, 0x0e, 0x81, 0x01, 0x10, 0x81, 0x64, b'c', b'b', b'o', b'r'];
+  hello_frame_with(b"cbor")
+}
+
+fn hello_frame_with(codec: &[u8; 4]) -> Vec<u8> {
+  let mut header = vec![0xa2, 0x0e, 0x81, 0x01, 0x10, 0x81, 0x64];
+  header.extend(codec);
   let mut frame = vec![0x00, 0x01, 0x00, header.len() as u8 + 1, header.len() as u8];
   frame.extend(header);
   frame
@@ -365,7 +370,11 @@ fn welcome(message: &[u8]) -> BTreeMap<u64, Value> {
   let mut rest = &message[3..];
   let _payload = varint(&mut rest);
   let header = varint(&mut rest);
-  let header: Value = ciborium::from_reader(&rest[..header as usize]).unwrap();
+  header_map(&rest[..header as usize])
+}
+
+fn header_map(header: &[u8]) -> BTreeMap<u64, Value> {
+  let header: Value = ciborium::from_reader(header).unwrap();
   let Value::Map(entries) = header else {
     panic!("{header:?}");
   };
@@ -1105,13 +1114,7 @@ async fn next_answer(socket: &mut Socket) -> Answer {
   let header = if header_length == 0 {
     BTreeMap::new()
   } else {
-    let map: Value = ciborium::from_reader(&rest[..header_length]).unwrap();
-    map
-      .into_map()
-      .unwrap()
-      .into_iter()
-      .map(|(key, value)| (u64::try_from(key.into_integer().unwrap()).unwrap(), value))
-      .collect()
+    header_map(&rest[..header_length])
   };
   Answer {
     stream,
@@ -1369,10 +1372,7 @@ async fn answers_calls_in_json_when_the_session_negotiated_it() {
   config.codecs = vec![pavia_proto::data::Codec::Json];
   let (address, _) = listen_serving(Registry::new(), methods, config, Arc::new(Permissive)).await;
   let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
-  let header = [0xa2, 0x0e, 0x81, 0x01, 0x10, 0x81, 0x64, b'j', b's', b'o', b'n'];
-  let mut hello = vec![0x00, 0x01, 0x00, header.len() as u8 + 1, header.len() as u8];
-  hello.extend(header);
-  socket.send(Message::binary(hello)).await.unwrap();
+  socket.send(Message::binary(hello_frame_with(b"json"))).await.unwrap();
   next_welcome(&mut socket).await;
   socket
     .send(Message::binary(call_frame(2, "chat/send", br#"["general","hello"]"#)))

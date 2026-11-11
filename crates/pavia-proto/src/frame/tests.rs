@@ -1,10 +1,11 @@
+use bytes::{Bytes, BytesMut};
 use proptest::prelude::*;
 
 use super::*;
 use crate::error::{Outcome, ProtocolError};
 use crate::registry::CloseCode;
 use crate::wire::frame::Frame as RawFrame;
-use crate::wire::frame::FrameDecoder;
+use crate::wire::frame::{FrameDecoder, take_frame};
 use crate::wire::header::{self, DecodeLimits, Value};
 
 fn raw(frame_type: u8, entries: &[(Value<'_>, Value<'_>)], data: &[u8]) -> RawFrame {
@@ -961,5 +962,29 @@ proptest! {
     } else {
       prop_assert!(header.is_empty());
     }
+  }
+}
+
+#[test]
+fn measures_the_payload_it_encodes() {
+  let frames = [
+    Frame::Extension(Extension {
+      frame_type: 0x80,
+      header: Bytes::from_static(&[0xa0]),
+      data: Bytes::from_static(&[1, 2]),
+    }),
+    Frame::Result(CallResult {
+      meta: None,
+      data: Bytes::from_static(&[0xf6]),
+    }),
+    Frame::Cancel(Cancel {
+      msg: Some("stop".into()),
+    }),
+  ];
+  for frame in frames {
+    let mut encoded = BytesMut::new();
+    frame.encode(&mut encoded).unwrap();
+    let raw = take_frame(&mut encoded.freeze(), u64::MAX).unwrap().unwrap();
+    assert_eq!(frame.payload_length(), Ok(raw.payload_length().unwrap()), "{frame:?}");
   }
 }

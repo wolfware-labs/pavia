@@ -1,11 +1,11 @@
 //! The task that drives one [`pavia_proto::session::Session`] over a WebSocket [`Transport`].
 //!
-//! [`run`] feeds every received message, transport event and [`Command`] sent through the
-//! session's [`Handle`] into the session and carries out its outputs in order: a CLOSE frame is
-//! flushed before the transport closes (§7.7). It returns the session's [`Ending`], so each
-//! session reports its end exactly once (§13.4), and leaves the connection to
-//! [`Transport::linger`] on a task of its own, so the peer reads the close before the connection
-//! drops.
+//! [`run`] feeds every received message, transport event, [`Command`] sent through the session's
+//! [`Handle`] and answer of a method handler into the session and carries out its outputs in
+//! order: a CLOSE frame is flushed before the transport closes (§7.7). It returns the session's
+//! [`Ending`], so each session reports its end exactly once (§13.4), and leaves the connection
+//! to [`Transport::linger`] on a task of its own, so the peer reads the close before the
+//! connection drops.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -174,7 +174,7 @@ impl Calls<'_> {
         stream,
         code,
         msg: msg.to_owned(),
-        not_executed: true,
+        nx: true,
       })
     };
     let Some(method) = self.methods.server_method(&call.method) else {
@@ -222,7 +222,7 @@ fn internal(stream: u64, msg: &str) -> Command {
     stream,
     code: StatusCode::Internal,
     msg: msg.to_owned(),
-    not_executed: false,
+    nx: false,
   }
 }
 

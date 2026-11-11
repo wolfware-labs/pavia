@@ -146,6 +146,12 @@ impl From<CloseCode> for u16 {
   }
 }
 
+impl From<CloseCode> for u64 {
+  fn from(code: CloseCode) -> Self {
+    Self::from(u16::from(code))
+  }
+}
+
 impl TryFrom<u16> for CloseCode {
   type Error = UnknownCode;
 
@@ -181,6 +187,12 @@ impl StatusCode {
 impl From<StatusCode> for u16 {
   fn from(code: StatusCode) -> Self {
     code as u16
+  }
+}
+
+impl From<StatusCode> for u64 {
+  fn from(code: StatusCode) -> Self {
+    Self::from(u16::from(code))
   }
 }
 
@@ -349,14 +361,26 @@ mod tests {
     }
   }
 
+  fn assert_converts_to_frame_fields<T>(table: &[(u16, T)])
+  where
+    T: Copy + Debug,
+    u64: From<T>,
+  {
+    for &(number, value) in table {
+      assert_eq!(u16::try_from(u64::from(value)), Ok(number), "{value:?} should be {number}");
+    }
+  }
+
   #[test]
   fn converts_close_codes_to_numbers() {
     assert_converts_to_numbers(&CLOSE_CODES);
+    assert_converts_to_frame_fields(&CLOSE_CODES);
   }
 
   #[test]
   fn converts_status_codes_to_numbers() {
     assert_converts_to_numbers(&STATUS_CODES);
+    assert_converts_to_frame_fields(&STATUS_CODES);
   }
 
   #[test]
