@@ -44,8 +44,9 @@ type Authenticating<'a> = Pin<Box<dyn Future<Output = Result<Principal, AuthFail
 /// Each CALL from the client runs the server method of that name from `methods` on a task of its
 /// own, so a slow handler holds up no other call, and its value goes back as RESULT (§8.2, §8.4).
 /// A call this task can refuse without running anything is answered ERROR with `nx`: an unknown
-/// method (UNIMPLEMENTED), a NOTIFY method, arguments that are not an array in the session codec
-/// or a wrong argument count (INVALID_ARGUMENT). A handler that panics is answered INTERNAL.
+/// method or a streaming one (UNIMPLEMENTED, until streams arrive in M5), a NOTIFY method, a shape
+/// other than the method's, arguments that are not an array in the session codec or a wrong
+/// argument count (INVALID_ARGUMENT). A handler that panics is answered INTERNAL.
 /// Handlers still running when the session ends are dropped with it.
 ///
 /// `authenticator` runs once, after HELLO (§7.5). The transport keeps being read while it runs,
@@ -186,6 +187,9 @@ impl Calls<'_> {
     };
     if Shape::try_from(call.shape) != Ok(shape) {
       return refuse(StatusCode::InvalidArgument, "shape does not match the method");
+    }
+    if shape != Shape::Unary {
+      return refuse(StatusCode::Unimplemented, "streaming calls are not served yet");
     }
     let arguments = match data::decode(&call.data, codec, &DecodeLimits::default()) {
       Ok(Value::Array(arguments)) => arguments,
