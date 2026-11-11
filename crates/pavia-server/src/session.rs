@@ -131,10 +131,8 @@ struct Membership<'a> {
 }
 
 impl Membership<'_> {
-  fn sent(&mut self) {
-    if let Some(id) = self.welcoming.take() {
-      self.registration = Some(self.registry.register(id, self.handle.clone()));
-    }
+  fn join(&mut self, id: SessionId) {
+    self.registration = Some(self.registry.register(id, self.handle.clone()));
   }
 }
 
@@ -147,10 +145,13 @@ enum Step {
 async fn carry_out(session: &mut Session, transport: &mut Transport, membership: &mut Membership<'_>) -> Step {
   let mut step = Step::Continue;
   while let Some(output) = session.poll_output() {
+    let welcoming = membership.welcoming.take();
     match output {
       Output::Transmit(message) => {
         if transport.send(message).await.is_ok() {
-          membership.sent();
+          if let Some(id) = welcoming {
+            membership.join(id);
+          }
         } else {
           session.handle_input(Input::TransportLost, Instant::now().into_std());
         }

@@ -28,8 +28,8 @@
 //! A validated HELLO yields [`Output::Authenticate`]. The driver runs the authenticator and feeds
 //! its answer back as [`Input::Authenticated`] or [`Input::AuthFailed`]; the handshake timer keeps
 //! running meanwhile, so a slow authenticator ends in HANDSHAKE_TIMEOUT (§7.1). Right before
-//! WELCOME it yields [`Output::Established`] with the new session ID, the point from which the
-//! driver may make the session reachable (§13.4, §14).
+//! WELCOME it yields [`Output::Established`] with the new session ID; the driver makes the session
+//! reachable once that WELCOME is written, never before (§13.4, §14).
 //!
 //! After WELCOME every received message, on any stream, moves the idle deadline to `now + idle`;
 //! a timeout at or past it closes with IDLE_TIMEOUT (§7.4). A message that reaches the session

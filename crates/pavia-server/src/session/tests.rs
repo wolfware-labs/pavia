@@ -1,7 +1,10 @@
 use std::collections::BTreeMap;
+use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use ciborium::Value;
@@ -12,7 +15,7 @@ use pavia_proto::registry::CloseCode;
 use pavia_proto::session::{Command, Config as SessionConfig, Ending, Input};
 use pavia_proto::session_id::SessionId;
 use pavia_proto::stream::Side;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -838,6 +841,12 @@ async fn registers_at_welcome_and_removes_when_the_session_ends() {
   let (mut socket, ending, id) = welcomed_in(&registry, SessionConfig::default()).await;
   eventually(|| registry.len() == 1, "the session is registered after WELCOME").await;
   assert!(registry.get(&id).is_some());
+  socket.send(Message::binary(heartbeat_frame(0x04, b"1"))).await.unwrap();
+  assert_eq!(
+    socket.next().await.unwrap().unwrap(),
+    Message::binary(heartbeat_frame(0x05, b"1"))
+  );
+  assert!(registry.get(&id).is_some(), "a later send must keep the session registered");
   socket.send(Message::binary(close_frame(0))).await.unwrap();
   mirrored_client_close(&mut socket, ending).await;
   assert!(registry.is_empty());
@@ -963,4 +972,86 @@ async fn removes_a_session_once_when_its_close_meets_the_idle_timeout() {
     "idle {idle}, client close {by_client}: the close never met the timer"
   );
   eventually(|| registry.is_empty(), "every session leaves the registry").await;
+}
+
+struct FailingWrites {
+  inner: DuplexStream,
+  failing: Arc<AtomicBool>,
+  registry: Registry,
+  registered_at_failure: Arc<Mutex<Option<usize>>>,
+}
+
+impl AsyncRead for FailingWrites {
+  fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+    Pin::new(&mut self.inner).poll_read(cx, buf)
+  }
+}
+
+impl AsyncWrite for FailingWrites {
+  fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+    if self.failing.load(Ordering::SeqCst) {
+      let registered = self.registry.len();
+      self.registered_at_failure.lock().unwrap().get_or_insert(registered);
+      return Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()));
+    }
+    Pin::new(&mut self.inner).poll_write(cx, buf)
+  }
+
+  fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    Pin::new(&mut self.inner).poll_flush(cx)
+  }
+
+  fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    Pin::new(&mut self.inner).poll_shutdown(cx)
+  }
+}
+
+struct BreakingWrites(Arc<AtomicBool>);
+
+impl Authenticator for BreakingWrites {
+  fn schemes(&self) -> &[String] {
+    &[]
+  }
+
+  async fn authenticate(&self, _: Option<&Auth>, _: &RequestContext) -> Result<Principal, AuthFailure> {
+    self.0.store(true, Ordering::SeqCst);
+    Ok(Principal::anonymous())
+  }
+}
+
+#[tokio::test]
+async fn never_registers_a_session_whose_welcome_cannot_be_written() {
+  let registry = Registry::new();
+  let failing = Arc::new(AtomicBool::new(false));
+  let registered_at_failure = Arc::new(Mutex::new(None));
+  let (ended, ending) = oneshot::channel();
+  let ended = Arc::new(Mutex::new(Some(ended)));
+  let config = SessionConfig::default().validate().unwrap();
+  let sessions = registry.clone();
+  let authenticator = Arc::new(BreakingWrites(Arc::clone(&failing)));
+  let endpoint = Endpoint::new(Config::new("/rt", &config), move |transport: Transport| -> Boxed {
+    let registry = sessions.clone();
+    let authenticator = Arc::clone(&authenticator);
+    let ended = ended.lock().unwrap().take();
+    Box::pin(async move {
+      let ending = run(transport, &registry, &*authenticator).await;
+      if let Some(ended) = ended {
+        let _ = ended.send(ending);
+      }
+    })
+  });
+  let (client, server) = tokio::io::duplex(4096);
+  let server = FailingWrites {
+    inner: server,
+    failing,
+    registry: registry.clone(),
+    registered_at_failure: Arc::clone(&registered_at_failure),
+  };
+  tokio::spawn(async move { endpoint.serve_connection(server, None).await });
+  let mut socket = open(client).await;
+  socket.send(Message::binary(hello_frame())).await.unwrap();
+  let ending = tokio::time::timeout(EXPECT_WITHIN, ending).await.unwrap().unwrap();
+  assert_eq!(ending, Ending::TransportLost);
+  assert_eq!(*registered_at_failure.lock().unwrap(), Some(0));
+  assert!(registry.is_empty());
 }
