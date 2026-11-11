@@ -29,14 +29,16 @@ use hyper::upgrade::Upgraded;
 use hyper::{Method, Request, Response, StatusCode, Version};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use pavia_proto::registry::CloseCode;
-use tokio::io::{AsyncRead, AsyncWrite};
+use pavia_proto::session::ValidConfig;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::time::Instant;
 use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::tungstenite::error::CapacityError;
 use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
-use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::protocol::frame::CloseFrame;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode as WsCloseCode;
+use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
 use tokio_tungstenite::tungstenite::{self, Message};
 
 use crate::auth::RequestContext;
@@ -47,8 +49,21 @@ pub const SUBPROTOCOL: &str = "pavia.1";
 const WEBSOCKET_VERSION: &str = "13";
 const CLOSE_CODE_OFFSET: u16 = 4000;
 const MAX_CLOSE_REASON: usize = 123;
+const LINGER: Duration = Duration::from_secs(1);
 
 /// Where the endpoint listens.
+///
+/// It carries the session configuration every transport hands to
+/// [`session::run`](crate::session::run), so the transport's message cap and the session's limits
+/// come from one [`ValidConfig`]. That configuration is set only by [`Config::new`]:
+///
+/// ```compile_fail,E0616
+/// use pavia_proto::session::ValidConfig;
+/// use pavia_server::websocket::Config;
+///
+/// let mut config = Config::new("/rt", &ValidConfig::default());
+/// config.session = ValidConfig::default();
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Config {
@@ -62,21 +77,42 @@ pub struct Config {
   /// handshake deadline still counts from accept ([`Transport::accepted`]), so time spent here
   /// comes out of it; keep this at or below the handshake timeout.
   pub header_read_timeout: Duration,
+  /// The configuration of the sessions on this endpoint, read with [`Config::session`].
+  session: ValidConfig,
 }
 
 impl Config {
-  /// An endpoint on `path`.
+  /// An endpoint on `path` whose sessions are built from `session`.
   #[must_use]
-  pub fn new(path: impl Into<String>) -> Self {
+  pub fn new(path: impl Into<String>, session: &ValidConfig) -> Self {
     Self {
       path: path.into(),
       header_read_timeout: Duration::from_secs(10),
+      session: session.clone(),
     }
+  }
+
+  /// The configuration of the sessions on this endpoint.
+  #[must_use]
+  pub fn session(&self) -> &ValidConfig {
+    &self.session
+  }
+
+  /// The largest WebSocket message a transport reads, in bytes: the session's
+  /// [`ValidConfig::max_message`], `2 × max_frame` (§4.3). A WebSocket frame announcing more is
+  /// refused from its header, before its payload is buffered. A fragmented message is checked as each
+  /// fragment arrives whole, so a connection holds at most `2 × max_message` bytes of it before the
+  /// refusal.
+  #[must_use]
+  pub fn max_message(&self) -> usize {
+    usize::try_from(self.session.max_message()).unwrap_or(usize::MAX)
   }
 }
 
 /// A WebSocket endpoint: answers HTTP/1.1 requests on its path and hands every accepted
-/// transport to `handler` on a task of its own.
+/// transport to `handler` on a task of its own. [`session::run`](crate::session::run) ends each
+/// transport with [`Transport::linger`]; a handler that does not call `run` should end each
+/// transport with it too.
 #[derive(Debug)]
 pub struct Endpoint<H> {
   config: Arc<Config>,
@@ -161,13 +197,18 @@ where
     let upgrade = hyper::upgrade::on(&mut request);
     let context = RequestContext::new(request.headers().clone(), peer);
     let handler = self.handler.clone();
+    let config = Arc::clone(&self.config);
+    let limits = WebSocketConfig::default()
+      .max_message_size(Some(self.config.max_message()))
+      .max_frame_size(Some(self.config.max_message()));
     tokio::spawn(async move {
       if let Ok(upgraded) = upgrade.await {
-        let socket = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Server, None).await;
+        let socket = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Server, Some(limits)).await;
         handler(Transport {
           socket,
           accepted,
           context,
+          config,
         })
         .await;
       }
@@ -262,11 +303,16 @@ fn switching_protocols(accept: &str) -> Response<Empty<Bytes>> {
 
 /// What [`Transport::recv`] read.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Received {
   /// One whole binary message: one or more `WsFrame`s (§5.4).
   Binary(Bytes),
   /// A text message, which the session answers with PROTOCOL_ERROR (§4.3).
   Text,
+  /// A message above [`Config::max_message`], refused before it was buffered whole: from a frame
+  /// header, or from a fragment that takes it past the limit. The session answers it with
+  /// PROTOCOL_ERROR (§4.3); nothing more can be read.
+  TooLarge,
 }
 
 /// Error from the WebSocket connection under a [`Transport`].
@@ -280,6 +326,7 @@ pub struct Transport {
   socket: WebSocketStream<TokioIo<Upgraded>>,
   accepted: Instant,
   context: RequestContext,
+  config: Arc<Config>,
 }
 
 impl Transport {
@@ -288,6 +335,12 @@ impl Transport {
   #[must_use]
   pub const fn accepted(&self) -> Instant {
     self.accepted
+  }
+
+  /// The configuration of the session this transport is for, from its endpoint's [`Config`].
+  #[must_use]
+  pub(crate) fn session(&self) -> &ValidConfig {
+    self.config.session()
   }
 
   /// The upgrade request this transport arrived on.
@@ -299,9 +352,9 @@ impl Transport {
   /// The next data message, or `None` once the peer closed the WebSocket or the connection ended.
   /// The reply to a peer's close goes out at once when the socket can take it. When the send buffer
   /// is full at that moment, the reply and anything still queued are dropped with the transport,
-  /// even if the peer would read them a moment later. Nothing is awaited after a message is taken off the socket, so
-  /// dropping this future loses no message. WebSocket PING and PONG are answered and skipped here;
-  /// they are not Pavia's (§7.4). The PONG goes out when the loop reads again.
+  /// even if the peer would read them a moment later. Nothing is awaited after a message is taken off
+  /// the socket, so dropping this future loses no message. WebSocket PING and PONG are answered and
+  /// skipped here; they are not Pavia's (§7.4). The PONG goes out when the loop reads again.
   ///
   /// # Errors
   ///
@@ -316,6 +369,7 @@ impl Transport {
           return None;
         }
         Ok(Message::Ping(_) | Message::Pong(_) | Message::Frame(_)) => {}
+        Err(tungstenite::Error::Capacity(CapacityError::MessageTooLong { .. })) => return Some(Ok(Received::TooLarge)),
         Err(error) => return Some(Err(error.into())),
       }
     }
@@ -342,6 +396,18 @@ impl Transport {
       reason: truncate(reason, MAX_CLOSE_REASON).into(),
     };
     Ok(self.socket.close(Some(frame)).await?)
+  }
+
+  /// Ends the connection: shuts down the write side, so the peer reads everything sent and then
+  /// end of stream, and reads and drops what the peer still sends until it closes, for at most one
+  /// second. Dropping a TCP connection with unread bytes makes the operating system reset it,
+  /// and the peer can lose a close frame it has not read yet, as after a message refused for
+  /// its size.
+  pub async fn linger(mut self) {
+    let io = self.socket.get_mut();
+    let _ = io.shutdown().await;
+    let mut discarded = [0; 4096];
+    let _ = tokio::time::timeout(LINGER, async { while matches!(io.read(&mut discarded).await, Ok(1..)) {} }).await;
   }
 }
 

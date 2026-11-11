@@ -2,7 +2,9 @@
 //!
 //! [`run`] feeds every received message, transport event and [`Command`] into the session and
 //! carries out its outputs in order: a CLOSE frame is flushed before the transport closes (§7.7).
-//! It returns the session's [`Ending`], so each session reports its end exactly once (§13.4).
+//! It returns the session's [`Ending`], so each session reports its end exactly once (§13.4), and
+//! leaves the connection to [`Transport::linger`] on a task of its own, so the peer reads the
+//! close before the connection drops.
 
 use std::future::Future;
 use std::io;
@@ -11,7 +13,7 @@ use std::pin::Pin;
 use futures_util::FutureExt;
 use pavia_proto::frame::Auth;
 use pavia_proto::registry::CloseCode;
-use pavia_proto::session::{Command, Ending, Input, Output, Session, ValidConfig};
+use pavia_proto::session::{Command, Ending, Input, Output, Session};
 use pavia_proto::session_id::SessionId;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, sleep_until};
@@ -37,15 +39,16 @@ type Authenticating<'a> = Pin<Box<dyn Future<Output = Result<Principal, AuthFail
 /// (§7.1). Time this task spends blocked on a write still counts as the peer's silence, and
 /// nothing bounds a write to a peer that stops reading.
 ///
-/// The handshake timer starts at [`Transport::accepted`], before the upgrade. The clock is
-/// tokio's, so a test that pauses time drives the session's timers too.
+/// The session is built from the configuration of the transport's endpoint
+/// ([`Config::session`](crate::websocket::Config::session)), so its limits and the transport's
+/// message cap come from one value. The handshake timer starts at [`Transport::accepted`], before
+/// the upgrade. The clock is tokio's, so a test that pauses time drives the session's timers too.
 pub async fn run<A: Authenticator>(
   mut transport: Transport,
   mut commands: mpsc::Receiver<Command>,
-  config: &ValidConfig,
   authenticator: &A,
 ) -> Ending {
-  let mut session = Session::server(config, transport.accepted().into_std());
+  let mut session = Session::server(transport.session(), transport.accepted().into_std());
   let context = transport.context().clone();
   let mut authenticating: Option<Authenticating<'_>> = None;
   let mut commands_open = true;
@@ -85,7 +88,10 @@ pub async fn run<A: Authenticator>(
           async move { authenticator.authenticate(auth.as_ref(), context).await },
         ));
       }
-      Step::Ended(ending) => return ending,
+      Step::Ended(ending) => {
+        tokio::spawn(transport.linger());
+        return ending;
+      }
     }
   }
 }
@@ -94,6 +100,7 @@ fn received_input(received: Option<Result<Received, TransportError>>) -> Input {
   match received {
     Some(Ok(Received::Binary(message))) => Input::Message(message),
     Some(Ok(Received::Text)) => Input::TextMessage,
+    Some(Ok(Received::TooLarge)) => Input::MessageTooLarge,
     Some(Err(_)) | None => Input::TransportLost,
   }
 }

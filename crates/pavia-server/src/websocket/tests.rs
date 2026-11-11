@@ -7,15 +7,18 @@ use futures_util::{SinkExt, StreamExt};
 use hyper::StatusCode;
 use hyper::header::{self, HeaderValue};
 use pavia_proto::registry::CloseCode;
+use pavia_proto::session::ValidConfig;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::handshake::client::Response;
-use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode as WsCloseCode;
+use tokio_tungstenite::tungstenite::protocol::frame::Frame;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::{CloseCode as WsCloseCode, Data, OpCode};
 use tokio_tungstenite::tungstenite::{self, Message};
 use tokio_tungstenite::{WebSocketStream, client_async};
 
 use super::{Config, Endpoint, Received, SUBPROTOCOL, Transport, is_key};
+use crate::test_support::{EXPECT_WITHIN, floor_frame, has_ws_close, serve_on_loopback};
 
 const PATH: &str = "/rt";
 
@@ -32,6 +35,11 @@ async fn session(mut transport: Transport) {
       }
       Received::Binary(message) => transport.send(message).await,
       Received::Text => transport.send(Bytes::from_static(b"text")).await,
+      Received::TooLarge => {
+        let _ = transport.close(CloseCode::ProtocolError, "").await;
+        transport.linger().await;
+        return;
+      }
     };
     if sent.is_err() {
       return;
@@ -42,14 +50,13 @@ async fn session(mut transport: Transport) {
 type Session = Pin<Box<dyn Future<Output = ()> + Send>>;
 
 fn endpoint() -> Endpoint<fn(Transport) -> Session> {
-  Endpoint::new(Config::new(PATH), |transport| Box::pin(session(transport)))
+  Endpoint::new(Config::new(PATH, &ValidConfig::default()), |transport| {
+    Box::pin(session(transport))
+  })
 }
 
 async fn listen() -> SocketAddr {
-  let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-  let address = listener.local_addr().unwrap();
-  tokio::spawn(endpoint().serve(listener));
-  address
+  serve_on_loopback(endpoint()).await
 }
 
 async fn upgrade<S>(io: S, path: &str, offers: &[&str]) -> Result<(WebSocketStream<S>, Response), tungstenite::Error>
@@ -241,7 +248,7 @@ async fn answers_a_ping_on_its_own() {
 async fn reads_a_peer_close_while_the_reply_cannot_be_written() {
   let (full, mut filled) = tokio::sync::mpsc::channel(1);
   let (result, mut read) = tokio::sync::mpsc::channel(1);
-  let endpoint = Endpoint::new(Config::new(PATH), move |mut transport: Transport| {
+  let endpoint = Endpoint::new(Config::new(PATH, &ValidConfig::default()), move |mut transport: Transport| {
     let (full, result) = (full.clone(), result.clone());
     async move {
       let message = Bytes::from(vec![0; 1000]);
@@ -285,16 +292,13 @@ fn checks_the_key_shape() {
 
 async fn first_recv(client: impl AsyncFnOnce(SocketAddr)) -> Option<bool> {
   let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
-  let endpoint = Endpoint::new(Config::new(PATH), move |mut transport: Transport| {
+  let endpoint = Endpoint::new(Config::new(PATH, &ValidConfig::default()), move |mut transport: Transport| {
     let sender = sender.clone();
     async move {
       let _ = sender.send(transport.recv().await.map(|received| received.is_ok())).await;
     }
   });
-  let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-  let address = listener.local_addr().unwrap();
-  tokio::spawn(endpoint.serve(listener));
-  client(address).await;
+  client(serve_on_loopback(endpoint).await).await;
   receiver.recv().await.unwrap()
 }
 
@@ -332,35 +336,30 @@ async fn reports_a_broken_frame_as_an_error() {
 
 #[tokio::test]
 async fn drops_a_connection_that_stalls_before_the_request_head() {
-  let mut config = Config::new(PATH);
-  config.header_read_timeout = std::time::Duration::from_millis(200);
+  let mut config = Config::new(PATH, &ValidConfig::default());
+  config.header_read_timeout = Duration::from_millis(200);
   let endpoint: Endpoint<fn(Transport) -> Session> = Endpoint::new(config, |transport| Box::pin(session(transport)));
-  let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-  let address = listener.local_addr().unwrap();
-  tokio::spawn(endpoint.serve(listener));
+  let address = serve_on_loopback(endpoint).await;
   let started = std::time::Instant::now();
   let mut stream = TcpStream::connect(address).await.unwrap();
   stream.write_all(b"GET /rt HTTP/1.1\r\n").await.unwrap();
   let mut rest = Vec::new();
-  let read = tokio::time::timeout(std::time::Duration::from_secs(5), stream.read_to_end(&mut rest)).await;
+  let read = tokio::time::timeout(EXPECT_WITHIN, stream.read_to_end(&mut rest)).await;
   assert!(read.is_ok(), "the connection stayed open");
-  assert!(started.elapsed() >= std::time::Duration::from_millis(200));
+  assert!(started.elapsed() >= Duration::from_millis(200));
 }
 
 #[tokio::test]
 async fn records_when_the_connection_was_accepted() {
   let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
-  let endpoint = Endpoint::new(Config::new(PATH), move |transport: Transport| {
+  let endpoint = Endpoint::new(Config::new(PATH, &ValidConfig::default()), move |transport: Transport| {
     let sender = sender.clone();
     async move {
       let _ = sender.send(transport.accepted()).await;
     }
   });
-  let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-  let address = listener.local_addr().unwrap();
-  tokio::spawn(endpoint.serve(listener));
-  let mut stream = TcpStream::connect(address).await.unwrap();
-  tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+  let mut stream = TcpStream::connect(serve_on_loopback(endpoint).await).await.unwrap();
+  tokio::time::sleep(Duration::from_millis(100)).await;
   let upgraded = tokio::time::Instant::now();
   let response = head(
     &mut stream,
@@ -373,5 +372,66 @@ async fn records_when_the_connection_was_accepted() {
   .await;
   assert!(response.starts_with("HTTP/1.1 101 "), "{response}");
   let accepted = receiver.recv().await.unwrap();
-  assert!(upgraded - accepted >= std::time::Duration::from_millis(90));
+  assert!(upgraded - accepted >= Duration::from_millis(90));
+}
+
+const CAP: usize = 131_072;
+
+async fn capped() -> WebSocketStream<TcpStream> {
+  let config = Config::new(PATH, &floor_frame().validate().unwrap());
+  assert_eq!(config.max_message(), CAP);
+  let endpoint: Endpoint<fn(Transport) -> Session> = Endpoint::new(config, |transport| Box::pin(session(transport)));
+  let stream = TcpStream::connect(serve_on_loopback(endpoint).await).await.unwrap();
+  upgrade(stream, PATH, &[SUBPROTOCOL]).await.unwrap().0
+}
+
+async fn send_binary(socket: &mut WebSocketStream<TcpStream>, length: usize, fragmented: bool) {
+  if fragmented {
+    let half = length / 2;
+    let first = Frame::message(vec![1; half], OpCode::Data(Data::Binary), false);
+    let rest = Frame::message(vec![1; length - half], OpCode::Data(Data::Continue), true);
+    socket.send(Message::Frame(first)).await.unwrap();
+    socket.send(Message::Frame(rest)).await.unwrap();
+  } else {
+    socket.send(Message::binary(vec![1; length])).await.unwrap();
+  }
+}
+
+#[tokio::test]
+async fn reads_a_message_at_the_cap_and_refuses_one_byte_more() {
+  for fragmented in [false, true] {
+    let mut socket = capped().await;
+    send_binary(&mut socket, CAP, fragmented).await;
+    let echo = socket.next().await.unwrap().unwrap();
+    assert_eq!(echo, Message::binary(vec![1; CAP]), "fragmented: {fragmented}");
+    send_binary(&mut socket, CAP + 1, fragmented).await;
+    let Some(Ok(Message::Close(Some(frame)))) = socket.next().await else {
+      panic!("expected a close, fragmented: {fragmented}");
+    };
+    assert_eq!(frame.code, WsCloseCode::from(4001), "fragmented: {fragmented}");
+  }
+}
+
+#[tokio::test]
+async fn refuses_a_frame_above_the_cap_from_its_header() {
+  let socket = capped().await;
+  let mut stream = socket.into_inner();
+  let mut header = vec![0x82, 0xff];
+  header.extend((CAP as u64 + 1).to_be_bytes());
+  header.extend([0x00; 4]);
+  stream.write_all(&header).await.unwrap();
+  let mut rest = Vec::new();
+  let read = tokio::time::timeout(EXPECT_WITHIN, stream.read_to_end(&mut rest)).await;
+  assert!(read.is_ok(), "the server waited for the payload");
+  assert!(has_ws_close(&rest, 4001), "{rest:02x?}");
+}
+
+#[test]
+fn takes_the_message_cap_from_the_session() {
+  let mut session = pavia_proto::session::Config::default();
+  session.max_frame = 100_000;
+  let session = session.validate().unwrap();
+  let config = Config::new(PATH, &session);
+  assert_eq!(config.max_message(), 200_000);
+  assert_eq!(config.session(), &session);
 }

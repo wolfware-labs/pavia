@@ -1,6 +1,6 @@
 # Sans-IO core and crate layout
 
-Decision record for roadmap C0.7 (#2). Status: accepted, 2026-09-21. Amended 2026-11-01 (#36): `poll_output` returns `None` when drained, and the next deadline comes from `poll_timeout`. Amended 2026-11-01 (#27): `now` is a `handle_input` argument, not a field of each input. Amended 2026-11-01 (#30): authentication is `Output::Authenticate` and its answer an input, because the authenticator is async application code that runs in the driver. Amended 2026-11-01 (#31): the driver supplies the session ID with `Authenticated`, since generating it needs OS randomness. Amended 2026-11-08 (#34): when the timer fires with a message already readable, the driver feeds the message, and the session handles input that arrives past a deadline itself.
+Decision record for roadmap C0.7 (#2). Status: accepted, 2026-09-21. Amended 2026-11-01 (#36): `poll_output` returns `None` when drained, and the next deadline comes from `poll_timeout`. Amended 2026-11-01 (#27): `now` is a `handle_input` argument, not a field of each input. Amended 2026-11-01 (#30): authentication is `Output::Authenticate` and its answer an input, because the authenticator is async application code that runs in the driver. Amended 2026-11-01 (#31): the driver supplies the session ID with `Authenticated`, since generating it needs OS randomness. Amended 2026-11-08 (#34): when the timer fires with a message already readable, the driver feeds the message, and the session handles input that arrives past a deadline itself. Amended 2026-11-09 (#35): the transport refuses a WebSocket message above `2 x max_frame` from its frame headers and reports it as `Input::MessageTooLarge`, and the driver lingers on the connection after the session ends.
 
 ## Decisions
 
@@ -115,6 +115,8 @@ Rules the driver must keep:
   - a message past the idle deadline is read and moves the deadline. Only `Input::Timeout` closes with IDLE_TIMEOUT, so a waiting CLOSE is mirrored;
   - a message at or past the heartbeat deadline also sends the due PING, so a peer that keeps the driver busy still gets one every `hb` (spec 7.4).
 - On WebSocket, one `Transmit` is one binary message: the session already applied the `WsFrame` envelope, batched frames across streams, and respected the `2 x max_frame` cap. The driver never splits or merges.
+- On WebSocket, the transport reads at most `2 x max_frame` bytes per message (`ValidConfig::max_message`, spec 4.3), checked against each WebSocket frame header before its payload is buffered. A fragmented message is checked as each fragment arrives whole, so at most `2 x max_message` is buffered before the refusal. A longer message is fed as `Input::MessageTooLarge`, and the session closes with PROTOCOL_ERROR. The session checks every frame's Length against `max_frame` itself, from the first message.
+- After `Output::Ended`, the driver shuts down the connection's write side and reads and drops what the peer still sends, for a bounded time. Dropping a connection with unread bytes resets it, and the peer can lose the close frame.
 - On WebTransport, `Transmit.stream` names a QUIC stream the driver opened on `OpenStream`; the session never writes to a stream before asking for it.
 
 Ordering and priority (spec 6.6) are decided inside `Session` when outputs are queued, so the starvation test is a unit test over `poll_output` order.
