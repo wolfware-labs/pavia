@@ -16,9 +16,12 @@ use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use pavia_proto::data::Value;
 use pavia_proto::stream::{Shape, Side};
 use thiserror::Error;
 
@@ -169,6 +172,51 @@ impl<H> MethodEntry<H> {
       self.kind = Kind::Call { shape, idempotent: true };
     }
     self
+  }
+}
+
+type Run = dyn Fn(Vec<Value>) -> Pin<Box<dyn Future<Output = Value> + Send>> + Send + Sync;
+
+/// The code behind a method: it takes the CALL arguments as dynamic values (§8.2, §12.3) and
+/// returns the RESULT value. A method with no return value returns [`Value::Null`], the codec's
+/// unit value. Typed handlers arrive with the contract (M4).
+#[derive(Clone)]
+pub struct Handler {
+  params: usize,
+  run: Arc<Run>,
+}
+
+impl Handler {
+  /// A handler for a method with `params` parameters. The session checks the argument count
+  /// before it runs `run`, so `run` always gets exactly `params` values.
+  pub fn new<F, Fut>(params: usize, run: F) -> Self
+  where
+    F: Fn(Vec<Value>) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Value> + Send + 'static,
+  {
+    Self {
+      params,
+      run: Arc::new(move |arguments| Box::pin(run(arguments))),
+    }
+  }
+
+  /// How many arguments the method takes.
+  #[must_use]
+  pub const fn params(&self) -> usize {
+    self.params
+  }
+
+  pub(crate) fn run(&self, arguments: Vec<Value>) -> Pin<Box<dyn Future<Output = Value> + Send>> {
+    (self.run)(arguments)
+  }
+}
+
+impl fmt::Debug for Handler {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    formatter
+      .debug_struct("Handler")
+      .field("params", &self.params)
+      .finish_non_exhaustive()
   }
 }
 
