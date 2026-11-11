@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 pub mod auth;
+pub mod registry;
 pub mod session;
 mod session_id;
 #[cfg(test)]

@@ -126,6 +126,13 @@ pub enum Output {
     /// HELLO `auth`.
     auth: Option<Auth>,
   },
+  /// The session is established under `session`, right before WELCOME is queued. The driver
+  /// makes it reachable from here on, never before: nothing sent to the session ahead of WELCOME
+  /// may reach it (§13.4, §14).
+  Established {
+    /// The session ID WELCOME carries.
+    session: SessionId,
+  },
   /// Close the transport. On WebSocket the close code is `4000 + code` and the reason is cut
   /// to 123 bytes on a character boundary (§4.3, §7.7).
   CloseTransport {
@@ -423,6 +430,9 @@ impl Session {
       ping_at: self.now,
       idle_at: self.now + self.config.0.idle_timeout,
     };
+    self.outputs.push_back(Output::Established {
+      session: session.clone(),
+    });
     self.transmit(&welcome);
     self.urgent = self.outputs.len();
   }

@@ -9,11 +9,11 @@ use std::time::Duration;
 use pavia_proto::frame::Limits;
 use pavia_proto::session::Config as SessionConfig;
 use pavia_server::auth::Permissive;
+use pavia_server::registry::Registry;
 use pavia_server::session::run;
 use pavia_server::websocket::{Config, Endpoint, Transport};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
 
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
@@ -26,9 +26,12 @@ async fn listen() -> SocketAddr {
   let mut config = SessionConfig::default();
   config.max_frame = Limits::FLOOR;
   let config = config.validate().unwrap();
-  let endpoint = Endpoint::new(Config::new("/rt", &config), |transport: Transport| async move {
-    let (_commands, receiver) = mpsc::channel(1);
-    run(transport, receiver, &Permissive).await;
+  let registry = Registry::new();
+  let endpoint = Endpoint::new(Config::new("/rt", &config), move |transport: Transport| {
+    let registry = registry.clone();
+    async move {
+      run(transport, &registry, &Permissive).await;
+    }
   });
   let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
   let address = listener.local_addr().unwrap();

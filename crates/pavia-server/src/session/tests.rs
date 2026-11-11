@@ -13,7 +13,7 @@ use pavia_proto::session_id::SessionId;
 use pavia_proto::stream::Side;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::frame::Frame;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode as WsCloseCode;
@@ -23,6 +23,7 @@ use tokio_tungstenite::{WebSocketStream, client_async};
 
 use super::{authenticated, run};
 use crate::auth::{AuthFailure, Authenticator, Permissive, Principal, RequestContext};
+use crate::registry::Registry;
 use crate::test_support::{EXPECT_WITHIN, floor_frame, has_ws_close, serve_on_loopback};
 use crate::websocket::{Config, Endpoint, SUBPROTOCOL, Transport};
 
@@ -45,12 +46,12 @@ const CODES: [CloseCode; 14] = [
   CloseCode::ContractMismatch,
 ];
 
-async fn listen(command: Option<Command>, config: SessionConfig) -> (SocketAddr, oneshot::Receiver<Ending>) {
-  listen_with(command, config, Arc::new(Permissive)).await
+async fn listen(config: SessionConfig) -> (SocketAddr, oneshot::Receiver<Ending>) {
+  listen_with(Registry::new(), config, Arc::new(Permissive)).await
 }
 
 async fn listen_with<A: Authenticator + 'static>(
-  command: Option<Command>,
+  registry: Registry,
   config: SessionConfig,
   authenticator: Arc<A>,
 ) -> (SocketAddr, oneshot::Receiver<Ending>) {
@@ -59,15 +60,10 @@ async fn listen_with<A: Authenticator + 'static>(
   let ended = Arc::new(Mutex::new(Some(ended)));
   let endpoint = Endpoint::new(Config::new("/rt", &config), move |transport: Transport| {
     let ended = ended.lock().unwrap().take();
-    let command = command.clone();
+    let registry = registry.clone();
     let authenticator = Arc::clone(&authenticator);
     async move {
-      let (commands, receiver) = mpsc::channel(1);
-      if let Some(command) = command {
-        commands.send(command).await.unwrap();
-      }
-      drop(commands);
-      let ending = run(transport, receiver, &*authenticator).await;
+      let ending = run(transport, &registry, &*authenticator).await;
       if let Some(ended) = ended {
         let _ = ended.send(ending);
       }
@@ -76,8 +72,12 @@ async fn listen_with<A: Authenticator + 'static>(
   (serve_on_loopback(endpoint).await, ending)
 }
 
-async fn connect_with(command: Option<Command>, config: SessionConfig) -> (Socket, oneshot::Receiver<Ending>) {
-  let (address, ending) = listen(command, config).await;
+async fn connect_with(config: SessionConfig) -> (Socket, oneshot::Receiver<Ending>) {
+  connect_on(Registry::new(), config).await
+}
+
+async fn connect_on(registry: Registry, config: SessionConfig) -> (Socket, oneshot::Receiver<Ending>) {
+  let (address, ending) = listen_with(registry, config, Arc::new(Permissive)).await;
   let mut request = "ws://localhost/rt".into_client_request().unwrap();
   request
     .headers_mut()
@@ -88,8 +88,8 @@ async fn connect_with(command: Option<Command>, config: SessionConfig) -> (Socke
   (socket, ending)
 }
 
-async fn connect(command: Option<Command>) -> (Socket, oneshot::Receiver<Ending>) {
-  connect_with(command, SessionConfig::default()).await
+async fn connect() -> (Socket, oneshot::Receiver<Ending>) {
+  connect_with(SessionConfig::default()).await
 }
 
 fn hello_frame() -> Vec<u8> {
@@ -147,10 +147,26 @@ async fn closed_by_server(socket: &mut Socket, ending: oneshot::Receiver<Ending>
   ));
 }
 
+async fn welcomed_in(registry: &Registry) -> (Socket, oneshot::Receiver<Ending>, SessionId) {
+  let (mut socket, ending) = connect_on(registry.clone(), SessionConfig::default()).await;
+  socket.send(Message::binary(hello_frame())).await.unwrap();
+  let Value::Text(id) = &next_welcome(&mut socket).await[&19] else {
+    panic!("WELCOME without a session ID");
+  };
+  (socket, ending, SessionId::parse(id).unwrap())
+}
+
+async fn commanded(command: Command) -> (Socket, oneshot::Receiver<Ending>) {
+  let registry = Registry::new();
+  let (socket, ending, id) = welcomed_in(&registry).await;
+  registry.get(&id).unwrap().send(command).await.unwrap();
+  (socket, ending)
+}
+
 #[tokio::test]
 async fn sends_close_then_closes_with_every_code() {
   for code in CODES {
-    let (mut socket, ending) = connect(Some(Command::Close { code, msg: None })).await;
+    let (mut socket, ending) = commanded(Command::Close { code, msg: None }).await;
     let (binary, ws_code, _) = closed(&mut socket).await;
     assert_eq!(binary, [close_frame(u16::from(code) as u8)], "{code:?}");
     assert_eq!(ws_code, WsCloseCode::from(4000 + u16::from(code)), "{code:?}");
@@ -168,10 +184,10 @@ async fn sends_close_then_closes_with_every_code() {
 #[tokio::test]
 async fn cuts_the_close_reason_on_a_character_boundary() {
   let msg = "€".repeat(67);
-  let (mut socket, _) = connect(Some(Command::Close {
+  let (mut socket, _) = commanded(Command::Close {
     code: CloseCode::GoingAway,
     msg: Some(msg),
-  }))
+  })
   .await;
   let (_, _, reason) = closed(&mut socket).await;
   assert_eq!(reason, "€".repeat(41));
@@ -179,7 +195,7 @@ async fn cuts_the_close_reason_on_a_character_boundary() {
 
 #[tokio::test]
 async fn mirrors_a_client_close() {
-  let (mut socket, ending) = connect(None).await;
+  let (mut socket, ending) = connect().await;
   socket.send(Message::binary(hello_frame())).await.unwrap();
   assert_eq!(next_welcome(&mut socket).await.len(), 7);
   socket.send(Message::binary(close_frame(0))).await.unwrap();
@@ -188,7 +204,7 @@ async fn mirrors_a_client_close() {
 
 #[tokio::test]
 async fn records_an_unknown_client_code_as_internal() {
-  let (mut socket, ending) = connect(None).await;
+  let (mut socket, ending) = connect().await;
   socket.send(Message::binary(hello_frame())).await.unwrap();
   socket.send(Message::binary(close_frame(99))).await.unwrap();
   let (_, ws_code, _) = closed(&mut socket).await;
@@ -205,14 +221,14 @@ async fn records_an_unknown_client_code_as_internal() {
 
 #[tokio::test]
 async fn ends_on_an_abrupt_drop() {
-  let (socket, ending) = connect(None).await;
+  let (socket, ending) = connect().await;
   drop(socket);
   assert_eq!(ending.await.unwrap(), Ending::TransportLost);
 }
 
 #[tokio::test]
 async fn ends_on_a_websocket_close_without_close_frame() {
-  let (mut socket, ending) = connect(None).await;
+  let (mut socket, ending) = connect().await;
   socket.close(None).await.unwrap();
   assert!(matches!(socket.next().await, Some(Ok(Message::Close(_)))));
   assert_eq!(ending.await.unwrap(), Ending::TransportLost);
@@ -220,7 +236,7 @@ async fn ends_on_a_websocket_close_without_close_frame() {
 
 #[tokio::test]
 async fn closes_with_protocol_error_on_a_malformed_message() {
-  let (mut socket, ending) = connect(None).await;
+  let (mut socket, ending) = connect().await;
   socket.send(Message::binary(&b"\x00\x7f\x00\x01\x00"[..])).await.unwrap();
   let (binary, ws_code, _) = closed(&mut socket).await;
   assert_eq!(binary.len(), 1);
@@ -238,7 +254,7 @@ async fn closes_with_protocol_error_on_a_malformed_message() {
 
 #[tokio::test]
 async fn keeps_running_after_a_message_that_needs_no_answer() {
-  let (mut socket, ending) = connect(None).await;
+  let (mut socket, ending) = connect().await;
   socket.send(Message::binary(hello_frame())).await.unwrap();
   assert_eq!(next_welcome(&mut socket).await.len(), 7);
   socket.send(Message::binary(close_frame(0))).await.unwrap();
@@ -248,7 +264,7 @@ async fn keeps_running_after_a_message_that_needs_no_answer() {
 #[tokio::test]
 async fn closes_with_protocol_error_on_a_text_message() {
   for text in ["hello", ""] {
-    let (mut socket, ending) = connect(None).await;
+    let (mut socket, ending) = connect().await;
     socket.send(Message::text(text)).await.unwrap();
     let (binary, ws_code, _) = closed(&mut socket).await;
     assert_eq!(binary.len(), 1, "{text:?}");
@@ -274,14 +290,14 @@ fn short_timeout() -> SessionConfig {
 #[tokio::test]
 async fn closes_with_handshake_timeout_when_nothing_arrives() {
   let started = std::time::Instant::now();
-  let (mut socket, ending) = connect_with(None, short_timeout()).await;
+  let (mut socket, ending) = connect_with(short_timeout()).await;
   closed_by_server(&mut socket, ending, CloseCode::HandshakeTimeout).await;
   assert!(started.elapsed() >= Duration::from_millis(200));
 }
 
 #[tokio::test]
 async fn sends_welcome_and_stops_the_handshake_timer() {
-  let (mut socket, ending) = connect_with(None, short_timeout()).await;
+  let (mut socket, ending) = connect_with(short_timeout()).await;
   socket.send(Message::binary(hello_frame())).await.unwrap();
   let welcome = next_welcome(&mut socket).await;
   let keys: Vec<u64> = welcome.keys().copied().collect();
@@ -329,7 +345,7 @@ fn varint(bytes: &mut &[u8]) -> u64 {
 
 #[tokio::test]
 async fn closes_a_slow_hello_with_handshake_timeout() {
-  let (address, ending) = listen(None, short_timeout()).await;
+  let (address, ending) = listen(short_timeout()).await;
   let mut stream = TcpStream::connect(address).await.unwrap();
   let request = concat!(
     "GET /rt HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n",
@@ -369,7 +385,7 @@ async fn closes_a_slow_hello_with_handshake_timeout() {
 
 #[tokio::test]
 async fn closes_with_protocol_error_when_the_first_frame_is_not_hello() {
-  let (mut socket, ending) = connect(None).await;
+  let (mut socket, ending) = connect().await;
   socket.send(Message::binary(heartbeat_frame(0x04, &[]))).await.unwrap();
   closed_by_server(&mut socket, ending, CloseCode::ProtocolError).await;
 }
@@ -396,7 +412,7 @@ async fn rejects_a_hello_with_no_common_version_or_codec() {
     [&[0xa2, 0x0e, 0x81, 0x01, 0x10, 0x81, 0x67][..], b"msgpack"].concat(),
   ];
   for hello in hellos {
-    let (mut socket, ending) = connect(None).await;
+    let (mut socket, ending) = connect().await;
     socket.send(Message::binary(raw_frame(0x01, &hello))).await.unwrap();
     let (binary, ws_code, reason) = closed(&mut socket).await;
     assert_eq!(binary, [raw_frame(0x03, &reject)], "{hello:02x?}");
@@ -422,7 +438,7 @@ async fn rejects_a_resume_with_resume_failed() {
   hello.extend([0x14, 0xa3, 0x0d, 0x41, 0x00, 0x13, 0x63]);
   hello.extend(b"s_x");
   hello.extend([0x18, 0x2c, 0xa1, 0x00, 0x00]);
-  let (mut socket, ending) = connect(None).await;
+  let (mut socket, ending) = connect().await;
   socket.send(Message::binary(raw_frame(0x01, &hello))).await.unwrap();
   let (binary, ws_code, reason) = closed(&mut socket).await;
   assert_eq!(binary, [raw_frame(0x03, &reject)]);
@@ -492,8 +508,12 @@ fn bearer_hello() -> Vec<u8> {
   raw_frame(0x01, &hello)
 }
 
-async fn connect_to(authenticator: Arc<Recording>, config: SessionConfig) -> (Socket, SocketAddr, oneshot::Receiver<Ending>) {
-  let (address, ending) = listen_with(None, config, authenticator).await;
+async fn connect_to(
+  registry: Registry,
+  authenticator: Arc<Recording>,
+  config: SessionConfig,
+) -> (Socket, SocketAddr, oneshot::Receiver<Ending>) {
+  let (address, ending) = listen_with(registry, config, authenticator).await;
   let mut request = "ws://localhost/rt".into_client_request().unwrap();
   let headers = request.headers_mut();
   headers.insert(header::SEC_WEBSOCKET_PROTOCOL, HeaderValue::from_static(SUBPROTOCOL));
@@ -513,7 +533,12 @@ async fn rejects_with_the_code_the_authenticator_chose() {
   ] {
     let mut reject = vec![0xa2, 0x06, u16::from(code) as u8, 0x07, 0x60 + msg.len() as u8];
     reject.extend(msg.as_bytes());
-    let (mut socket, _, ending) = connect_to(Recording::answering(Some(Err(failure))), SessionConfig::default()).await;
+    let (mut socket, _, ending) = connect_to(
+      Registry::new(),
+      Recording::answering(Some(Err(failure))),
+      SessionConfig::default(),
+    )
+    .await;
     socket.send(Message::binary(bearer_hello())).await.unwrap();
     let (binary, ws_code, reason) = closed(&mut socket).await;
     assert_eq!(binary, [raw_frame(0x03, &reject)], "{failure:?}");
@@ -526,7 +551,7 @@ async fn rejects_with_the_code_the_authenticator_chose() {
 #[tokio::test]
 async fn gives_the_authenticator_the_credential_and_the_upgrade_request() {
   let authenticator = Recording::answering(Some(Ok(Principal::for_user("u-42"))));
-  let (mut socket, local, ending) = connect_to(Arc::clone(&authenticator), SessionConfig::default()).await;
+  let (mut socket, local, ending) = connect_to(Registry::new(), Arc::clone(&authenticator), SessionConfig::default()).await;
   socket.send(Message::binary(bearer_hello())).await.unwrap();
   assert_eq!(next_welcome(&mut socket).await.get(&36), Some(&Value::Text("u-42".into())));
   socket.send(Message::binary(close_frame(0))).await.unwrap();
@@ -545,7 +570,7 @@ async fn gives_the_authenticator_the_credential_and_the_upgrade_request() {
 #[tokio::test]
 async fn keeps_reading_the_transport_while_the_authenticator_runs() {
   let authenticator = Recording::answering(None);
-  let (mut socket, _, ending) = connect_to(Arc::clone(&authenticator), SessionConfig::default()).await;
+  let (mut socket, _, ending) = connect_to(Registry::new(), Arc::clone(&authenticator), SessionConfig::default()).await;
   socket.send(Message::binary(bearer_hello())).await.unwrap();
   tokio::time::timeout(EXPECT_WITHIN, async {
     while authenticator.seen().is_empty() {
@@ -561,7 +586,7 @@ async fn keeps_reading_the_transport_while_the_authenticator_runs() {
 
 #[tokio::test]
 async fn closes_a_slow_authenticator_with_handshake_timeout() {
-  let (mut socket, _, ending) = connect_to(Recording::answering(None), short_timeout()).await;
+  let (mut socket, _, ending) = connect_to(Registry::new(), Recording::answering(None), short_timeout()).await;
   socket.send(Message::binary(bearer_hello())).await.unwrap();
   let (binary, ws_code, _) = closed(&mut socket).await;
   assert_eq!(binary, [close_frame(12)]);
@@ -606,7 +631,7 @@ fn fast_heartbeat() -> SessionConfig {
 }
 
 async fn welcomed(config: SessionConfig) -> (Socket, oneshot::Receiver<Ending>) {
-  let (mut socket, ending) = connect_with(None, config).await;
+  let (mut socket, ending) = connect_with(config).await;
   socket.send(Message::binary(hello_frame())).await.unwrap();
   assert_eq!(next_welcome(&mut socket).await.len(), 7);
   (socket, ending)
@@ -723,7 +748,7 @@ async fn answers_a_ping_with_its_data() {
 
 #[tokio::test]
 async fn closes_a_length_above_max_frame_with_frame_too_large_from_the_prefix() {
-  let (mut socket, ending) = connect_with(None, floor_frame()).await;
+  let (mut socket, ending) = connect_with(floor_frame()).await;
   let prefix_of_65537 = vec![0x00, 0x04, 0x00, 0x80, 0x01, 0x00, 0x01];
   socket.send(Message::binary(prefix_of_65537)).await.unwrap();
   closed_by_server(&mut socket, ending, CloseCode::FrameTooLarge).await;
@@ -731,14 +756,14 @@ async fn closes_a_length_above_max_frame_with_frame_too_large_from_the_prefix() 
 
 #[tokio::test]
 async fn closes_a_message_above_twice_max_frame_with_protocol_error() {
-  let (mut socket, ending) = connect_with(None, floor_frame()).await;
+  let (mut socket, ending) = connect_with(floor_frame()).await;
   socket.send(Message::binary(vec![0; 131_073])).await.unwrap();
   closed_by_server(&mut socket, ending, CloseCode::ProtocolError).await;
 }
 
 #[tokio::test]
 async fn closes_a_fragmented_message_above_twice_max_frame_with_protocol_error() {
-  let (mut socket, ending) = connect_with(None, floor_frame()).await;
+  let (mut socket, ending) = connect_with(floor_frame()).await;
   let first = Frame::message(vec![0; 70_000], OpCode::Data(Data::Binary), false);
   let second = Frame::message(vec![0; 70_000], OpCode::Data(Data::Continue), true);
   socket.send(Message::Frame(first)).await.unwrap();
@@ -756,7 +781,7 @@ fn notify_frame(payload_length: usize) -> Vec<u8> {
 }
 
 async fn welcomes_a_pipelined_message(message: Vec<u8>) {
-  let (mut socket, ending) = connect_with(None, floor_frame()).await;
+  let (mut socket, ending) = connect_with(floor_frame()).await;
   socket.send(Message::binary(message)).await.unwrap();
   assert_eq!(next_welcome(&mut socket).await.len(), 7);
   socket.send(Message::binary(close_frame(0))).await.unwrap();
@@ -782,7 +807,130 @@ async fn accepts_a_message_of_exactly_twice_max_frame() {
 
 #[tokio::test]
 async fn delivers_the_close_to_a_client_still_sending_a_refused_message() {
-  let (mut socket, ending) = connect_with(None, floor_frame()).await;
+  let (mut socket, ending) = connect_with(floor_frame()).await;
   socket.send(Message::binary(vec![0; 4 << 20])).await.unwrap();
   closed_by_server(&mut socket, ending, CloseCode::ProtocolError).await;
+}
+
+#[tokio::test]
+async fn registers_at_welcome_and_removes_when_the_session_ends() {
+  let registry = Registry::new();
+  let authenticator = Recording::answering(None);
+  let (mut socket, _, _) = connect_to(registry.clone(), Arc::clone(&authenticator), SessionConfig::default()).await;
+  socket.send(Message::binary(bearer_hello())).await.unwrap();
+  tokio::time::timeout(EXPECT_WITHIN, async {
+    while authenticator.seen().is_empty() {
+      tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+  })
+  .await
+  .expect("the authenticator runs");
+  assert!(registry.is_empty());
+  let (mut socket, ending, id) = welcomed_in(&registry).await;
+  assert_eq!(registry.len(), 1);
+  assert!(registry.get(&id).is_some());
+  socket.send(Message::binary(close_frame(0))).await.unwrap();
+  mirrored_client_close(&mut socket, ending).await;
+  assert!(registry.is_empty());
+  assert!(registry.get(&id).is_none());
+}
+
+#[tokio::test]
+async fn never_registers_a_rejected_session() {
+  let registry = Registry::new();
+  let authenticator = Recording::answering(Some(Err(AuthFailure::Forbidden)));
+  let (mut socket, _, ending) = connect_to(registry.clone(), authenticator, SessionConfig::default()).await;
+  socket.send(Message::binary(bearer_hello())).await.unwrap();
+  let _ = closed(&mut socket).await;
+  assert!(matches!(ending.await.unwrap(), Ending::Rejected { .. }));
+  assert!(registry.is_empty());
+}
+
+async fn connect_and_end<H, F>(endpoint: &Endpoint<H>, with_close: bool)
+where
+  H: Fn(Transport) -> F + Clone + Send + Sync + 'static,
+  F: Future<Output = ()> + Send + 'static,
+{
+  let (client, server) = tokio::io::duplex(4096);
+  let endpoint = endpoint.clone();
+  tokio::spawn(async move { endpoint.serve_connection(server, None).await });
+  let mut request = "ws://localhost/rt".into_client_request().unwrap();
+  request
+    .headers_mut()
+    .insert(header::SEC_WEBSOCKET_PROTOCOL, HeaderValue::from_static(SUBPROTOCOL));
+  let (mut socket, _) = client_async(request, client).await.unwrap();
+  socket.send(Message::binary(hello_frame())).await.unwrap();
+  let Some(Ok(Message::Binary(_))) = socket.next().await else {
+    panic!("no WELCOME");
+  };
+  if with_close {
+    socket.send(Message::binary(close_frame(0))).await.unwrap();
+    while let Some(Ok(message)) = socket.next().await {
+      if message.is_close() {
+        break;
+      }
+    }
+  }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn leaves_the_registry_empty_after_ten_thousand_sessions() {
+  let registry = Registry::new();
+  let config = SessionConfig::default().validate().unwrap();
+  let sessions = registry.clone();
+  let endpoint = Endpoint::new(Config::new("/rt", &config), move |transport: Transport| {
+    let registry = sessions.clone();
+    async move {
+      run(transport, &registry, &Permissive).await;
+    }
+  });
+  let mut clients = tokio::task::JoinSet::new();
+  for client in 0..50 {
+    let endpoint = endpoint.clone();
+    clients.spawn(async move {
+      for cycle in 0..200 {
+        connect_and_end(&endpoint, (client + cycle) % 2 == 0).await;
+      }
+    });
+  }
+  while let Some(finished) = clients.join_next().await {
+    finished.unwrap();
+  }
+  tokio::time::timeout(EXPECT_WITHIN, async {
+    while !registry.is_empty() {
+      tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+  })
+  .await
+  .expect("every session leaves the registry");
+}
+
+#[tokio::test]
+async fn removes_a_session_once_when_its_close_meets_the_idle_timeout() {
+  let registry = Registry::new();
+  let mut config = SessionConfig::default();
+  config.heartbeat = Duration::from_millis(1);
+  config.idle_timeout = Duration::from_millis(2);
+  let (address, _) = listen_with(registry.clone(), config, Arc::new(Permissive)).await;
+  for _ in 0..200 {
+    let mut request = "ws://localhost/rt".into_client_request().unwrap();
+    request
+      .headers_mut()
+      .insert(header::SEC_WEBSOCKET_PROTOCOL, HeaderValue::from_static(SUBPROTOCOL));
+    let (mut socket, _) = client_async(request, TcpStream::connect(address).await.unwrap())
+      .await
+      .unwrap();
+    socket.send(Message::binary(hello_frame())).await.unwrap();
+    next_welcome(&mut socket).await;
+    tokio::time::sleep(Duration::from_millis(2)).await;
+    let _ = socket.send(Message::binary(close_frame(0))).await;
+    drop(socket);
+  }
+  tokio::time::timeout(EXPECT_WITHIN, async {
+    while !registry.is_empty() {
+      tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+  })
+  .await
+  .expect("every session leaves the registry");
 }
