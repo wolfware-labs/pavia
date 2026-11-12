@@ -174,8 +174,9 @@ pub enum Output {
   /// §8.2 on, runs it and answers with [`Command::Result`] or [`Command::Error`] for the same
   /// stream. Only established sessions emit it, one per call stream, and only while fewer than
   /// `max_calls` calls are open: the session answers the rest RESOURCE_EXHAUSTED with `nx`
-  /// itself (§6.5, step 1). `call.shape` is the value the client sent, known or not; a shape the
-  /// session does not know is run as unary until the driver refuses it at step 3.
+  /// itself (§6.5, step 1). `call.shape` is the value the client sent, known or not. A shape the
+  /// session does not know is tracked as a client stream, so ITEMs and END the client sent behind
+  /// it are taken as frames of that call, until the driver refuses it at step 3.
   Call {
     /// The call stream.
     stream: u64,
@@ -591,7 +592,7 @@ impl Session {
 
   fn open_call(&mut self, stream: u64, call: Call) {
     let full = u64::try_from(self.calls.open.len()).map_or(true, |open| open >= self.config.0.max_calls);
-    let shape = Shape::try_from(call.shape).unwrap_or(Shape::Unary);
+    let shape = Shape::try_from(call.shape).unwrap_or(Shape::ClientStream);
     self.calls.open.insert(stream, CallState::new(shape, Role::Callee));
     if full {
       let refusal = call_error(StatusCode::ResourceExhausted, "too many open calls".to_owned(), true);

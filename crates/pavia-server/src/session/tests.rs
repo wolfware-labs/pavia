@@ -7,18 +7,19 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+use bytes::Bytes;
 use ciborium::Value;
 use futures_util::{SinkExt, StreamExt};
 use hyper::header::{self, HeaderValue};
-use pavia_proto::data::Value as Arg;
-use pavia_proto::frame::Auth;
+use pavia_proto::data::{Codec, Value as Arg};
+use pavia_proto::frame::{Auth, Call, Meta, MetaName, MetaValue};
 use pavia_proto::registry::{CloseCode, StatusCode};
 use pavia_proto::session::{Command, Config as SessionConfig, Ending, Input};
 use pavia_proto::session_id::SessionId;
-use pavia_proto::stream::Side;
+use pavia_proto::stream::{Shape, Side};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::handshake::client::Request;
 use tokio_tungstenite::tungstenite::protocol::frame::Frame;
@@ -29,7 +30,7 @@ use tokio_tungstenite::{WebSocketStream, client_async};
 
 use super::{Refusal, authenticated, run, validate_call};
 use crate::auth::{AllowAll, AuthFailure, Authenticator, Authorizer, Permissive, Principal, RequestContext};
-use crate::methods::{Handler, MethodEntry, MethodRegistry};
+use crate::methods::{Handler, MethodEntry, MethodName, MethodRegistry};
 use crate::sessions::Registry;
 use crate::test_support::{EXPECT_WITHIN, floor_frame, has_ws_close, serve_on_loopback};
 use crate::websocket::{Config, Endpoint, SUBPROTOCOL, Transport};
@@ -1299,7 +1300,7 @@ async fn answers_internal_when_the_handler_panics_and_keeps_the_session() {
 
 #[tokio::test]
 async fn answers_a_fast_call_while_a_slow_one_runs() {
-  let (release, released) = tokio::sync::watch::channel(false);
+  let (release, released) = watch::channel(false);
   let mut methods = MethodRegistry::new();
   methods
     .register_server_method(
@@ -1382,7 +1383,7 @@ async fn answers_internal_when_a_handler_panics_before_its_future_runs() {
 async fn answers_calls_in_json_when_the_session_negotiated_it() {
   let (methods, _) = chat();
   let mut config = SessionConfig::default();
-  config.codecs = vec![pavia_proto::data::Codec::Json];
+  config.codecs = vec![Codec::Json];
   let (address, _) = listen_serving(Registry::new(), methods, config, Arc::new(Permissive), AllowAll).await;
   let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
   socket.send(Message::binary(hello_frame_with(b"json"))).await.unwrap();
@@ -1446,7 +1447,7 @@ async fn refuses_a_call_whose_shape_differs_from_the_method() {
   methods
     .register_server_method(
       "chat/history",
-      MethodEntry::call(Handler::new(0, |_| async { Arg::Null })).with_shape(pavia_proto::stream::Shape::ServerStream),
+      MethodEntry::call(Handler::new(0, |_| async { Arg::Null })).with_shape(Shape::ServerStream),
     )
     .unwrap();
   let mut socket = serving(Arc::new(methods)).await;
@@ -1457,26 +1458,28 @@ async fn refuses_a_call_whose_shape_differs_from_the_method() {
   assert_refused(&next_answer(&mut socket).await, 2, 3);
 }
 
-fn unary_call(method: &str, data: &'static [u8], meta: Option<pavia_proto::frame::Meta>) -> pavia_proto::frame::Call {
-  pavia_proto::frame::Call {
+fn unary_call(method: &str, data: &'static [u8], meta: Option<Meta>) -> Call {
+  Call {
     method: method.to_owned(),
     shape: 0,
     deadline: None,
     meta,
-    data: bytes::Bytes::from_static(data),
+    data: Bytes::from_static(data),
   }
 }
 
-fn refusal(call: &pavia_proto::frame::Call, idempotency: bool) -> Option<Refusal> {
+fn refusal(call: &Call, idempotency: bool) -> Option<Refusal> {
   let (methods, _) = chat();
-  validate_call(call, &methods, pavia_proto::data::Codec::Cbor, idempotency).err()
+  validate_call(call, &methods, Codec::Cbor, idempotency).err()
 }
 
 #[test]
 fn stops_at_the_first_failing_check() {
   let garbage = &[0xff];
-  let unknown = refusal(&unary_call("nope/nope", garbage, None), false).unwrap();
-  assert_eq!(unknown.code, StatusCode::Unimplemented);
+  assert_eq!(
+    refusal(&unary_call("nope/nope", garbage, None), false),
+    Some(Refusal::new(StatusCode::Unimplemented, "unknown method"))
+  );
   let mut mismatched = unary_call("chat/send", garbage, None);
   mismatched.shape = 1;
   assert_eq!(
@@ -1498,13 +1501,13 @@ fn stops_at_the_first_failing_check() {
   assert_eq!(refusal(&unary_call("chat/send", GENERAL_HELLO, None), false), None);
 }
 
-fn with_key(length: usize, bytes: bool) -> Option<pavia_proto::frame::Meta> {
+fn with_key(length: usize, bytes: bool) -> Option<Meta> {
   let value = if bytes {
-    pavia_proto::frame::MetaValue::Bytes(bytes::Bytes::from(vec![b'k'; length]))
+    MetaValue::Bytes(Bytes::from(vec![b'k'; length]))
   } else {
-    pavia_proto::frame::MetaValue::Text("k".repeat(length))
+    MetaValue::Text("k".repeat(length))
   };
-  let name = pavia_proto::frame::MetaName::try_from("pavia-idempotency-key").unwrap();
+  let name = MetaName::try_from("pavia-idempotency-key").unwrap();
   Some([(name, value)].into_iter().collect())
 }
 
@@ -1522,16 +1525,14 @@ fn bounds_the_idempotency_key_only_with_the_capability() {
       None
     );
   }
-  let other = pavia_proto::frame::MetaName::try_from("traceparent").unwrap();
-  let meta = [(other, pavia_proto::frame::MetaValue::Text("t".repeat(200)))]
-    .into_iter()
-    .collect();
+  let other = MetaName::try_from("traceparent").unwrap();
+  let meta = [(other, MetaValue::Text("t".repeat(200)))].into_iter().collect();
   assert_eq!(refusal(&unary_call("chat/send", GENERAL_HELLO, Some(meta)), true), None);
 }
 
 #[tokio::test]
 async fn refuses_a_call_beyond_max_calls_before_looking_at_it() {
-  let (release, released) = tokio::sync::watch::channel(false);
+  let (release, released) = watch::channel(false);
   let mut methods = MethodRegistry::new();
   methods
     .register_server_method(
@@ -1584,7 +1585,7 @@ async fn refuses_an_unknown_shape_after_the_method_lookup() {
 struct DenyAll;
 
 impl Authorizer for DenyAll {
-  async fn authorize(&self, _: &Principal, _: &crate::methods::MethodName) -> bool {
+  async fn authorize(&self, _: &Principal, _: &MethodName) -> bool {
     false
   }
 }
@@ -1607,4 +1608,112 @@ async fn answers_a_denied_call_by_whether_the_session_is_anonymous() {
     assert_refused(&next_answer(&mut socket).await, 2, code);
     assert_eq!(runs.load(Ordering::SeqCst), 0, "{code}");
   }
+}
+
+fn put_varint(out: &mut Vec<u8>, value: usize) {
+  match value {
+    0..=63 => out.push(u8::try_from(value).unwrap()),
+    64..=16_383 => out.extend((u16::try_from(value).unwrap() | 0x4000).to_be_bytes()),
+    _ => out.extend((u32::try_from(value).unwrap() | 0x8000_0000).to_be_bytes()),
+  }
+}
+
+fn call_with_header(stream: u8, header: &[u8], data: &[u8]) -> Vec<u8> {
+  let mut payload = Vec::new();
+  put_varint(&mut payload, header.len());
+  payload.extend(header);
+  payload.extend(data);
+  let mut frame = vec![stream, 0x10, 0x00];
+  put_varint(&mut frame, payload.len());
+  frame.extend(payload);
+  frame
+}
+
+#[tokio::test]
+async fn runs_a_call_with_a_long_idempotency_key_when_idempotency_is_not_granted() {
+  let (methods, runs) = chat();
+  let mut socket = serving(methods).await;
+  let mut header = vec![0xa3, 0x02, 0x69];
+  header.extend(b"chat/send");
+  header.extend([0x03, 0xa1, 0x75]);
+  header.extend(b"pavia-idempotency-key");
+  header.extend([0x78, 129]);
+  header.extend([b'k'; 129]);
+  header.extend([0x05, 0x00]);
+  socket
+    .send(Message::binary(call_with_header(2, &header, GENERAL_HELLO)))
+    .await
+    .unwrap();
+  let answer = next_answer(&mut socket).await;
+  assert_eq!((answer.stream, answer.frame_type), (2, 0x13));
+  assert_eq!(runs.load(Ordering::SeqCst), 1);
+}
+
+type Asked = (Option<String>, String);
+
+#[derive(Clone, Default)]
+struct OnlyUserOne(Arc<Mutex<Vec<Asked>>>);
+
+impl Authorizer for OnlyUserOne {
+  async fn authorize(&self, principal: &Principal, method: &MethodName) -> bool {
+    self
+      .0
+      .lock()
+      .unwrap()
+      .push((principal.user().map(str::to_owned), method.as_str().to_owned()));
+    principal.user() == Some("u-1") && method.as_str() == "chat/send"
+  }
+}
+
+#[tokio::test]
+async fn hands_the_authorizer_the_session_principal_and_the_method() {
+  let authorizer = OnlyUserOne::default();
+  let (methods, runs) = chat();
+  let authenticator = Recording::answering(Some(Ok(Principal::for_user("u-1"))));
+  let (address, _) = listen_serving(
+    Registry::new(),
+    methods,
+    SessionConfig::default(),
+    authenticator,
+    authorizer.clone(),
+  )
+  .await;
+  let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
+  socket.send(Message::binary(bearer_hello())).await.unwrap();
+  next_welcome(&mut socket).await;
+  socket
+    .send(Message::binary(call_frame(2, "chat/send", GENERAL_HELLO)))
+    .await
+    .unwrap();
+  assert_eq!(next_answer(&mut socket).await.frame_type, 0x13);
+  socket
+    .send(Message::binary(call_frame(4, "chat/ping", &[0x80])))
+    .await
+    .unwrap();
+  assert_refused(&next_answer(&mut socket).await, 4, 7);
+  assert_eq!(runs.load(Ordering::SeqCst), 1);
+  assert_eq!(
+    *authorizer.0.lock().unwrap(),
+    [
+      (Some("u-1".to_owned()), "chat/send".to_owned()),
+      (Some("u-1".to_owned()), "chat/ping".to_owned())
+    ]
+  );
+}
+
+#[test]
+fn refuses_a_matching_streaming_method_until_streams_are_served() {
+  let mut methods = MethodRegistry::new();
+  methods
+    .register_server_method(
+      "chat/history",
+      MethodEntry::call(Handler::new(0, |_| async { Arg::Null })).with_shape(Shape::ServerStream),
+    )
+    .unwrap();
+  let mut call = unary_call("chat/history", &[0x80], None);
+  call.shape = 1;
+  assert_eq!(
+    validate_call(&call, &methods, Codec::Cbor, false).err(),
+    Some(Refusal::new(StatusCode::Unimplemented, "streaming calls are not served yet"))
+  );
 }

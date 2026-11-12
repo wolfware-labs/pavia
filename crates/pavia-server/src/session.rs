@@ -180,13 +180,8 @@ struct Calls<'a, Z> {
   methods: &'a MethodRegistry<Handler>,
   authorizer: Z,
   principal: Arc<Principal>,
-  running: JoinSet<Answer>,
+  running: JoinSet<Result<Value, Refusal>>,
   streams: HashMap<task::Id, u64>,
-}
-
-enum Answer {
-  Value(Value),
-  Denied { anonymous: bool },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -198,6 +193,24 @@ struct Refusal {
 impl Refusal {
   fn new(code: StatusCode, msg: impl Into<String>) -> Self {
     Self { code, msg: msg.into() }
+  }
+
+  fn denied(principal: &Principal) -> Self {
+    let code = if principal.is_anonymous() {
+      StatusCode::Unauthenticated
+    } else {
+      StatusCode::PermissionDenied
+    };
+    Self::new(code, "not allowed to call this method")
+  }
+
+  fn answering(self, stream: u64) -> Command {
+    Command::Error {
+      stream,
+      code: self.code,
+      msg: self.msg,
+      nx: true,
+    }
   }
 }
 
@@ -256,31 +269,22 @@ impl<Z: Authorizer + Clone + 'static> Calls<'_, Z> {
       .is_some_and(|negotiated| negotiated.caps.contains(Capability::Idempotency));
     let (name, handler, arguments) = match validate_call(call, self.methods, codec(session), idempotency) {
       Ok(approved) => approved,
-      Err(refusal) => {
-        return Some(Command::Error {
-          stream,
-          code: refusal.code,
-          msg: refusal.msg,
-          nx: true,
-        });
-      }
+      Err(refusal) => return Some(refusal.answering(stream)),
     };
     let (name, handler) = (name.clone(), handler.clone());
     let (authorizer, principal) = (self.authorizer.clone(), Arc::clone(&self.principal));
     let task = self.running.spawn(async move {
       if authorizer.authorize(&principal, &name).await {
-        Answer::Value(handler.run(arguments).await)
+        Ok(handler.run(arguments).await)
       } else {
-        Answer::Denied {
-          anonymous: principal.is_anonymous(),
-        }
+        Err(Refusal::denied(&principal))
       }
     });
     self.streams.insert(task.id(), stream);
     None
   }
 
-  fn answered(&mut self, joined: Result<(task::Id, Answer), JoinError>, codec: Codec) -> Input {
+  fn answered(&mut self, joined: Result<(task::Id, Result<Value, Refusal>), JoinError>, codec: Codec) -> Input {
     let (id, answer) = match joined {
       Ok((id, answer)) => (id, Ok(answer)),
       Err(error) => (error.id(), Err(error)),
@@ -288,23 +292,14 @@ impl<Z: Authorizer + Clone + 'static> Calls<'_, Z> {
     let stream = self.streams.remove(&id).expect("every running call has a stream");
     let mut encoded = BytesMut::new();
     let command = match answer {
-      Ok(Answer::Value(value)) => match data::encode(&value, codec, &mut encoded) {
+      Ok(Ok(value)) => match data::encode(&value, codec, &mut encoded) {
         Ok(()) => Command::Result {
           stream,
           data: encoded.freeze(),
         },
         Err(_) => internal(stream, "result does not encode"),
       },
-      Ok(Answer::Denied { anonymous }) => Command::Error {
-        stream,
-        code: if anonymous {
-          StatusCode::Unauthenticated
-        } else {
-          StatusCode::PermissionDenied
-        },
-        msg: "not allowed to call this method".to_owned(),
-        nx: true,
-      },
+      Ok(Err(refusal)) => refusal.answering(stream),
       Err(_) => internal(stream, "handler failed"),
     };
     Input::Command(command)

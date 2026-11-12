@@ -1601,3 +1601,23 @@ fn never_sends_an_error_with_the_ok_code() {
   let sent = sent_frames(&mut session);
   assert!(matches!(sent.as_slice(), [(2, Frame::Error(error))] if error.code == u64::from(StatusCode::Internal)));
 }
+
+#[test]
+fn keeps_the_session_when_items_follow_a_call_with_an_unknown_shape() {
+  let (mut session, _) = welcomed(None);
+  let item = Frame::Item(Item {
+    meta: None,
+    data: Bytes::from_static(&[0xf6]),
+  });
+  session.feed(Input::Message(message(&[(2, call(7)), (2, item)])));
+  assert!(matches!(drain(&mut session).as_slice(), [Output::Call { stream: 2, .. }]));
+  session.feed(Input::Command(Command::Error {
+    stream: 2,
+    code: StatusCode::InvalidArgument,
+    msg: "shape does not match the method".into(),
+    nx: true,
+  }));
+  assert!(matches!(sent_frames(&mut session).as_slice(), [(2, Frame::Error(error))] if error.code == 3));
+  assert!(!session.is_ended());
+  assert_eq!(session.open_calls(), 0);
+}
