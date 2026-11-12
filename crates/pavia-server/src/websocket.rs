@@ -42,7 +42,6 @@ use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
 use tokio_tungstenite::tungstenite::{self, Message};
 
 use crate::auth::RequestContext;
-use crate::text::truncate;
 
 /// The WebSocket subprotocol of framing version 1 (§4.3).
 pub const SUBPROTOCOL: &str = "pavia.1";
@@ -394,7 +393,7 @@ impl Transport {
   pub async fn close(&mut self, code: CloseCode, reason: &str) -> Result<(), TransportError> {
     let frame = CloseFrame {
       code: WsCloseCode::from(CLOSE_CODE_OFFSET + u16::from(code)),
-      reason: truncate(reason, MAX_CLOSE_REASON).into(),
+      reason: reason[..reason.floor_char_boundary(MAX_CLOSE_REASON)].into(),
     };
     Ok(self.socket.close(Some(frame)).await?)
   }

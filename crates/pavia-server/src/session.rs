@@ -31,7 +31,6 @@ use crate::auth::{AuthFailure, Authenticator, Authorizer, Principal};
 use crate::methods::{Handler, HandlerError, Kind, MethodName, MethodRegistry};
 use crate::session_id;
 use crate::sessions::{Handle, Registration, Registry};
-use crate::text::truncate;
 use crate::websocket::{Received, Transport, TransportError};
 
 const COMMAND_QUEUE: usize = 32;
@@ -57,7 +56,8 @@ type Authenticating<'a> = Pin<Box<dyn Future<Output = Result<Principal, AuthFail
 /// streams arrive in M5. A handler's [`StatusError`](crate::methods::StatusError) is answered as
 /// given, with its detail and `meta`. Any other failure (an unexpected handler error, a panic, a
 /// value the codec cannot encode) is answered INTERNAL with the configured generic message, or its
-/// own text in development mode, and logged in full with `tracing` either way (§8.4, §14).
+/// own text cut to `MAX_INTERNAL_ERROR_MESSAGE` bytes in development mode, and logged in full with
+/// `tracing` either way (§8.4, §14).
 /// Handlers still running when the session ends are dropped with it.
 ///
 /// `authenticator` runs once, after HELLO (§7.5). The transport keeps being read while it runs,
@@ -208,7 +208,9 @@ impl Disclosure {
   fn internal(&self, stream: u64, method: &MethodName, error: &(dyn Error + 'static)) -> Command {
     tracing::error!(stream, method = method.as_str(), error, "call failed unexpectedly");
     let msg = if self.disclose {
-      truncate(&error.to_string(), SessionConfig::MAX_INTERNAL_ERROR_MESSAGE).to_owned()
+      let mut text = error.to_string();
+      text.truncate(text.floor_char_boundary(SessionConfig::MAX_INTERNAL_ERROR_MESSAGE));
+      text
     } else {
       self.generic.clone()
     };
