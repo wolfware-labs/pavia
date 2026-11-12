@@ -1523,15 +1523,18 @@ fn ignores_a_call_frame_on_the_control_stream() {
   assert!(!session.is_ended());
 }
 
+fn item_frame() -> Frame {
+  Frame::Item(Item {
+    meta: None,
+    data: Bytes::from_static(&[0xf6]),
+  })
+}
+
 #[test]
 fn closes_on_an_item_from_the_caller_of_a_unary_call() {
   let (mut session, _) = welcomed(None);
   called(&mut session, 2);
-  let item = Frame::Item(Item {
-    meta: None,
-    data: Bytes::from_static(&[0xf6]),
-  });
-  session.feed(Input::Message(message(&[(2, item)])));
+  session.feed(Input::Message(message(&[(2, item_frame())])));
   assert!(ended_with(&mut session, CloseCode::ProtocolError));
 }
 
@@ -1592,18 +1595,22 @@ fn bounds_answers_by_one_mebibyte_when_the_client_advertises_no_max_frame() {
   assert!(matches!(sent.as_slice(), [(2, Frame::Error(error))] if error.code == 8));
 }
 
+fn error_command(stream: u64, code: StatusCode) -> Input {
+  Input::Command(Command::Error {
+    stream,
+    code,
+    msg: "refused".into(),
+    nx: false,
+    meta: None,
+    detail: Bytes::new(),
+  })
+}
+
 #[test]
 fn never_sends_an_error_with_the_ok_code() {
   let (mut session, _) = welcomed(None);
   called(&mut session, 2);
-  session.feed(Input::Command(Command::Error {
-    stream: 2,
-    code: StatusCode::Ok,
-    msg: "done".into(),
-    nx: false,
-    meta: None,
-    detail: Bytes::new(),
-  }));
+  session.feed(error_command(2, StatusCode::Ok));
   let sent = sent_frames(&mut session);
   assert!(matches!(sent.as_slice(), [(2, Frame::Error(error))] if error.code == u64::from(StatusCode::Internal)));
 }
@@ -1611,11 +1618,7 @@ fn never_sends_an_error_with_the_ok_code() {
 #[test]
 fn keeps_the_session_when_items_follow_a_call_with_an_unknown_shape() {
   let (mut session, _) = welcomed(None);
-  let item = Frame::Item(Item {
-    meta: None,
-    data: Bytes::from_static(&[0xf6]),
-  });
-  session.feed(Input::Message(message(&[(2, call(7)), (2, item)])));
+  session.feed(Input::Message(message(&[(2, call(7)), (2, item_frame())])));
   assert!(matches!(drain(&mut session).as_slice(), [Output::Call { stream: 2, .. }]));
   session.feed(Input::Command(Command::Error {
     stream: 2,
@@ -1745,24 +1748,6 @@ fn answers_resource_exhausted_for_an_error_header_above_the_limit() {
   assert_eq!((error.code, error.nx), (u64::from(StatusCode::ResourceExhausted), None));
   assert!(!session.is_ended());
   assert_eq!(session.open_calls(), 0);
-}
-
-fn item_frame() -> Frame {
-  Frame::Item(Item {
-    meta: None,
-    data: Bytes::from_static(&[0xf6]),
-  })
-}
-
-fn error_command(stream: u64, code: StatusCode) -> Input {
-  Input::Command(Command::Error {
-    stream,
-    code,
-    msg: "refused".into(),
-    nx: false,
-    meta: None,
-    detail: Bytes::new(),
-  })
 }
 
 #[test]
