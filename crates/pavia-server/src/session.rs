@@ -8,7 +8,7 @@
 //! connection drops.
 
 use std::collections::HashMap;
-use std::fmt;
+use std::error::Error;
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
@@ -190,7 +190,7 @@ struct Calls<'a, Z> {
   principal: Arc<Principal>,
   disclosure: Disclosure,
   running: JoinSet<Result<Value, Failed>>,
-  streams: HashMap<task::Id, u64>,
+  streams: HashMap<task::Id, (u64, MethodName)>,
 }
 
 enum Failed {
@@ -204,8 +204,8 @@ struct Disclosure {
 }
 
 impl Disclosure {
-  fn internal(&self, stream: u64, error: &dyn fmt::Display) -> Command {
-    tracing::error!(stream, error = %error, "call failed unexpectedly");
+  fn internal(&self, stream: u64, method: &MethodName, error: &(dyn Error + 'static)) -> Command {
+    tracing::error!(stream, method = method.as_str(), error, "call failed unexpectedly");
     let msg = if self.disclose {
       error.to_string()
     } else {
@@ -313,14 +313,15 @@ impl<Z: Authorizer + 'static> Calls<'_, Z> {
     };
     let (name, handler) = (name.clone(), handler.clone());
     let (authorizer, principal) = (Arc::clone(&self.authorizer), Arc::clone(&self.principal));
+    let method = name.clone();
     let task = self.running.spawn(async move {
-      if authorizer.authorize(&principal, &name).await {
+      if authorizer.authorize(&principal, &method).await {
         handler.run(arguments).await.map_err(Failed::Handler)
       } else {
         Err(Failed::Refused(Refusal::denied(&principal)))
       }
     });
-    self.streams.insert(task.id(), stream);
+    self.streams.insert(task.id(), (stream, name));
     None
   }
 
@@ -329,11 +330,11 @@ impl<Z: Authorizer + 'static> Calls<'_, Z> {
       Ok((id, answer)) => (id, Ok(answer)),
       Err(error) => (error.id(), Err(error)),
     };
-    let stream = self.streams.remove(&id).expect("every running call has a stream");
+    let (stream, method) = self.streams.remove(&id).expect("every running call has a stream");
     let command = match answer {
       Ok(Ok(value)) => match encode(&value, codec) {
         Ok(data) => Command::Result { stream, data },
-        Err(error) => self.disclosure.internal(stream, &error),
+        Err(error) => self.disclosure.internal(stream, &method, &error),
       },
       Ok(Err(Failed::Refused(refusal))) => refusal.answering(stream),
       Ok(Err(Failed::Handler(HandlerError::Status(status)))) => {
@@ -347,11 +348,11 @@ impl<Z: Authorizer + 'static> Calls<'_, Z> {
             meta,
             detail,
           },
-          Err(error) => self.disclosure.internal(stream, &error),
+          Err(error) => self.disclosure.internal(stream, &method, &error),
         }
       }
-      Ok(Err(Failed::Handler(HandlerError::Unexpected(error)))) => self.disclosure.internal(stream, &error),
-      Err(error) => self.disclosure.internal(stream, &error),
+      Ok(Err(Failed::Handler(HandlerError::Unexpected(error)))) => self.disclosure.internal(stream, &method, &*error),
+      Err(error) => self.disclosure.internal(stream, &method, &error),
     };
     Input::Command(command)
   }

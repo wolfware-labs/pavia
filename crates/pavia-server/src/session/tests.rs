@@ -3,7 +3,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -28,6 +28,9 @@ use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode as WsClos
 use tokio_tungstenite::tungstenite::protocol::frame::coding::{Data, OpCode};
 use tokio_tungstenite::tungstenite::{Message, Utf8Bytes};
 use tokio_tungstenite::{WebSocketStream, client_async};
+use tracing::Dispatch;
+use tracing::dispatcher::DefaultGuard;
+use tracing::subscriber::NoSubscriber;
 
 use super::{Refusal, authenticated, run, validate_call};
 use crate::auth::{AllowAll, AuthFailure, Authenticator, Authorizer, Permissive, Principal, RequestContext};
@@ -1186,14 +1189,11 @@ fn chat() -> (Arc<MethodRegistry<Handler>>, Arc<AtomicUsize>) {
 }
 
 async fn serving(methods: Arc<MethodRegistry<Handler>>) -> Socket {
-  let (address, _) = listen_serving(
-    Registry::new(),
-    methods,
-    SessionConfig::default(),
-    Arc::new(Permissive),
-    Arc::new(AllowAll),
-  )
-  .await;
+  serving_with(methods, SessionConfig::default()).await
+}
+
+async fn serving_with(methods: Arc<MethodRegistry<Handler>>, config: SessionConfig) -> Socket {
+  let (address, _) = listen_serving(Registry::new(), methods, config, Arc::new(Permissive), Arc::new(AllowAll)).await;
   let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
   established(&mut socket).await;
   socket
@@ -1823,19 +1823,69 @@ fn failing() -> Arc<MethodRegistry<Handler>> {
       })),
     )
     .unwrap();
+  methods
+    .register_server_method(
+      "users/load",
+      MethodEntry::call(Handler::fallible(0, |_| async {
+        Err(HandlerError::unexpected(LoadFailed(io::Error::other("disk full"))))
+      })),
+    )
+    .unwrap();
+  methods
+    .register_server_method(
+      "users/odd",
+      MethodEntry::call(Handler::fallible(0, |_| async {
+        let invalid = ErrorStatus::try_from(StatusCode::InvalidArgument).unwrap();
+        Err(StatusError::new(invalid, "odd detail").with_detail(Arg::Simple(25)).into())
+      })),
+    )
+    .unwrap();
   Arc::new(methods)
 }
 
-async fn failing_session(config: SessionConfig) -> Socket {
-  let (address, _) = listen_serving(Registry::new(), failing(), config, Arc::new(Permissive), Arc::new(AllowAll)).await;
-  let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
-  established(&mut socket).await;
-  socket
+#[derive(Debug, thiserror::Error)]
+#[error("loading the user failed")]
+struct LoadFailed(#[source] io::Error);
+
+/// Captures this thread's log until the guard drops.
+///
+/// tracing-core asks only the current thread's subscriber for a new callsite's
+/// interest while one dispatcher is registered, so a test without a subscriber
+/// that reaches a callsite first would disable it for every test. The idle
+/// dispatcher kept in `OTHER` makes it ask every registered subscriber instead.
+fn capture_log() -> (Captured, DefaultGuard) {
+  static OTHER: OnceLock<Dispatch> = OnceLock::new();
+  OTHER.get_or_init(|| Dispatch::new(NoSubscriber::default()));
+  let log = Captured::default();
+  let writer = log.clone();
+  let subscriber = tracing_subscriber::fmt()
+    .with_ansi(false)
+    .with_writer(move || writer.clone())
+    .finish();
+  (log, tracing::subscriber::set_default(subscriber))
+}
+
+async fn logged_answer(method: &str) -> (Answer, String) {
+  let (log, _logging) = capture_log();
+  let mut socket = serving_with(failing(), SessionConfig::default()).await;
+  socket.send(Message::binary(call_frame(2, method, &[0x80]))).await.unwrap();
+  let answer = next_answer(&mut socket).await;
+  let logged = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+  (answer, logged)
+}
+
+fn assert_hidden(answer: &Answer) {
+  assert_eq!((answer.stream, answer.frame_type), (2, 0x14));
+  assert_eq!(
+    answer.header,
+    BTreeMap::from([(6, Value::from(13)), (7, Value::Text("internal error".into()))])
+  );
+  assert!(answer.data.is_empty());
 }
 
 #[tokio::test]
 async fn sends_a_deliberate_error_as_given_with_its_detail_and_meta() {
-  let mut socket = failing_session(SessionConfig::default()).await;
+  let mut socket = serving_with(failing(), SessionConfig::default()).await;
   socket
     .send(Message::binary(call_frame(2, "users/get", &[0x80])))
     .await
@@ -1852,38 +1902,33 @@ async fn sends_a_deliberate_error_as_given_with_its_detail_and_meta() {
 
 #[tokio::test]
 async fn hides_an_unexpected_error_from_the_client_and_logs_it() {
-  let log = Captured::default();
-  let writer = log.clone();
-  let subscriber = tracing_subscriber::fmt().with_writer(move || writer.clone()).finish();
-  let _logging = tracing::subscriber::set_default(subscriber);
-  let mut socket = failing_session(SessionConfig::default()).await;
-  socket
-    .send(Message::binary(call_frame(2, "users/save", &[0x80])))
-    .await
-    .unwrap();
-  let Message::Binary(raw) = socket.next().await.unwrap().unwrap() else {
-    panic!("expected an answer");
-  };
-  assert!(!raw.windows(7).any(|window| window == b"hunter2"));
-  let mut rest = &raw[..];
-  assert_eq!(varint(&mut rest), 2);
-  assert_eq!(rest[0], 0x14);
-  rest = &rest[2..];
-  let _payload = varint(&mut rest);
-  let header_length = usize::try_from(varint(&mut rest)).unwrap();
-  let header = header_map(&rest[..header_length]);
-  assert_eq!(header[&6], Value::from(13));
-  assert_eq!(header[&7], Value::Text("internal error".into()));
-  assert!(rest[header_length..].is_empty());
-  let logged = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
-  assert!(logged.contains("db password=hunter2"), "{logged}");
+  let (answer, logged) = logged_answer("users/save").await;
+  assert_hidden(&answer);
+  for expected in ["ERROR", "stream=2", "method=\"users/save\"", "db password=hunter2"] {
+    assert!(logged.contains(expected), "{expected} in {logged}");
+  }
+}
+
+#[tokio::test]
+async fn logs_the_source_chain_of_an_unexpected_error() {
+  let (answer, logged) = logged_answer("users/load").await;
+  assert_hidden(&answer);
+  assert!(logged.contains("loading the user failed"), "{logged}");
+  assert!(logged.contains("disk full"), "{logged}");
+}
+
+#[tokio::test]
+async fn answers_internal_when_a_deliberate_detail_does_not_encode() {
+  let (answer, logged) = logged_answer("users/odd").await;
+  assert_hidden(&answer);
+  assert!(logged.contains("method=\"users/odd\""), "{logged}");
 }
 
 #[tokio::test]
 async fn shows_an_unexpected_error_in_development_mode() {
   let mut config = SessionConfig::default();
   config.disclose_internal_errors = true;
-  let mut socket = failing_session(config).await;
+  let mut socket = serving_with(failing(), config).await;
   socket
     .send(Message::binary(call_frame(2, "users/save", &[0x80])))
     .await
@@ -1895,25 +1940,10 @@ async fn shows_an_unexpected_error_in_development_mode() {
 
 #[tokio::test]
 async fn sends_the_configured_generic_message_for_a_panic() {
-  let mut methods = MethodRegistry::new();
-  methods
-    .register_server_method(
-      "chat/crash",
-      MethodEntry::call(Handler::new(0, |_| async { panic!("secret path /etc/x") })),
-    )
-    .unwrap();
+  let (methods, _) = chat();
   let mut config = SessionConfig::default();
   config.internal_error_message = "something went wrong".into();
-  let (address, _) = listen_serving(
-    Registry::new(),
-    Arc::new(methods),
-    config,
-    Arc::new(Permissive),
-    Arc::new(AllowAll),
-  )
-  .await;
-  let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
-  established(&mut socket).await;
+  let mut socket = serving_with(methods, config).await;
   socket
     .send(Message::binary(call_frame(2, "chat/crash", &[0x80])))
     .await

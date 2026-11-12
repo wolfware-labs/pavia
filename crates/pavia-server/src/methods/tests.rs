@@ -1,8 +1,10 @@
 use pavia_proto::stream::Shape;
 
 use pavia_proto::data::Value;
+use pavia_proto::error::ErrorStatus;
+use pavia_proto::registry::StatusCode;
 
-use super::{Handler, InvalidMethodName, Kind, MethodEntry, MethodName, MethodRegistry, RegisterError};
+use super::{Handler, InvalidMethodName, Kind, MethodEntry, MethodName, MethodRegistry, RegisterError, StatusError};
 
 #[test]
 fn accepts_names_that_follow_the_rule() {
@@ -184,4 +186,11 @@ fn shows_how_many_parameters_a_handler_takes() {
   let handler = Handler::new(2, |_| async { Value::Null });
   assert_eq!(handler.params(), 2);
   assert_eq!(format!("{handler:?}"), "Handler { params: 2, .. }");
+}
+
+#[test]
+fn keeps_the_status_and_message_of_a_deliberate_error() {
+  let not_found = ErrorStatus::try_from(StatusCode::NotFound).unwrap();
+  let error = StatusError::new(not_found, "no such user");
+  assert_eq!((error.code(), error.msg()), (not_found, "no such user"));
 }

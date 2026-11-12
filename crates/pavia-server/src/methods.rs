@@ -5,7 +5,8 @@
 //! the server calls, are separate namespaces, so one name can be both. A name is checked when it
 //! is registered, so a bad or duplicate name fails when the application builds its registry, not
 //! when a peer first calls it. A [`Handler`] is the code behind a method: the session runs it
-//! with the CALL arguments as dynamic values.
+//! with the CALL arguments as dynamic values. A handler that fails returns a [`HandlerError`]: a
+//! deliberate [`StatusError`], answered as given, or an unexpected error, answered INTERNAL (§8.4).
 //!
 //! ```text
 //!  register_server_method("chat/send") ─▶ name rule ─▶ not on the server side yet ─▶ stored
@@ -196,6 +197,7 @@ pub struct Handler {
 impl Handler {
   /// A handler for a method with `params` parameters. The session checks the argument count
   /// before it runs `run`, so `run` always gets exactly `params` values.
+  #[must_use]
   pub fn new<F, Fut>(params: usize, run: F) -> Self
   where
     F: Fn(Vec<Value>) -> Fut + Send + Sync + 'static,
@@ -209,6 +211,7 @@ impl Handler {
 
   /// A handler for a method with `params` parameters that can fail. A [`HandlerError::Status`]
   /// is answered as given; any other error is unexpected and answered INTERNAL (§8.4).
+  #[must_use]
   pub fn fallible<F, Fut>(params: usize, run: F) -> Self
   where
     F: Fn(Vec<Value>) -> Fut + Send + Sync + 'static,
@@ -253,6 +256,7 @@ pub enum HandlerError {
 
 impl HandlerError {
   /// An unexpected failure: anything that converts into a boxed error, an `anyhow::Error` too.
+  #[must_use]
   pub fn unexpected(error: impl Into<Box<dyn Error + Send + Sync>>) -> Self {
     Self::Unexpected(error.into())
   }
@@ -287,6 +291,7 @@ pub struct StatusError {
 
 impl StatusError {
   /// An error with `code` and `msg`, no detail and no trailers.
+  #[must_use]
   pub fn new(code: ErrorStatus, msg: impl Into<String>) -> Self {
     Self {
       code,

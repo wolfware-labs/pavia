@@ -78,7 +78,8 @@ impl Config {
 
   /// Checks every setting: every duration from 1 ms to [`Self::MAX_DURATION`], `idle_timeout`
   /// longer than `heartbeat` in whole milliseconds, no zero limit, no empty version or codec list,
-  /// and `max_frame` and `window` at or above the 64 KiB floor (§4.1, §16).
+  /// a non-empty `internal_error_message` (§8.4), and `max_frame` and `window` at or above the
+  /// 64 KiB floor (§4.1, §16).
   ///
   /// ```
   /// use pavia_proto::session::{Config, ConfigError};
@@ -198,7 +199,7 @@ pub enum ConfigError {
   /// `max_frame` or `window` below the 64 KiB floor, [`Limits::FLOOR`] (§4.1).
   #[error("{0} must be at least {floor} bytes", floor = Limits::FLOOR)]
   BelowFloor(&'static str),
-  /// No protocol version or no codec.
+  /// No protocol version, no codec, or an empty `internal_error_message`.
   #[error("{0} must not be empty")]
   Empty(&'static str),
 }

@@ -382,14 +382,12 @@ impl Session {
         meta,
         detail,
       }) => {
-        let error = Frame::Error(CallError {
-          code: u64::from(if code == StatusCode::Ok { StatusCode::Internal } else { code }),
-          msg,
-          nx: nx.then_some(true),
+        let error = CallError {
           meta,
           data: detail,
-        });
-        self.answer(stream, &error);
+          ..call_error(code, msg, nx)
+        };
+        self.answer(stream, &Frame::Error(error));
       }
       Input::Message(_) | Input::Timeout | Input::Authenticated { .. } | Input::AuthFailed(_) if expired => {
         self.close(CloseCode::HandshakeTimeout, None);
@@ -641,21 +639,23 @@ impl Session {
           .open
           .insert(stream, CallState::new(Shape::ClientStream, Role::Callee));
         let refusal = call_error(StatusCode::ResourceExhausted, "too many open calls".to_owned(), true);
-        self.answer(stream, &refusal);
+        self.answer(stream, &Frame::Error(refusal));
       }
     }
   }
 
   fn answer(&mut self, stream: u64, frame: &Frame) {
     let too_large;
-    let frame = if frame.payload_length().is_ok_and(|length| length <= self.peer_max_frame()) {
+    let fits = frame.payload_length().is_ok_and(|length| length <= self.peer_max_frame())
+      && frame.header_length() <= self.limits.max_size;
+    let frame = if fits {
       frame
     } else {
-      too_large = call_error(
+      too_large = Frame::Error(call_error(
         StatusCode::ResourceExhausted,
-        "answer above the client's max_frame".to_owned(),
+        "answer above the client's max_frame or header limit".to_owned(),
         false,
-      );
+      ));
       &too_large
     };
     if let (Some(call), Some(frame_type)) = (self.calls.open.get_mut(&stream), frame.frame_type())
@@ -701,14 +701,15 @@ impl Session {
   }
 }
 
-fn call_error(code: StatusCode, msg: String, nx: bool) -> Frame {
-  Frame::Error(CallError {
+fn call_error(code: StatusCode, msg: String, nx: bool) -> CallError {
+  let code = if code == StatusCode::Ok { StatusCode::Internal } else { code };
+  CallError {
     code: u64::from(code),
     msg,
     nx: nx.then_some(true),
     meta: None,
     data: Bytes::new(),
-  })
+  }
 }
 
 #[cfg(test)]

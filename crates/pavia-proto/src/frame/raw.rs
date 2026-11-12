@@ -97,7 +97,7 @@ impl Frame {
     Ok(length)
   }
 
-  fn header_length(&self) -> usize {
+  pub(crate) fn header_length(&self) -> usize {
     if entry_count(self) == 0 {
       0
     } else {

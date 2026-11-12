@@ -1697,3 +1697,40 @@ fn sends_a_deliberate_error_with_its_meta_and_detail() {
     )]
   );
 }
+
+fn error_with_msg(length: usize) -> Command {
+  Command::Error {
+    stream: 2,
+    code: StatusCode::NotFound,
+    msg: "m".repeat(length),
+    nx: false,
+    meta: None,
+    detail: Bytes::new(),
+  }
+}
+
+#[test]
+fn sends_an_error_whose_header_is_exactly_the_header_limit() {
+  let (mut session, _) = welcomed(None);
+  called(&mut session, 2);
+  session.feed(Input::Command(error_with_msg(16377)));
+  let sent = sent_frames(&mut session);
+  let [(2, frame @ Frame::Error(error))] = sent.as_slice() else {
+    panic!("{sent:?}");
+  };
+  assert_eq!((frame.header_length(), error.code), (16384, 5));
+}
+
+#[test]
+fn answers_resource_exhausted_for_an_error_header_above_the_limit() {
+  let (mut session, _) = welcomed(None);
+  called(&mut session, 2);
+  session.feed(Input::Command(error_with_msg(16378)));
+  let sent = sent_frames(&mut session);
+  let [(2, Frame::Error(error))] = sent.as_slice() else {
+    panic!("{sent:?}");
+  };
+  assert_eq!((error.code, error.nx), (u64::from(StatusCode::ResourceExhausted), None));
+  assert!(!session.is_ended());
+  assert_eq!(session.open_calls(), 0);
+}
