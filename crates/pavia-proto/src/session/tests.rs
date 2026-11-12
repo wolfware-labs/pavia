@@ -1621,3 +1621,24 @@ fn keeps_the_session_when_items_follow_a_call_with_an_unknown_shape() {
   assert!(!session.is_ended());
   assert_eq!(session.open_calls(), 0);
 }
+
+#[test]
+fn refuses_a_call_beyond_max_calls_without_reading_its_header() {
+  let config = Config {
+    max_calls: 1,
+    ..Config::default()
+  };
+  let (mut session, _) = welcomed_with(config, None);
+  called(&mut session, 2);
+  let malformed_call = Bytes::from_static(&[0x04, 0x10, 0x00, 0x02, 0x01, 0xff]);
+  session.feed(Input::Message(malformed_call));
+  let sent = sent_frames(&mut session);
+  let [(4, Frame::Error(error))] = sent.as_slice() else {
+    panic!("{sent:?}");
+  };
+  assert_eq!((error.code, error.nx), (u64::from(StatusCode::ResourceExhausted), Some(true)));
+  assert!(!session.is_ended());
+  assert_eq!(session.open_calls(), 1);
+  session.feed(Input::Message(Bytes::from_static(&[0x03, 0x10, 0x00, 0x02, 0x01, 0xff])));
+  assert!(ended_with(&mut session, CloseCode::ProtocolError));
+}
