@@ -12,7 +12,7 @@ use futures_util::{SinkExt, StreamExt};
 use hyper::header::{self, HeaderValue};
 use pavia_proto::data::Value as Arg;
 use pavia_proto::frame::Auth;
-use pavia_proto::registry::CloseCode;
+use pavia_proto::registry::{CloseCode, StatusCode};
 use pavia_proto::session::{Command, Config as SessionConfig, Ending, Input};
 use pavia_proto::session_id::SessionId;
 use pavia_proto::stream::Side;
@@ -27,8 +27,8 @@ use tokio_tungstenite::tungstenite::protocol::frame::coding::{Data, OpCode};
 use tokio_tungstenite::tungstenite::{Message, Utf8Bytes};
 use tokio_tungstenite::{WebSocketStream, client_async};
 
-use super::{authenticated, run};
-use crate::auth::{AuthFailure, Authenticator, Permissive, Principal, RequestContext};
+use super::{Refusal, authenticated, run, validate_call};
+use crate::auth::{AllowAll, AuthFailure, Authenticator, Authorizer, Permissive, Principal, RequestContext};
 use crate::methods::{Handler, MethodEntry, MethodRegistry};
 use crate::sessions::Registry;
 use crate::test_support::{EXPECT_WITHIN, floor_frame, has_ws_close, serve_on_loopback};
@@ -62,14 +62,15 @@ async fn listen_with<A: Authenticator + 'static>(
   config: SessionConfig,
   authenticator: Arc<A>,
 ) -> (SocketAddr, oneshot::Receiver<Ending>) {
-  listen_serving(registry, Arc::new(MethodRegistry::new()), config, authenticator).await
+  listen_serving(registry, Arc::new(MethodRegistry::new()), config, authenticator, AllowAll).await
 }
 
-async fn listen_serving<A: Authenticator + 'static>(
+async fn listen_serving<A: Authenticator + 'static, Z: Authorizer + Clone + 'static>(
   registry: Registry,
   methods: Arc<MethodRegistry<Handler>>,
   config: SessionConfig,
   authenticator: Arc<A>,
+  authorizer: Z,
 ) -> (SocketAddr, oneshot::Receiver<Ending>) {
   let config = config.validate().unwrap();
   let (ended, ending) = oneshot::channel();
@@ -79,8 +80,9 @@ async fn listen_serving<A: Authenticator + 'static>(
     let registry = registry.clone();
     let methods = Arc::clone(&methods);
     let authenticator = Arc::clone(&authenticator);
+    let authorizer = authorizer.clone();
     async move {
-      let ending = run(transport, &registry, &methods, &*authenticator).await;
+      let ending = run(transport, &registry, &methods, &*authenticator, &authorizer).await;
       if let Some(ended) = ended {
         let _ = ended.send(ending);
       }
@@ -901,7 +903,7 @@ fn recording(
     let registry = registry.clone();
     let ended = ended.clone();
     Box::pin(async move {
-      let _ = ended.send(run(transport, &registry, &MethodRegistry::new(), &Permissive).await);
+      let _ = ended.send(run(transport, &registry, &MethodRegistry::new(), &Permissive, &AllowAll).await);
     })
   });
   (endpoint, endings)
@@ -1055,7 +1057,7 @@ async fn never_registers_a_session_whose_welcome_cannot_be_written() {
     let authenticator = Arc::clone(&authenticator);
     let ended = ended.lock().unwrap().take();
     Box::pin(async move {
-      let ending = run(transport, &registry, &MethodRegistry::new(), &*authenticator).await;
+      let ending = run(transport, &registry, &MethodRegistry::new(), &*authenticator, &AllowAll).await;
       if let Some(ended) = ended {
         let _ = ended.send(ending);
       }
@@ -1078,9 +1080,13 @@ async fn never_registers_a_session_whose_welcome_cannot_be_written() {
 }
 
 fn call_frame(stream: u8, method: &str, data: &[u8]) -> Vec<u8> {
+  call_frame_shaped(stream, method, 0, data)
+}
+
+fn call_frame_shaped(stream: u8, method: &str, shape: u8, data: &[u8]) -> Vec<u8> {
   let mut header = vec![0xa2, 0x02, 0x60 + u8::try_from(method.len()).unwrap()];
   header.extend(method.as_bytes());
-  header.extend([0x05, 0x00]);
+  header.extend([0x05, shape]);
   let mut payload = vec![u8::try_from(header.len()).unwrap()];
   payload.extend(header);
   payload.extend(data);
@@ -1164,7 +1170,14 @@ fn chat() -> (Arc<MethodRegistry<Handler>>, Arc<AtomicUsize>) {
 }
 
 async fn serving(methods: Arc<MethodRegistry<Handler>>) -> Socket {
-  let (address, _) = listen_serving(Registry::new(), methods, SessionConfig::default(), Arc::new(Permissive)).await;
+  let (address, _) = listen_serving(
+    Registry::new(),
+    methods,
+    SessionConfig::default(),
+    Arc::new(Permissive),
+    AllowAll,
+  )
+  .await;
   let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
   established(&mut socket).await;
   socket
@@ -1370,7 +1383,7 @@ async fn answers_calls_in_json_when_the_session_negotiated_it() {
   let (methods, _) = chat();
   let mut config = SessionConfig::default();
   config.codecs = vec![pavia_proto::data::Codec::Json];
-  let (address, _) = listen_serving(Registry::new(), methods, config, Arc::new(Permissive)).await;
+  let (address, _) = listen_serving(Registry::new(), methods, config, Arc::new(Permissive), AllowAll).await;
   let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
   socket.send(Message::binary(hello_frame_with(b"json"))).await.unwrap();
   next_welcome(&mut socket).await;
@@ -1442,4 +1455,156 @@ async fn refuses_a_call_whose_shape_differs_from_the_method() {
     .await
     .unwrap();
   assert_refused(&next_answer(&mut socket).await, 2, 3);
+}
+
+fn unary_call(method: &str, data: &'static [u8], meta: Option<pavia_proto::frame::Meta>) -> pavia_proto::frame::Call {
+  pavia_proto::frame::Call {
+    method: method.to_owned(),
+    shape: 0,
+    deadline: None,
+    meta,
+    data: bytes::Bytes::from_static(data),
+  }
+}
+
+fn refusal(call: &pavia_proto::frame::Call, idempotency: bool) -> Option<Refusal> {
+  let (methods, _) = chat();
+  validate_call(call, &methods, pavia_proto::data::Codec::Cbor, idempotency).err()
+}
+
+#[test]
+fn stops_at_the_first_failing_check() {
+  let garbage = &[0xff];
+  let unknown = refusal(&unary_call("nope/nope", garbage, None), false).unwrap();
+  assert_eq!(unknown.code, StatusCode::Unimplemented);
+  let mut mismatched = unary_call("chat/send", garbage, None);
+  mismatched.shape = 1;
+  assert_eq!(
+    refusal(&mismatched, false),
+    Some(Refusal::new(StatusCode::InvalidArgument, "shape does not match the method"))
+  );
+  assert_eq!(
+    refusal(&unary_call("chat/typing", garbage, None), false),
+    Some(Refusal::new(StatusCode::InvalidArgument, "method takes NOTIFY, not CALL"))
+  );
+  assert_eq!(
+    refusal(&unary_call("chat/send", garbage, None), false),
+    Some(Refusal::new(StatusCode::InvalidArgument, "arguments do not decode"))
+  );
+  assert_eq!(
+    refusal(&unary_call("chat/send", &[0x81, 0x61, b'a'], None), false),
+    Some(Refusal::new(StatusCode::InvalidArgument, "expected 2 arguments, got 1"))
+  );
+  assert_eq!(refusal(&unary_call("chat/send", GENERAL_HELLO, None), false), None);
+}
+
+fn with_key(length: usize, bytes: bool) -> Option<pavia_proto::frame::Meta> {
+  let value = if bytes {
+    pavia_proto::frame::MetaValue::Bytes(bytes::Bytes::from(vec![b'k'; length]))
+  } else {
+    pavia_proto::frame::MetaValue::Text("k".repeat(length))
+  };
+  let name = pavia_proto::frame::MetaName::try_from("pavia-idempotency-key").unwrap();
+  Some([(name, value)].into_iter().collect())
+}
+
+#[test]
+fn bounds_the_idempotency_key_only_with_the_capability() {
+  for bytes in [false, true] {
+    let long = unary_call("chat/send", GENERAL_HELLO, with_key(129, bytes));
+    assert_eq!(
+      refusal(&long, true),
+      Some(Refusal::new(StatusCode::InvalidArgument, "idempotency key above 128 bytes"))
+    );
+    assert_eq!(refusal(&long, false), None);
+    assert_eq!(
+      refusal(&unary_call("chat/send", GENERAL_HELLO, with_key(128, bytes)), true),
+      None
+    );
+  }
+  let other = pavia_proto::frame::MetaName::try_from("traceparent").unwrap();
+  let meta = [(other, pavia_proto::frame::MetaValue::Text("t".repeat(200)))]
+    .into_iter()
+    .collect();
+  assert_eq!(refusal(&unary_call("chat/send", GENERAL_HELLO, Some(meta)), true), None);
+}
+
+#[tokio::test]
+async fn refuses_a_call_beyond_max_calls_before_looking_at_it() {
+  let (release, released) = tokio::sync::watch::channel(false);
+  let mut methods = MethodRegistry::new();
+  methods
+    .register_server_method(
+      "chat/slow",
+      MethodEntry::call(Handler::new(0, move |_| {
+        let mut released = released.clone();
+        async move {
+          let _ = released.wait_for(|released| *released).await;
+          Arg::Null
+        }
+      })),
+    )
+    .unwrap();
+  let mut config = SessionConfig::default();
+  config.max_calls = 1;
+  let (address, _) = listen_serving(Registry::new(), Arc::new(methods), config, Arc::new(Permissive), AllowAll).await;
+  let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
+  established(&mut socket).await;
+  socket
+    .send(Message::binary(call_frame(2, "chat/slow", &[0x80])))
+    .await
+    .unwrap();
+  socket
+    .send(Message::binary(call_frame(4, "nope/nope", &[0xff])))
+    .await
+    .unwrap();
+  assert_refused(&next_answer(&mut socket).await, 4, 8);
+  release.send(true).unwrap();
+  assert_eq!(next_answer(&mut socket).await.stream, 2);
+}
+
+#[tokio::test]
+async fn refuses_an_unknown_shape_after_the_method_lookup() {
+  let (methods, runs) = chat();
+  let mut socket = serving(methods).await;
+  socket
+    .send(Message::binary(call_frame_shaped(2, "nope/nope", 7, &[0x80])))
+    .await
+    .unwrap();
+  assert_refused(&next_answer(&mut socket).await, 2, 12);
+  socket
+    .send(Message::binary(call_frame_shaped(4, "chat/send", 7, GENERAL_HELLO)))
+    .await
+    .unwrap();
+  assert_refused(&next_answer(&mut socket).await, 4, 3);
+  assert_eq!(runs.load(Ordering::SeqCst), 0);
+}
+
+#[derive(Clone)]
+struct DenyAll;
+
+impl Authorizer for DenyAll {
+  async fn authorize(&self, _: &Principal, _: &crate::methods::MethodName) -> bool {
+    false
+  }
+}
+
+#[tokio::test]
+async fn answers_a_denied_call_by_whether_the_session_is_anonymous() {
+  for (authenticator, hello, code) in [
+    (Recording::answering(Some(Ok(Principal::anonymous()))), hello_frame(), 16),
+    (Recording::answering(Some(Ok(Principal::for_user("u-1")))), bearer_hello(), 7),
+  ] {
+    let (methods, runs) = chat();
+    let (address, _) = listen_serving(Registry::new(), methods, SessionConfig::default(), authenticator, DenyAll).await;
+    let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
+    socket.send(Message::binary(hello)).await.unwrap();
+    next_welcome(&mut socket).await;
+    socket
+      .send(Message::binary(call_frame(2, "chat/send", GENERAL_HELLO)))
+      .await
+      .unwrap();
+    assert_refused(&next_answer(&mut socket).await, 2, code);
+    assert_eq!(runs.load(Ordering::SeqCst), 0, "{code}");
+  }
 }

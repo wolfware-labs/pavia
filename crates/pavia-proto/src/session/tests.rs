@@ -1441,14 +1441,39 @@ fn ignores_an_answer_for_a_stream_without_a_call() {
 }
 
 #[test]
-fn refuses_an_unknown_shape_without_handing_the_call_on() {
+fn hands_a_call_with_an_unknown_shape_to_the_driver_and_accepts_its_error() {
   let (mut session, _) = welcomed(None);
   session.feed(Input::Message(message(&[(2, call(7))])));
+  let outputs = drain(&mut session);
+  assert!(matches!(outputs.as_slice(), [Output::Call { stream: 2, call }] if call.shape == 7));
+  session.feed(Input::Command(Command::Error {
+    stream: 2,
+    code: StatusCode::InvalidArgument,
+    msg: "shape does not match the method".into(),
+    nx: true,
+  }));
+  assert!(matches!(sent_frames(&mut session).as_slice(), [(2, Frame::Error(error))] if error.code == 3));
+  assert_eq!(session.open_calls(), 0);
+}
+
+#[test]
+fn refuses_a_call_beyond_max_calls_before_the_driver_sees_it() {
+  let config = Config {
+    max_calls: 1,
+    ..Config::default()
+  };
+  let (mut session, _) = welcomed_with(config, None);
+  called(&mut session, 2);
+  session.feed(Input::Message(message(&[(4, call(7))])));
   let sent = sent_frames(&mut session);
-  let [(2, Frame::Error(error))] = sent.as_slice() else {
+  let [(4, Frame::Error(error))] = sent.as_slice() else {
     panic!("{sent:?}");
   };
-  assert_eq!((error.code, error.nx), (3, Some(true)));
+  assert_eq!((error.code, error.nx), (u64::from(StatusCode::ResourceExhausted), Some(true)));
+  assert_eq!(session.open_calls(), 1);
+  session.feed(answer(2, &[0xf6]));
+  drain(&mut session);
+  called(&mut session, 6);
 }
 
 #[test]

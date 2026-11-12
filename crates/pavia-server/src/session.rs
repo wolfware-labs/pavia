@@ -11,11 +11,13 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use bytes::BytesMut;
 use futures_util::FutureExt;
+use pavia_proto::caps::Capability;
 use pavia_proto::data::{self, Codec, DecodeLimits, Value};
-use pavia_proto::frame::{Auth, Call};
+use pavia_proto::frame::{Auth, Call, MetaValue};
 use pavia_proto::registry::{CloseCode, StatusCode};
 use pavia_proto::session::{Command, Ending, Input, Output, Session};
 use pavia_proto::session_id::SessionId;
@@ -24,8 +26,8 @@ use tokio::sync::mpsc;
 use tokio::task::{self, JoinError, JoinSet};
 use tokio::time::{Instant, sleep_until};
 
-use crate::auth::{AuthFailure, Authenticator, Principal};
-use crate::methods::{Handler, Kind, MethodRegistry};
+use crate::auth::{AuthFailure, Authenticator, Authorizer, Principal};
+use crate::methods::{Handler, Kind, MethodName, MethodRegistry};
 use crate::session_id;
 use crate::sessions::{Handle, Registration, Registry};
 use crate::websocket::{Received, Transport, TransportError};
@@ -43,11 +45,15 @@ type Authenticating<'a> = Pin<Box<dyn Future<Output = Result<Principal, AuthFail
 ///
 /// Each CALL from the client runs the server method of that name from `methods` on a task of its
 /// own, so a slow handler holds up no other call, and its value goes back as RESULT (§8.2, §8.4).
-/// A call this task can refuse without running anything is answered ERROR with `nx`: an unknown
-/// method or a streaming one (UNIMPLEMENTED, until streams arrive in M5), a NOTIFY method, a shape
-/// other than the method's, arguments that are not an array in the session codec or a wrong
-/// argument count (INVALID_ARGUMENT). A handler that panics is answered INTERNAL.
-/// Handlers still running when the session ends are dropped with it.
+/// Before the handler runs, the callee checks of §8.2 run in order and the first that fails
+/// answers ERROR with `nx`: more than `max_calls` calls open (RESOURCE_EXHAUSTED, checked by the
+/// session), an unknown method (UNIMPLEMENTED), a NOTIFY method or a shape other than the method's
+/// (INVALID_ARGUMENT), arguments that are not an array in the session codec, a wrong argument
+/// count or, with capability `idempotency`, a `pavia-idempotency-key` above 128 bytes
+/// (INVALID_ARGUMENT), and last `authorizer`, on the call's task (UNAUTHENTICATED for an anonymous
+/// session, PERMISSION_DENIED otherwise). A streaming method is answered UNIMPLEMENTED until
+/// streams arrive in M5. A handler that panics is answered INTERNAL. Handlers still running when
+/// the session ends are dropped with it.
 ///
 /// `authenticator` runs once, after HELLO (§7.5). The transport keeps being read while it runs,
 /// so a CLOSE, a transport loss or the handshake deadline still ends the session. When it
@@ -65,11 +71,12 @@ type Authenticating<'a> = Pin<Box<dyn Future<Output = Result<Principal, AuthFail
 /// ([`Config::session`](crate::websocket::Config::session)), so its limits and the transport's
 /// message cap come from one value. The handshake timer starts at [`Transport::accepted`], before
 /// the upgrade. The clock is tokio's, so a test that pauses time drives the session's timers too.
-pub async fn run<A: Authenticator>(
+pub async fn run<A: Authenticator, Z: Authorizer + Clone + 'static>(
   mut transport: Transport,
   registry: &Registry,
   methods: &MethodRegistry<Handler>,
   authenticator: &A,
+  authorizer: &Z,
 ) -> Ending {
   let (sender, mut commands) = mpsc::channel(COMMAND_QUEUE);
   let mut membership = Membership {
@@ -80,6 +87,8 @@ pub async fn run<A: Authenticator>(
   };
   let mut calls = Calls {
     methods,
+    authorizer: authorizer.clone(),
+    principal: Arc::new(Principal::anonymous()),
     running: JoinSet::new(),
     streams: HashMap::new(),
   };
@@ -97,7 +106,11 @@ pub async fn run<A: Authenticator>(
         if authenticating.is_some() => {
         answered = true;
         match answer {
-          Ok(principal) => authenticated(&principal, session_id::generate()),
+          Ok(principal) => {
+            let input = authenticated(&principal, session_id::generate());
+            calls.principal = Arc::new(principal);
+            input
+          }
           Err(failure) => Input::AuthFailed(failure),
         }
       },
@@ -163,62 +176,135 @@ impl Membership<'_> {
   }
 }
 
-struct Calls<'a> {
+struct Calls<'a, Z> {
   methods: &'a MethodRegistry<Handler>,
-  running: JoinSet<Value>,
+  authorizer: Z,
+  principal: Arc<Principal>,
+  running: JoinSet<Answer>,
   streams: HashMap<task::Id, u64>,
 }
 
-impl Calls<'_> {
-  fn dispatch(&mut self, stream: u64, call: &Call, codec: Codec) -> Option<Command> {
-    let refuse = |code, msg: &str| {
-      Some(Command::Error {
-        stream,
-        code,
-        msg: msg.to_owned(),
-        nx: true,
-      })
+enum Answer {
+  Value(Value),
+  Denied { anonymous: bool },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Refusal {
+  code: StatusCode,
+  msg: String,
+}
+
+impl Refusal {
+  fn new(code: StatusCode, msg: impl Into<String>) -> Self {
+    Self { code, msg: msg.into() }
+  }
+}
+
+const IDEMPOTENCY_KEY: &str = "pavia-idempotency-key";
+const MAX_IDEMPOTENCY_KEY: usize = 128;
+
+fn validate_call<'m>(
+  call: &Call,
+  methods: &'m MethodRegistry<Handler>,
+  codec: Codec,
+  idempotency: bool,
+) -> Result<(&'m MethodName, &'m Handler, Vec<Value>), Refusal> {
+  let Some((name, method)) = methods.server_entry(&call.method) else {
+    return Err(Refusal::new(StatusCode::Unimplemented, "unknown method"));
+  };
+  let Kind::Call { shape, .. } = method.kind else {
+    return Err(Refusal::new(StatusCode::InvalidArgument, "method takes NOTIFY, not CALL"));
+  };
+  if Shape::try_from(call.shape) != Ok(shape) {
+    return Err(Refusal::new(StatusCode::InvalidArgument, "shape does not match the method"));
+  }
+  if shape != Shape::Unary {
+    return Err(Refusal::new(StatusCode::Unimplemented, "streaming calls are not served yet"));
+  }
+  let arguments = match data::decode(&call.data, codec, &DecodeLimits::default()) {
+    Ok(Value::Array(arguments)) => arguments,
+    Ok(_) => return Err(Refusal::new(StatusCode::InvalidArgument, "arguments are not an array")),
+    Err(_) => return Err(Refusal::new(StatusCode::InvalidArgument, "arguments do not decode")),
+  };
+  if arguments.len() != method.handler.params() {
+    let msg = format!("expected {} arguments, got {}", method.handler.params(), arguments.len());
+    return Err(Refusal::new(StatusCode::InvalidArgument, msg));
+  }
+  if idempotency && idempotency_key_length(call).is_some_and(|length| length > MAX_IDEMPOTENCY_KEY) {
+    return Err(Refusal::new(StatusCode::InvalidArgument, "idempotency key above 128 bytes"));
+  }
+  Ok((name, &method.handler, arguments))
+}
+
+fn idempotency_key_length(call: &Call) -> Option<usize> {
+  let (_, value) = call
+    .meta
+    .as_ref()?
+    .iter()
+    .find(|(name, _)| name.as_str() == IDEMPOTENCY_KEY)?;
+  Some(match value {
+    MetaValue::Text(text) => text.len(),
+    MetaValue::Bytes(bytes) => bytes.len(),
+  })
+}
+
+impl<Z: Authorizer + Clone + 'static> Calls<'_, Z> {
+  fn dispatch(&mut self, stream: u64, call: &Call, session: &Session) -> Option<Command> {
+    let idempotency = session
+      .negotiated()
+      .is_some_and(|negotiated| negotiated.caps.contains(Capability::Idempotency));
+    let (name, handler, arguments) = match validate_call(call, self.methods, codec(session), idempotency) {
+      Ok(approved) => approved,
+      Err(refusal) => {
+        return Some(Command::Error {
+          stream,
+          code: refusal.code,
+          msg: refusal.msg,
+          nx: true,
+        });
+      }
     };
-    let Some(method) = self.methods.server_method(&call.method) else {
-      return refuse(StatusCode::Unimplemented, "unknown method");
-    };
-    let Kind::Call { shape, .. } = method.kind else {
-      return refuse(StatusCode::InvalidArgument, "method takes NOTIFY, not CALL");
-    };
-    if Shape::try_from(call.shape) != Ok(shape) {
-      return refuse(StatusCode::InvalidArgument, "shape does not match the method");
-    }
-    if shape != Shape::Unary {
-      return refuse(StatusCode::Unimplemented, "streaming calls are not served yet");
-    }
-    let arguments = match data::decode(&call.data, codec, &DecodeLimits::default()) {
-      Ok(Value::Array(arguments)) => arguments,
-      Ok(_) => return refuse(StatusCode::InvalidArgument, "arguments are not an array"),
-      Err(_) => return refuse(StatusCode::InvalidArgument, "arguments do not decode"),
-    };
-    if arguments.len() != method.handler.params() {
-      let msg = format!("expected {} arguments, got {}", method.handler.params(), arguments.len());
-      return refuse(StatusCode::InvalidArgument, &msg);
-    }
-    let handler = method.handler.clone();
-    let task = self.running.spawn(async move { handler.run(arguments).await });
+    let (name, handler) = (name.clone(), handler.clone());
+    let (authorizer, principal) = (self.authorizer.clone(), Arc::clone(&self.principal));
+    let task = self.running.spawn(async move {
+      if authorizer.authorize(&principal, &name).await {
+        Answer::Value(handler.run(arguments).await)
+      } else {
+        Answer::Denied {
+          anonymous: principal.is_anonymous(),
+        }
+      }
+    });
     self.streams.insert(task.id(), stream);
     None
   }
 
-  fn answered(&mut self, joined: Result<(task::Id, Value), JoinError>, codec: Codec) -> Input {
-    let (id, value) = match joined {
-      Ok((id, value)) => (id, Ok(value)),
+  fn answered(&mut self, joined: Result<(task::Id, Answer), JoinError>, codec: Codec) -> Input {
+    let (id, answer) = match joined {
+      Ok((id, answer)) => (id, Ok(answer)),
       Err(error) => (error.id(), Err(error)),
     };
     let stream = self.streams.remove(&id).expect("every running call has a stream");
     let mut encoded = BytesMut::new();
-    let command = match value.map(|value| data::encode(&value, codec, &mut encoded)) {
-      Ok(Ok(())) => Command::Result {
-        stream,
-        data: encoded.freeze(),
+    let command = match answer {
+      Ok(Answer::Value(value)) => match data::encode(&value, codec, &mut encoded) {
+        Ok(()) => Command::Result {
+          stream,
+          data: encoded.freeze(),
+        },
+        Err(_) => internal(stream, "result does not encode"),
       },
-      Ok(Err(_)) => internal(stream, "result does not encode"),
+      Ok(Answer::Denied { anonymous }) => Command::Error {
+        stream,
+        code: if anonymous {
+          StatusCode::Unauthenticated
+        } else {
+          StatusCode::PermissionDenied
+        },
+        msg: "not allowed to call this method".to_owned(),
+        nx: true,
+      },
       Err(_) => internal(stream, "handler failed"),
     };
     Input::Command(command)
@@ -244,11 +330,11 @@ enum Step {
   Ended(Ending),
 }
 
-async fn carry_out(
+async fn carry_out<Z: Authorizer + Clone + 'static>(
   session: &mut Session,
   transport: &mut Transport,
   membership: &mut Membership<'_>,
-  calls: &mut Calls<'_>,
+  calls: &mut Calls<'_, Z>,
 ) -> Step {
   let mut step = Step::Continue;
   while let Some(output) = session.poll_output() {
@@ -269,7 +355,7 @@ async fn carry_out(
       Output::Authenticate { auth } => step = Step::Authenticate(auth),
       Output::Established { session } => membership.welcoming = Some(session),
       Output::Call { stream, call } => {
-        if let Some(refusal) = calls.dispatch(stream, &call, codec(session)) {
+        if let Some(refusal) = calls.dispatch(stream, &call, session) {
           session.handle_input(Input::Command(refusal), Instant::now().into_std());
         }
       }
