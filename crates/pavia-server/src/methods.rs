@@ -284,6 +284,10 @@ impl<H> MethodRegistry<H> {
     self.server.get(name)
   }
 
+  pub(crate) fn server_entry(&self, name: &str) -> Option<(&MethodName, &MethodEntry<H>)> {
+    self.server.get_key_value(name)
+  }
+
   /// The client method `name`, which a CALL or NOTIFY from the server resolves to.
   #[must_use]
   pub fn client_method(&self, name: &str) -> Option<&MethodEntry<H>> {

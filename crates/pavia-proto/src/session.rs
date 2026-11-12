@@ -47,9 +47,9 @@
 //! passes [`caps::check`]. A CALL on a new client stream becomes [`Output::Call`], and the
 //! driver's [`Command::Result`] or [`Command::Error`] answers it; every frame on the stream goes
 //! through the call state machine, and the stream is freed once the call is complete (§6.1,
-//! §6.3). An unknown shape is answered INVALID_ARGUMENT with `nx` without reaching the driver.
-//! Frames on the control stream other than these are otherwise ignored until their feature
-//! lands.
+//! §6.3). A CALL beyond `max_calls` open calls is answered RESOURCE_EXHAUSTED with `nx` before
+//! its header is read, the first of the callee checks of §8.2; the driver makes the rest. Frames
+//! on the control stream other than these are otherwise ignored until their feature lands.
 //! PING, PONG and CLOSE skip ahead of other queued outputs, in the order they were made (§6.6,
 //! §13.5), but never ahead of WELCOME, the server's first frame (§6.2). Sending CLOSE drops what is
 //! still queued behind it, since nothing follows CLOSE on the transport (§7.7).
@@ -63,7 +63,7 @@ use bytes::{Bytes, BytesMut};
 use crate::caps::{self, Capability, Caps};
 use crate::data::Codec;
 use crate::error::{Outcome, ProtocolError};
-use crate::frame::{Auth, Call, CallError, CallResult, Close, Frame, Heartbeat, Hello, Reject, Welcome};
+use crate::frame::{Auth, Call, CallError, CallResult, Close, Frame, FrameType, Heartbeat, Hello, Reject, Welcome};
 use crate::negotiate;
 use crate::registry::{CloseCode, StatusCode};
 use crate::session_id::SessionId;
@@ -170,9 +170,14 @@ pub enum Output {
     /// The close reason.
     reason: String,
   },
-  /// The client called a server method on `stream` (§8.2). The driver runs it and answers with
-  /// [`Command::Result`] or [`Command::Error`] for the same stream. Only established sessions
-  /// emit it, one per call stream; `call.shape` is a shape this session can run.
+  /// The client called a server method on `stream` (§8.2). The driver checks it from step 2 of
+  /// §8.2 on, runs it and answers with [`Command::Result`] or [`Command::Error`] for the same
+  /// stream. Only established sessions emit it, one per call stream, and only while fewer than
+  /// `max_calls` calls are open: the session answers the rest RESOURCE_EXHAUSTED with `nx`
+  /// itself, without reading their header (§6.5, §8.2 step 1). `call.shape` is the value the
+  /// client sent, known or not. A shape the session does not know is tracked as a client stream,
+  /// so ITEMs and END the client sent behind it are taken as frames of that call, until the
+  /// driver refuses it at step 3.
   Call {
     /// The call stream.
     stream: u64,
@@ -408,6 +413,17 @@ impl Session {
       Err(error) => return self.fail(&error),
     };
     for ws_frame in frames {
+      if ws_frame.frame.frame_type == u8::from(FrameType::Call)
+        && ws_frame.stream_id != CONTROL_STREAM
+        && matches!(self.state, State::Established { .. })
+        && self.calls_full()
+      {
+        self.refuse_beyond_max_calls(ws_frame.stream_id);
+        if self.is_ended() {
+          return;
+        }
+        continue;
+      }
       let frame = match Frame::from_raw(&ws_frame.frame, &self.limits) {
         Ok(frame) => frame,
         Err(error) => {
@@ -587,13 +603,26 @@ impl Session {
   }
 
   fn open_call(&mut self, stream: u64, call: Call) {
-    if let Ok(shape) = Shape::try_from(call.shape) {
-      self.calls.open.insert(stream, CallState::new(shape, Role::Callee));
-      self.outputs.push_back(Output::Call { stream, call });
-    } else {
-      self.calls.ids.close(stream);
-      let refusal = call_error(StatusCode::InvalidArgument, "unknown call shape".to_owned(), true);
-      self.transmit_on(stream, &refusal);
+    let shape = Shape::try_from(call.shape).unwrap_or(Shape::ClientStream);
+    self.calls.open.insert(stream, CallState::new(shape, Role::Callee));
+    self.outputs.push_back(Output::Call { stream, call });
+  }
+
+  fn calls_full(&self) -> bool {
+    u64::try_from(self.calls.open.len()).map_or(true, |open| open >= self.config.0.max_calls)
+  }
+
+  fn refuse_beyond_max_calls(&mut self, stream: u64) {
+    match self.calls.ids.receive(stream, true) {
+      Err(error) => self.fail(&error),
+      Ok(_) => {
+        self
+          .calls
+          .open
+          .insert(stream, CallState::new(Shape::ClientStream, Role::Callee));
+        let refusal = call_error(StatusCode::ResourceExhausted, "too many open calls".to_owned(), true);
+        self.answer(stream, &refusal);
+      }
     }
   }
 

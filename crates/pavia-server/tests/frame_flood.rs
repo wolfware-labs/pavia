@@ -4,11 +4,12 @@
 //! own.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use pavia_proto::frame::Limits;
 use pavia_proto::session::Config as SessionConfig;
-use pavia_server::auth::Permissive;
+use pavia_server::auth::{AllowAll, Permissive};
 use pavia_server::methods::MethodRegistry;
 use pavia_server::session::run;
 use pavia_server::sessions::Registry;
@@ -31,7 +32,7 @@ async fn listen() -> SocketAddr {
   let endpoint = Endpoint::new(Config::new("/rt", &config), move |transport: Transport| {
     let registry = registry.clone();
     async move {
-      run(transport, &registry, &MethodRegistry::new(), &Permissive).await;
+      run(transport, &registry, &MethodRegistry::new(), &Permissive, &Arc::new(AllowAll)).await;
     }
   });
   let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

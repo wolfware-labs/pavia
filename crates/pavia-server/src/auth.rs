@@ -16,6 +16,8 @@ use hyper::HeaderMap;
 use pavia_proto::frame::Auth;
 pub use pavia_proto::session::AuthFailure;
 
+use crate::methods::MethodName;
+
 /// Decides who a client is.
 pub trait Authenticator: Send + Sync {
   /// The credential schemes this authenticator accepts, such as `bearer`. A later AUTH_REFRESH
@@ -43,6 +45,26 @@ impl Authenticator for Permissive {
 
   fn authenticate(&self, _: Option<&Auth>, _: &RequestContext) -> impl Future<Output = Result<Principal, AuthFailure>> + Send {
     future::ready(Ok(Principal::anonymous()))
+  }
+}
+
+/// Decides whether a session may call a method: step 5 of the callee checks of §8.2, after the
+/// arguments are known to decode. A refusal is answered UNAUTHENTICATED for an anonymous session
+/// and PERMISSION_DENIED otherwise, with `nx`, and the handler never runs. It runs on the call's
+/// own task, so a slow decision holds up no other call. Per-method policies with metadata and the
+/// decoded arguments come with #165.
+pub trait Authorizer: Send + Sync {
+  /// Whether `principal` may call `method`.
+  fn authorize(&self, principal: &Principal, method: &MethodName) -> impl Future<Output = bool> + Send;
+}
+
+/// Lets every session call every method.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AllowAll;
+
+impl Authorizer for AllowAll {
+  fn authorize(&self, _: &Principal, _: &MethodName) -> impl Future<Output = bool> + Send {
+    future::ready(true)
   }
 }
 
