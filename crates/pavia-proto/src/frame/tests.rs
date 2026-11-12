@@ -966,7 +966,7 @@ proptest! {
 }
 
 #[test]
-fn measures_the_payload_it_encodes() {
+fn measures_the_payload_and_header_it_encodes() {
   let frames = [
     Frame::Extension(Extension {
       frame_type: 0x80,
@@ -986,5 +986,6 @@ fn measures_the_payload_it_encodes() {
     frame.encode(&mut encoded).unwrap();
     let raw = take_frame(&mut encoded.freeze(), u64::MAX).unwrap().unwrap();
     assert_eq!(frame.payload_length(), Ok(raw.payload_length().unwrap()), "{frame:?}");
+    assert_eq!(frame.header_length(), raw.header.len(), "{frame:?}");
   }
 }

@@ -8,18 +8,19 @@
 //! connection drops.
 
 use std::collections::HashMap;
+use std::error::Error;
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use futures_util::FutureExt;
 use pavia_proto::caps::Capability;
 use pavia_proto::data::{self, Codec, DecodeLimits, Value};
 use pavia_proto::frame::{Auth, Call, MetaValue};
 use pavia_proto::registry::{CloseCode, StatusCode};
-use pavia_proto::session::{Command, Ending, Input, Output, Session};
+use pavia_proto::session::{Command, Config as SessionConfig, Ending, Input, Output, Session};
 use pavia_proto::session_id::SessionId;
 use pavia_proto::stream::Shape;
 use tokio::sync::mpsc;
@@ -27,7 +28,7 @@ use tokio::task::{self, JoinError, JoinSet};
 use tokio::time::{Instant, sleep_until};
 
 use crate::auth::{AuthFailure, Authenticator, Authorizer, Principal};
-use crate::methods::{Handler, Kind, MethodName, MethodRegistry};
+use crate::methods::{Handler, HandlerError, Kind, MethodName, MethodRegistry};
 use crate::session_id;
 use crate::sessions::{Handle, Registration, Registry};
 use crate::websocket::{Received, Transport, TransportError};
@@ -52,8 +53,12 @@ type Authenticating<'a> = Pin<Box<dyn Future<Output = Result<Principal, AuthFail
 /// count or, with capability `idempotency`, a `pavia-idempotency-key` above 128 bytes
 /// (INVALID_ARGUMENT), and last `authorizer`, on the call's task (UNAUTHENTICATED for an anonymous
 /// session, PERMISSION_DENIED otherwise). A streaming method is answered UNIMPLEMENTED until
-/// streams arrive in M5. A handler that panics is answered INTERNAL. Handlers still running when
-/// the session ends are dropped with it.
+/// streams arrive in M5. A handler's [`StatusError`](crate::methods::StatusError) is answered as
+/// given, with its detail and `meta`. Any other failure (an unexpected handler error, a panic, a
+/// value the codec cannot encode) is answered INTERNAL with the configured generic message, or its
+/// own text cut to `MAX_INTERNAL_ERROR_MESSAGE` bytes in development mode, and logged in full with
+/// `tracing` either way (§8.4, §14).
+/// Handlers still running when the session ends are dropped with it.
 ///
 /// `authenticator` runs once, after HELLO (§7.5). The transport keeps being read while it runs,
 /// so a CLOSE, a transport loss or the handshake deadline still ends the session. When it
@@ -89,6 +94,10 @@ pub async fn run<A: Authenticator, Z: Authorizer + 'static>(
     methods,
     authorizer: Arc::clone(authorizer),
     principal: Arc::new(Principal::anonymous()),
+    disclosure: Disclosure {
+      generic: transport.session().internal_error_message().to_owned(),
+      disclose: transport.session().disclose_internal_errors(),
+    },
     running: JoinSet::new(),
     streams: HashMap::new(),
   };
@@ -180,8 +189,40 @@ struct Calls<'a, Z> {
   methods: &'a MethodRegistry<Handler>,
   authorizer: Arc<Z>,
   principal: Arc<Principal>,
-  running: JoinSet<Result<Value, Refusal>>,
-  streams: HashMap<task::Id, u64>,
+  disclosure: Disclosure,
+  running: JoinSet<Result<Value, Failed>>,
+  streams: HashMap<task::Id, (u64, MethodName)>,
+}
+
+enum Failed {
+  Refused(Refusal),
+  Handler(HandlerError),
+}
+
+struct Disclosure {
+  generic: String,
+  disclose: bool,
+}
+
+impl Disclosure {
+  fn internal(&self, stream: u64, method: &MethodName, error: &(dyn Error + 'static)) -> Command {
+    tracing::error!(stream, method = method.as_str(), error, "call failed unexpectedly");
+    let msg = if self.disclose {
+      let mut text = error.to_string();
+      text.truncate(text.floor_char_boundary(SessionConfig::MAX_INTERNAL_ERROR_MESSAGE));
+      text
+    } else {
+      self.generic.clone()
+    };
+    Command::Error {
+      stream,
+      code: StatusCode::Internal,
+      msg,
+      nx: false,
+      meta: None,
+      detail: Bytes::new(),
+    }
+  }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -210,6 +251,8 @@ impl Refusal {
       code: self.code,
       msg: self.msg,
       nx: true,
+      meta: None,
+      detail: Bytes::new(),
     }
   }
 }
@@ -271,48 +314,56 @@ impl<Z: Authorizer + 'static> Calls<'_, Z> {
       Ok(approved) => approved,
       Err(refusal) => return Some(refusal.answering(stream)),
     };
-    let (name, handler) = (name.clone(), handler.clone());
+    let (method, handler) = (name.clone(), handler.clone());
     let (authorizer, principal) = (Arc::clone(&self.authorizer), Arc::clone(&self.principal));
     let task = self.running.spawn(async move {
-      if authorizer.authorize(&principal, &name).await {
-        Ok(handler.run(arguments).await)
+      if authorizer.authorize(&principal, &method).await {
+        handler.run(arguments).await.map_err(Failed::Handler)
       } else {
-        Err(Refusal::denied(&principal))
+        Err(Failed::Refused(Refusal::denied(&principal)))
       }
     });
-    self.streams.insert(task.id(), stream);
+    self.streams.insert(task.id(), (stream, name.clone()));
     None
   }
 
-  fn answered(&mut self, joined: Result<(task::Id, Result<Value, Refusal>), JoinError>, codec: Codec) -> Input {
+  fn answered(&mut self, joined: Result<(task::Id, Result<Value, Failed>), JoinError>, codec: Codec) -> Input {
     let (id, answer) = match joined {
       Ok((id, answer)) => (id, Ok(answer)),
       Err(error) => (error.id(), Err(error)),
     };
-    let stream = self.streams.remove(&id).expect("every running call has a stream");
-    let mut encoded = BytesMut::new();
+    let (stream, method) = self.streams.remove(&id).expect("every running call has a stream");
     let command = match answer {
-      Ok(Ok(value)) => match data::encode(&value, codec, &mut encoded) {
-        Ok(()) => Command::Result {
-          stream,
-          data: encoded.freeze(),
-        },
-        Err(_) => internal(stream, "result does not encode"),
+      Ok(Ok(value)) => match encode(&value, codec) {
+        Ok(data) => Command::Result { stream, data },
+        Err(error) => self.disclosure.internal(stream, &method, &error),
       },
-      Ok(Err(refusal)) => refusal.answering(stream),
-      Err(_) => internal(stream, "handler failed"),
+      Ok(Err(Failed::Refused(refusal))) => refusal.answering(stream),
+      Ok(Err(Failed::Handler(HandlerError::Status(status)))) => {
+        let (code, msg, detail, meta) = status.into_parts();
+        match detail.map_or(Ok(Bytes::new()), |detail| encode(&detail, codec)) {
+          Ok(detail) => Command::Error {
+            stream,
+            code: code.into(),
+            msg,
+            nx: false,
+            meta,
+            detail,
+          },
+          Err(error) => self.disclosure.internal(stream, &method, &error),
+        }
+      }
+      Ok(Err(Failed::Handler(HandlerError::Unexpected(error)))) => self.disclosure.internal(stream, &method, &*error),
+      Err(error) => self.disclosure.internal(stream, &method, &error),
     };
     Input::Command(command)
   }
 }
 
-fn internal(stream: u64, msg: &str) -> Command {
-  Command::Error {
-    stream,
-    code: StatusCode::Internal,
-    msg: msg.to_owned(),
-    nx: false,
-  }
+fn encode(value: &Value, codec: Codec) -> Result<Bytes, data::EncodeError> {
+  let mut encoded = BytesMut::new();
+  data::encode(value, codec, &mut encoded)?;
+  Ok(encoded.freeze())
 }
 
 fn codec(session: &Session) -> Codec {

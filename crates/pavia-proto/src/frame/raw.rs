@@ -90,15 +90,15 @@ impl Frame {
   ///
   /// [`EncodeError::PayloadTooLarge`] if the payload is above 2^62 − 1 bytes.
   pub(crate) fn payload_length(&self) -> Result<u64, EncodeError> {
-    let length = match self {
-      Self::Extension(extension) => payload_length(extension.header.len(), extension.data.len())?,
-      _ => payload_length(self.header_length(), self.data().len())?,
-    };
-    Ok(length)
+    Ok(payload_length(self.header_length(), self.data().len())?)
   }
 
-  fn header_length(&self) -> usize {
-    if entry_count(self) == 0 {
+  /// The header length [`encode`](Self::encode) writes in the HeaderLength field, the size the
+  /// receiver checks against its header limit (§5.4.1).
+  pub(crate) fn header_length(&self) -> usize {
+    if let Self::Extension(extension) = self {
+      extension.header.len()
+    } else if entry_count(self) == 0 {
       0
     } else {
       let mut measure = Measure::default();

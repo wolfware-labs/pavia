@@ -5,7 +5,8 @@
 //! the server calls, are separate namespaces, so one name can be both. A name is checked when it
 //! is registered, so a bad or duplicate name fails when the application builds its registry, not
 //! when a peer first calls it. A [`Handler`] is the code behind a method: the session runs it
-//! with the CALL arguments as dynamic values.
+//! with the CALL arguments as dynamic values. A handler that fails returns a [`HandlerError`]: a
+//! deliberate [`StatusError`], answered as given, or an unexpected error, answered INTERNAL (§8.4).
 //!
 //! ```text
 //!  register_server_method("chat/send") ─▶ name rule ─▶ not on the server side yet ─▶ stored
@@ -16,6 +17,7 @@
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::error::Error;
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
@@ -23,6 +25,8 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use pavia_proto::data::Value;
+use pavia_proto::error::ErrorStatus;
+use pavia_proto::frame::Meta;
 use pavia_proto::stream::{Shape, Side};
 use thiserror::Error;
 
@@ -176,13 +180,14 @@ impl<H> MethodEntry<H> {
   }
 }
 
-type Running = Pin<Box<dyn Future<Output = Value> + Send>>;
+type Running = Pin<Box<dyn Future<Output = Result<Value, HandlerError>> + Send>>;
 
 type Run = dyn Fn(Vec<Value>) -> Running + Send + Sync;
 
 /// The code behind a method: it takes the CALL arguments as dynamic values (§8.2, §12.3) and
-/// returns the RESULT value. A method with no return value returns [`Value::Null`], the codec's
-/// unit value. Typed handlers arrive with the typed codec mapping (#66).
+/// returns the RESULT value, or with [`fallible`](Self::fallible) a [`HandlerError`]. A method
+/// with no return value returns [`Value::Null`], the codec's unit value. Typed handlers arrive with
+/// the typed codec mapping (#66).
 #[derive(Clone)]
 pub struct Handler {
   params: usize,
@@ -192,10 +197,25 @@ pub struct Handler {
 impl Handler {
   /// A handler for a method with `params` parameters. The session checks the argument count
   /// before it runs `run`, so `run` always gets exactly `params` values.
+  #[must_use]
   pub fn new<F, Fut>(params: usize, run: F) -> Self
   where
     F: Fn(Vec<Value>) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Value> + Send + 'static,
+  {
+    Self::fallible(params, move |arguments| {
+      let running = run(arguments);
+      async move { Ok(running.await) }
+    })
+  }
+
+  /// A handler for a method with `params` parameters that can fail. A [`HandlerError::Status`]
+  /// is answered as given; any other error is unexpected and answered INTERNAL (§8.4).
+  #[must_use]
+  pub fn fallible<F, Fut>(params: usize, run: F) -> Self
+  where
+    F: Fn(Vec<Value>) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<Value, HandlerError>> + Send + 'static,
   {
     Self {
       params,
@@ -220,6 +240,95 @@ impl fmt::Debug for Handler {
       .debug_struct("Handler")
       .field("params", &self.params)
       .finish_non_exhaustive()
+  }
+}
+
+/// How a handler failed (§8.4).
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum HandlerError {
+  /// A deliberate error, answered exactly as given.
+  Status(StatusError),
+  /// Anything else, such as a database or I/O error. It is answered INTERNAL with the configured
+  /// generic message, or its own text in development mode, and logged in full either way.
+  Unexpected(Box<dyn Error + Send + Sync>),
+}
+
+impl HandlerError {
+  /// An unexpected failure: anything that converts into a boxed error, an `anyhow::Error` too.
+  #[must_use]
+  pub fn unexpected(error: impl Into<Box<dyn Error + Send + Sync>>) -> Self {
+    Self::Unexpected(error.into())
+  }
+}
+
+impl From<StatusError> for HandlerError {
+  fn from(status: StatusError) -> Self {
+    Self::Status(status)
+  }
+}
+
+/// A deliberate error: a status that is never OK, a message, and optionally a typed detail and
+/// `meta` trailers (§8.4). A method whose contract declares no error type sends no detail; #67
+/// enforces that once the contract exists.
+///
+/// ```
+/// use pavia_proto::error::ErrorStatus;
+/// use pavia_proto::registry::StatusCode;
+/// use pavia_server::methods::StatusError;
+///
+/// let not_found = ErrorStatus::try_from(StatusCode::NotFound).unwrap();
+/// let error = StatusError::new(not_found, "no such user");
+/// assert_eq!(error.msg(), "no such user");
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct StatusError {
+  code: ErrorStatus,
+  msg: String,
+  detail: Option<Value>,
+  meta: Option<Meta>,
+}
+
+impl StatusError {
+  /// An error with `code` and `msg`, no detail and no trailers.
+  #[must_use]
+  pub fn new(code: ErrorStatus, msg: impl Into<String>) -> Self {
+    Self {
+      code,
+      msg: msg.into(),
+      detail: None,
+      meta: None,
+    }
+  }
+
+  /// The same error with a typed detail, sent in the ERROR data section.
+  #[must_use]
+  pub fn with_detail(mut self, detail: Value) -> Self {
+    self.detail = Some(detail);
+    self
+  }
+
+  /// The same error with `meta` trailers in the ERROR header.
+  #[must_use]
+  pub fn with_meta(mut self, meta: Meta) -> Self {
+    self.meta = Some(meta);
+    self
+  }
+
+  /// The status.
+  #[must_use]
+  pub const fn code(&self) -> ErrorStatus {
+    self.code
+  }
+
+  /// The message.
+  #[must_use]
+  pub fn msg(&self) -> &str {
+    &self.msg
+  }
+
+  pub(crate) fn into_parts(self) -> (ErrorStatus, String, Option<Value>, Option<Meta>) {
+    (self.code, self.msg, self.detail, self.meta)
   }
 }
 

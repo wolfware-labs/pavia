@@ -393,7 +393,7 @@ impl Transport {
   pub async fn close(&mut self, code: CloseCode, reason: &str) -> Result<(), TransportError> {
     let frame = CloseFrame {
       code: WsCloseCode::from(CLOSE_CODE_OFFSET + u16::from(code)),
-      reason: truncate(reason, MAX_CLOSE_REASON).into(),
+      reason: reason[..reason.floor_char_boundary(MAX_CLOSE_REASON)].into(),
     };
     Ok(self.socket.close(Some(frame)).await?)
   }
@@ -409,14 +409,6 @@ impl Transport {
     let mut discarded = [0; 4096];
     let _ = tokio::time::timeout(LINGER, async { while matches!(io.read(&mut discarded).await, Ok(1..)) {} }).await;
   }
-}
-
-fn truncate(text: &str, max: usize) -> &str {
-  let mut end = text.len().min(max);
-  while !text.is_char_boundary(end) {
-    end -= 1;
-  }
-  &text[..end]
 }
 
 #[cfg(test)]

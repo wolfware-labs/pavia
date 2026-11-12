@@ -47,9 +47,11 @@
 //! passes [`caps::check`]. A CALL on a new client stream becomes [`Output::Call`], and the
 //! driver's [`Command::Result`] or [`Command::Error`] answers it; every frame on the stream goes
 //! through the call state machine, and the stream is freed once the call is complete (§6.1,
-//! §6.3). A CALL beyond `max_calls` open calls is answered RESOURCE_EXHAUSTED with `nx` before
-//! its header is read, the first of the callee checks of §8.2; the driver makes the rest. Frames
-//! on the control stream other than these are otherwise ignored until their feature lands.
+//! §6.3). An answer above the client's `max_frame` (§5.2) or the default header limit (§5.4.1)
+//! is sent as RESOURCE_EXHAUSTED instead. A CALL beyond `max_calls` open calls is answered
+//! RESOURCE_EXHAUSTED with `nx` before its header is read, the first of the callee checks of
+//! §8.2; the driver makes the rest. Frames on the control stream other than these are otherwise
+//! ignored until their feature lands.
 //! PING, PONG and CLOSE skip ahead of other queued outputs, in the order they were made (§6.6,
 //! §13.5), but never ahead of WELCOME, the server's first frame (§6.2). Sending CLOSE drops what is
 //! still queued behind it, since nothing follows CLOSE on the transport (§7.7).
@@ -63,7 +65,7 @@ use bytes::{Bytes, BytesMut};
 use crate::caps::{self, Capability, Caps};
 use crate::data::Codec;
 use crate::error::{Outcome, ProtocolError};
-use crate::frame::{Auth, Call, CallError, CallResult, Close, Frame, FrameType, Heartbeat, Hello, Reject, Welcome};
+use crate::frame::{Auth, Call, CallError, CallResult, Close, Frame, FrameType, Heartbeat, Hello, Meta, Reject, Welcome};
 use crate::negotiate;
 use crate::registry::{CloseCode, StatusCode};
 use crate::session_id::SessionId;
@@ -139,6 +141,10 @@ pub enum Command {
     msg: String,
     /// `nx`: the handler never ran.
     nx: bool,
+    /// `meta` trailers (§8.7).
+    meta: Option<Meta>,
+    /// The typed error detail, already encoded in the session codec, or empty (§8.4).
+    detail: Bytes,
   },
 }
 
@@ -370,7 +376,21 @@ impl Session {
       Input::Command(Command::Result { stream, data }) => {
         self.answer(stream, &Frame::Result(CallResult { meta: None, data }));
       }
-      Input::Command(Command::Error { stream, code, msg, nx }) => self.answer(stream, &call_error(code, msg, nx)),
+      Input::Command(Command::Error {
+        stream,
+        code,
+        msg,
+        nx,
+        meta,
+        detail,
+      }) => {
+        let error = CallError {
+          meta,
+          data: detail,
+          ..call_error(code, msg, nx)
+        };
+        self.answer(stream, &Frame::Error(error));
+      }
       Input::Message(_) | Input::Timeout | Input::Authenticated { .. } | Input::AuthFailed(_) if expired => {
         self.close(CloseCode::HandshakeTimeout, None);
       }
@@ -621,21 +641,23 @@ impl Session {
           .open
           .insert(stream, CallState::new(Shape::ClientStream, Role::Callee));
         let refusal = call_error(StatusCode::ResourceExhausted, "too many open calls".to_owned(), true);
-        self.answer(stream, &refusal);
+        self.answer(stream, &Frame::Error(refusal));
       }
     }
   }
 
   fn answer(&mut self, stream: u64, frame: &Frame) {
     let too_large;
-    let frame = if frame.payload_length().is_ok_and(|length| length <= self.peer_max_frame()) {
+    let fits =
+      frame.payload_length().is_ok_and(|length| length <= self.peer_max_frame()) && frame.header_length() <= peer_max_header();
+    let frame = if fits {
       frame
     } else {
-      too_large = call_error(
+      too_large = Frame::Error(call_error(
         StatusCode::ResourceExhausted,
-        "answer above the client's max_frame".to_owned(),
+        "answer above the client's max_frame or header limit".to_owned(),
         false,
-      );
+      ));
       &too_large
     };
     if let (Some(call), Some(frame_type)) = (self.calls.open.get_mut(&stream), frame.frame_type())
@@ -681,15 +703,21 @@ impl Session {
   }
 }
 
-fn call_error(code: StatusCode, msg: String, nx: bool) -> Frame {
+/// The client's header limit: HELLO does not carry one, so it is the §5.4.1 default, whatever
+/// limit this session reads headers with.
+fn peer_max_header() -> usize {
+  DecodeLimits::default().max_size
+}
+
+fn call_error(code: StatusCode, msg: String, nx: bool) -> CallError {
   let code = if code == StatusCode::Ok { StatusCode::Internal } else { code };
-  Frame::Error(CallError {
+  CallError {
     code: u64::from(code),
     msg,
     nx: nx.then_some(true),
     meta: None,
     data: Bytes::new(),
-  })
+  }
 }
 
 #[cfg(test)]

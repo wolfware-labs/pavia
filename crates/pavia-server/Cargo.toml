@@ -20,10 +20,13 @@ pavia-proto.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }
 tokio-tungstenite.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
+anyhow.workspace = true
 ciborium = "0.2.2"
 dhat = "0.3.3"
 pavia-vectors = { path = "../pavia-vectors" }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "rt-multi-thread", "sync", "test-util", "time"] }
+tracing-subscriber.workspace = true
