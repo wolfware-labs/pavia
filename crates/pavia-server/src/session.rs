@@ -71,12 +71,12 @@ type Authenticating<'a> = Pin<Box<dyn Future<Output = Result<Principal, AuthFail
 /// ([`Config::session`](crate::websocket::Config::session)), so its limits and the transport's
 /// message cap come from one value. The handshake timer starts at [`Transport::accepted`], before
 /// the upgrade. The clock is tokio's, so a test that pauses time drives the session's timers too.
-pub async fn run<A: Authenticator, Z: Authorizer + Clone + 'static>(
+pub async fn run<A: Authenticator, Z: Authorizer + 'static>(
   mut transport: Transport,
   registry: &Registry,
   methods: &MethodRegistry<Handler>,
   authenticator: &A,
-  authorizer: &Z,
+  authorizer: &Arc<Z>,
 ) -> Ending {
   let (sender, mut commands) = mpsc::channel(COMMAND_QUEUE);
   let mut membership = Membership {
@@ -87,7 +87,7 @@ pub async fn run<A: Authenticator, Z: Authorizer + Clone + 'static>(
   };
   let mut calls = Calls {
     methods,
-    authorizer: authorizer.clone(),
+    authorizer: Arc::clone(authorizer),
     principal: Arc::new(Principal::anonymous()),
     running: JoinSet::new(),
     streams: HashMap::new(),
@@ -178,7 +178,7 @@ impl Membership<'_> {
 
 struct Calls<'a, Z> {
   methods: &'a MethodRegistry<Handler>,
-  authorizer: Z,
+  authorizer: Arc<Z>,
   principal: Arc<Principal>,
   running: JoinSet<Result<Value, Refusal>>,
   streams: HashMap<task::Id, u64>,
@@ -262,7 +262,7 @@ fn idempotency_key_length(call: &Call) -> Option<usize> {
   })
 }
 
-impl<Z: Authorizer + Clone + 'static> Calls<'_, Z> {
+impl<Z: Authorizer + 'static> Calls<'_, Z> {
   fn dispatch(&mut self, stream: u64, call: &Call, session: &Session) -> Option<Command> {
     let idempotency = session
       .negotiated()
@@ -272,7 +272,7 @@ impl<Z: Authorizer + Clone + 'static> Calls<'_, Z> {
       Err(refusal) => return Some(refusal.answering(stream)),
     };
     let (name, handler) = (name.clone(), handler.clone());
-    let (authorizer, principal) = (self.authorizer.clone(), Arc::clone(&self.principal));
+    let (authorizer, principal) = (Arc::clone(&self.authorizer), Arc::clone(&self.principal));
     let task = self.running.spawn(async move {
       if authorizer.authorize(&principal, &name).await {
         Ok(handler.run(arguments).await)
@@ -325,7 +325,7 @@ enum Step {
   Ended(Ending),
 }
 
-async fn carry_out<Z: Authorizer + Clone + 'static>(
+async fn carry_out<Z: Authorizer + 'static>(
   session: &mut Session,
   transport: &mut Transport,
   membership: &mut Membership<'_>,

@@ -4,6 +4,7 @@
 //! own.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use pavia_proto::frame::Limits;
@@ -31,7 +32,7 @@ async fn listen() -> SocketAddr {
   let endpoint = Endpoint::new(Config::new("/rt", &config), move |transport: Transport| {
     let registry = registry.clone();
     async move {
-      run(transport, &registry, &MethodRegistry::new(), &Permissive, &AllowAll).await;
+      run(transport, &registry, &MethodRegistry::new(), &Permissive, &Arc::new(AllowAll)).await;
     }
   });
   let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

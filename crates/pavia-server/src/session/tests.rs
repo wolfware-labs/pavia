@@ -63,15 +63,22 @@ async fn listen_with<A: Authenticator + 'static>(
   config: SessionConfig,
   authenticator: Arc<A>,
 ) -> (SocketAddr, oneshot::Receiver<Ending>) {
-  listen_serving(registry, Arc::new(MethodRegistry::new()), config, authenticator, AllowAll).await
+  listen_serving(
+    registry,
+    Arc::new(MethodRegistry::new()),
+    config,
+    authenticator,
+    Arc::new(AllowAll),
+  )
+  .await
 }
 
-async fn listen_serving<A: Authenticator + 'static, Z: Authorizer + Clone + 'static>(
+async fn listen_serving<A: Authenticator + 'static, Z: Authorizer + 'static>(
   registry: Registry,
   methods: Arc<MethodRegistry<Handler>>,
   config: SessionConfig,
   authenticator: Arc<A>,
-  authorizer: Z,
+  authorizer: Arc<Z>,
 ) -> (SocketAddr, oneshot::Receiver<Ending>) {
   let config = config.validate().unwrap();
   let (ended, ending) = oneshot::channel();
@@ -81,7 +88,7 @@ async fn listen_serving<A: Authenticator + 'static, Z: Authorizer + Clone + 'sta
     let registry = registry.clone();
     let methods = Arc::clone(&methods);
     let authenticator = Arc::clone(&authenticator);
-    let authorizer = authorizer.clone();
+    let authorizer = Arc::clone(&authorizer);
     async move {
       let ending = run(transport, &registry, &methods, &*authenticator, &authorizer).await;
       if let Some(ended) = ended {
@@ -904,7 +911,7 @@ fn recording(
     let registry = registry.clone();
     let ended = ended.clone();
     Box::pin(async move {
-      let _ = ended.send(run(transport, &registry, &MethodRegistry::new(), &Permissive, &AllowAll).await);
+      let _ = ended.send(run(transport, &registry, &MethodRegistry::new(), &Permissive, &Arc::new(AllowAll)).await);
     })
   });
   (endpoint, endings)
@@ -1058,7 +1065,14 @@ async fn never_registers_a_session_whose_welcome_cannot_be_written() {
     let authenticator = Arc::clone(&authenticator);
     let ended = ended.lock().unwrap().take();
     Box::pin(async move {
-      let ending = run(transport, &registry, &MethodRegistry::new(), &*authenticator, &AllowAll).await;
+      let ending = run(
+        transport,
+        &registry,
+        &MethodRegistry::new(),
+        &*authenticator,
+        &Arc::new(AllowAll),
+      )
+      .await;
       if let Some(ended) = ended {
         let _ = ended.send(ending);
       }
@@ -1176,7 +1190,7 @@ async fn serving(methods: Arc<MethodRegistry<Handler>>) -> Socket {
     methods,
     SessionConfig::default(),
     Arc::new(Permissive),
-    AllowAll,
+    Arc::new(AllowAll),
   )
   .await;
   let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
@@ -1384,7 +1398,7 @@ async fn answers_calls_in_json_when_the_session_negotiated_it() {
   let (methods, _) = chat();
   let mut config = SessionConfig::default();
   config.codecs = vec![Codec::Json];
-  let (address, _) = listen_serving(Registry::new(), methods, config, Arc::new(Permissive), AllowAll).await;
+  let (address, _) = listen_serving(Registry::new(), methods, config, Arc::new(Permissive), Arc::new(AllowAll)).await;
   let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
   socket.send(Message::binary(hello_frame_with(b"json"))).await.unwrap();
   next_welcome(&mut socket).await;
@@ -1548,7 +1562,14 @@ async fn refuses_a_call_beyond_max_calls_before_looking_at_it() {
     .unwrap();
   let mut config = SessionConfig::default();
   config.max_calls = 1;
-  let (address, _) = listen_serving(Registry::new(), Arc::new(methods), config, Arc::new(Permissive), AllowAll).await;
+  let (address, _) = listen_serving(
+    Registry::new(),
+    Arc::new(methods),
+    config,
+    Arc::new(Permissive),
+    Arc::new(AllowAll),
+  )
+  .await;
   let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
   established(&mut socket).await;
   socket
@@ -1597,7 +1618,14 @@ async fn answers_a_denied_call_by_whether_the_session_is_anonymous() {
     (Recording::answering(Some(Ok(Principal::for_user("u-1")))), bearer_hello(), 7),
   ] {
     let (methods, runs) = chat();
-    let (address, _) = listen_serving(Registry::new(), methods, SessionConfig::default(), authenticator, DenyAll).await;
+    let (address, _) = listen_serving(
+      Registry::new(),
+      methods,
+      SessionConfig::default(),
+      authenticator,
+      Arc::new(DenyAll),
+    )
+    .await;
     let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
     socket.send(Message::binary(hello)).await.unwrap();
     next_welcome(&mut socket).await;
@@ -1675,7 +1703,7 @@ async fn hands_the_authorizer_the_session_principal_and_the_method() {
     methods,
     SessionConfig::default(),
     authenticator,
-    authorizer.clone(),
+    Arc::new(authorizer.clone()),
   )
   .await;
   let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
@@ -1716,4 +1744,40 @@ fn refuses_a_matching_streaming_method_until_streams_are_served() {
     validate_call(&call, &methods, Codec::Cbor, false).err(),
     Some(Refusal::new(StatusCode::Unimplemented, "streaming calls are not served yet"))
   );
+}
+
+#[derive(Default)]
+struct FirstCallOnly(AtomicUsize);
+
+impl Authorizer for FirstCallOnly {
+  async fn authorize(&self, _: &Principal, _: &MethodName) -> bool {
+    self.0.fetch_add(1, Ordering::SeqCst) == 0
+  }
+}
+
+#[tokio::test]
+async fn shares_one_authorizer_between_the_calls_of_a_session() {
+  let (methods, runs) = chat();
+  let authorizer = Arc::new(FirstCallOnly::default());
+  let (address, _) = listen_serving(
+    Registry::new(),
+    methods,
+    SessionConfig::default(),
+    Arc::new(Permissive),
+    Arc::clone(&authorizer),
+  )
+  .await;
+  let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
+  established(&mut socket).await;
+  socket
+    .send(Message::binary(call_frame(2, "chat/send", GENERAL_HELLO)))
+    .await
+    .unwrap();
+  assert_eq!(next_answer(&mut socket).await.frame_type, 0x13);
+  socket
+    .send(Message::binary(call_frame(4, "chat/send", GENERAL_HELLO)))
+    .await
+    .unwrap();
+  assert_refused(&next_answer(&mut socket).await, 4, 16);
+  assert_eq!((runs.load(Ordering::SeqCst), authorizer.0.load(Ordering::SeqCst)), (1, 2));
 }
