@@ -12,6 +12,7 @@ use ciborium::Value;
 use futures_util::{SinkExt, StreamExt};
 use hyper::header::{self, HeaderValue};
 use pavia_proto::data::{Codec, Value as Arg};
+use pavia_proto::error::ErrorStatus;
 use pavia_proto::frame::{Auth, Call, Meta, MetaName, MetaValue};
 use pavia_proto::registry::{CloseCode, StatusCode};
 use pavia_proto::session::{Command, Config as SessionConfig, Ending, Input};
@@ -30,7 +31,7 @@ use tokio_tungstenite::{WebSocketStream, client_async};
 
 use super::{Refusal, authenticated, run, validate_call};
 use crate::auth::{AllowAll, AuthFailure, Authenticator, Authorizer, Permissive, Principal, RequestContext};
-use crate::methods::{Handler, MethodEntry, MethodName, MethodRegistry};
+use crate::methods::{Handler, HandlerError, MethodEntry, MethodName, MethodRegistry, StatusError};
 use crate::sessions::Registry;
 use crate::test_support::{EXPECT_WITHIN, floor_frame, has_ws_close, serve_on_loopback};
 use crate::websocket::{Config, Endpoint, SUBPROTOCOL, Transport};
@@ -1780,4 +1781,143 @@ async fn shares_one_authorizer_between_the_calls_of_a_session() {
     .unwrap();
   assert_refused(&next_answer(&mut socket).await, 4, 16);
   assert_eq!((runs.load(Ordering::SeqCst), authorizer.0.load(Ordering::SeqCst)), (1, 2));
+}
+
+#[derive(Clone, Default)]
+struct Captured(Arc<Mutex<Vec<u8>>>);
+
+impl io::Write for Captured {
+  fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+    self.0.lock().unwrap().extend_from_slice(bytes);
+    Ok(bytes.len())
+  }
+
+  fn flush(&mut self) -> io::Result<()> {
+    Ok(())
+  }
+}
+
+fn failing() -> Arc<MethodRegistry<Handler>> {
+  let mut methods = MethodRegistry::new();
+  methods
+    .register_server_method(
+      "users/get",
+      MethodEntry::call(Handler::fallible(0, |_| async {
+        let not_found = ErrorStatus::try_from(StatusCode::NotFound).unwrap();
+        let detail = Arg::Map(vec![(Arg::Text("id".into()), Arg::Text("u1".into()))]);
+        let reason = [(MetaName::try_from("x-reason").unwrap(), MetaValue::Text("quota".into()))];
+        Err(
+          StatusError::new(not_found, "no such user")
+            .with_detail(detail)
+            .with_meta(reason.into_iter().collect())
+            .into(),
+        )
+      })),
+    )
+    .unwrap();
+  methods
+    .register_server_method(
+      "users/save",
+      MethodEntry::call(Handler::fallible(0, |_| async {
+        Err(HandlerError::unexpected("db password=hunter2"))
+      })),
+    )
+    .unwrap();
+  Arc::new(methods)
+}
+
+async fn failing_session(config: SessionConfig) -> Socket {
+  let (address, _) = listen_serving(Registry::new(), failing(), config, Arc::new(Permissive), Arc::new(AllowAll)).await;
+  let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
+  established(&mut socket).await;
+  socket
+}
+
+#[tokio::test]
+async fn sends_a_deliberate_error_as_given_with_its_detail_and_meta() {
+  let mut socket = failing_session(SessionConfig::default()).await;
+  socket
+    .send(Message::binary(call_frame(2, "users/get", &[0x80])))
+    .await
+    .unwrap();
+  let answer = next_answer(&mut socket).await;
+  assert_eq!((answer.stream, answer.frame_type), (2, 0x14));
+  assert_eq!(answer.header[&6], Value::from(5));
+  assert_eq!(answer.header[&7], Value::Text("no such user".into()));
+  assert_eq!(answer.header.get(&45), None);
+  let meta = answer.header[&3].as_map().unwrap();
+  assert_eq!(meta, &vec![(Value::Text("x-reason".into()), Value::Text("quota".into()))]);
+  assert_eq!(answer.data, [0xa1, 0x62, b'i', b'd', 0x62, b'u', b'1']);
+}
+
+#[tokio::test]
+async fn hides_an_unexpected_error_from_the_client_and_logs_it() {
+  let log = Captured::default();
+  let writer = log.clone();
+  let subscriber = tracing_subscriber::fmt().with_writer(move || writer.clone()).finish();
+  let _logging = tracing::subscriber::set_default(subscriber);
+  let mut socket = failing_session(SessionConfig::default()).await;
+  socket
+    .send(Message::binary(call_frame(2, "users/save", &[0x80])))
+    .await
+    .unwrap();
+  let Message::Binary(raw) = socket.next().await.unwrap().unwrap() else {
+    panic!("expected an answer");
+  };
+  assert!(!raw.windows(7).any(|window| window == b"hunter2"));
+  let mut rest = &raw[..];
+  assert_eq!(varint(&mut rest), 2);
+  assert_eq!(rest[0], 0x14);
+  rest = &rest[2..];
+  let _payload = varint(&mut rest);
+  let header_length = usize::try_from(varint(&mut rest)).unwrap();
+  let header = header_map(&rest[..header_length]);
+  assert_eq!(header[&6], Value::from(13));
+  assert_eq!(header[&7], Value::Text("internal error".into()));
+  assert!(rest[header_length..].is_empty());
+  let logged = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+  assert!(logged.contains("db password=hunter2"), "{logged}");
+}
+
+#[tokio::test]
+async fn shows_an_unexpected_error_in_development_mode() {
+  let mut config = SessionConfig::default();
+  config.disclose_internal_errors = true;
+  let mut socket = failing_session(config).await;
+  socket
+    .send(Message::binary(call_frame(2, "users/save", &[0x80])))
+    .await
+    .unwrap();
+  let answer = next_answer(&mut socket).await;
+  assert_eq!(answer.header[&6], Value::from(13));
+  assert_eq!(answer.header[&7], Value::Text("db password=hunter2".into()));
+}
+
+#[tokio::test]
+async fn sends_the_configured_generic_message_for_a_panic() {
+  let mut methods = MethodRegistry::new();
+  methods
+    .register_server_method(
+      "chat/crash",
+      MethodEntry::call(Handler::new(0, |_| async { panic!("secret path /etc/x") })),
+    )
+    .unwrap();
+  let mut config = SessionConfig::default();
+  config.internal_error_message = "something went wrong".into();
+  let (address, _) = listen_serving(
+    Registry::new(),
+    Arc::new(methods),
+    config,
+    Arc::new(Permissive),
+    Arc::new(AllowAll),
+  )
+  .await;
+  let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
+  established(&mut socket).await;
+  socket
+    .send(Message::binary(call_frame(2, "chat/crash", &[0x80])))
+    .await
+    .unwrap();
+  let answer = next_answer(&mut socket).await;
+  assert_eq!(answer.header[&7], Value::Text("something went wrong".into()));
 }

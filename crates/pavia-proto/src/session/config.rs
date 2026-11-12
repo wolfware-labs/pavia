@@ -43,6 +43,12 @@ pub struct Config {
   /// WELCOME `window`: the initial per-stream WebSocket credit, in bytes, at least 64 KiB
   /// (§4.1). Default 256 KiB. It may be smaller than `max_frame` (§6.4).
   pub window: u64,
+  /// The ERROR `msg` sent for an unexpected handler failure, whose own text may hold SQL, paths
+  /// or hostnames (§8.4, §14). Default `"internal error"`.
+  pub internal_error_message: String,
+  /// Development mode: send an unexpected failure's own text as the ERROR `msg` instead of
+  /// [`internal_error_message`](Self::internal_error_message). Off by default; never in production.
+  pub disclose_internal_errors: bool,
 }
 
 impl Default for Config {
@@ -58,6 +64,8 @@ impl Default for Config {
       max_subs: 256,
       max_dgram: 1_100,
       window: 256 << 10,
+      internal_error_message: "internal error".to_owned(),
+      disclose_internal_errors: false,
     }
   }
 }
@@ -119,6 +127,9 @@ impl Config {
     if self.codecs.is_empty() {
       return Err(ConfigError::Empty("codecs"));
     }
+    if self.internal_error_message.is_empty() {
+      return Err(ConfigError::Empty("internal_error_message"));
+    }
     Ok(ValidConfig(self))
   }
 }
@@ -134,6 +145,18 @@ impl ValidConfig {
   #[must_use]
   pub fn max_message(&self) -> u64 {
     envelope::message_limit(self.0.max_frame)
+  }
+
+  /// The ERROR `msg` for an unexpected handler failure outside development mode.
+  #[must_use]
+  pub fn internal_error_message(&self) -> &str {
+    &self.0.internal_error_message
+  }
+
+  /// Whether an unexpected failure's own text goes into the ERROR `msg` (development mode).
+  #[must_use]
+  pub const fn disclose_internal_errors(&self) -> bool {
+    self.0.disclose_internal_errors
   }
 
   pub(super) fn limits(&self) -> ServerLimits {

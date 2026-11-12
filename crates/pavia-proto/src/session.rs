@@ -63,7 +63,7 @@ use bytes::{Bytes, BytesMut};
 use crate::caps::{self, Capability, Caps};
 use crate::data::Codec;
 use crate::error::{Outcome, ProtocolError};
-use crate::frame::{Auth, Call, CallError, CallResult, Close, Frame, FrameType, Heartbeat, Hello, Reject, Welcome};
+use crate::frame::{Auth, Call, CallError, CallResult, Close, Frame, FrameType, Heartbeat, Hello, Meta, Reject, Welcome};
 use crate::negotiate;
 use crate::registry::{CloseCode, StatusCode};
 use crate::session_id::SessionId;
@@ -139,6 +139,10 @@ pub enum Command {
     msg: String,
     /// `nx`: the handler never ran.
     nx: bool,
+    /// `meta` trailers (§8.7).
+    meta: Option<Meta>,
+    /// The typed error detail, already encoded in the session codec, or empty (§8.4).
+    detail: Bytes,
   },
 }
 
@@ -370,7 +374,23 @@ impl Session {
       Input::Command(Command::Result { stream, data }) => {
         self.answer(stream, &Frame::Result(CallResult { meta: None, data }));
       }
-      Input::Command(Command::Error { stream, code, msg, nx }) => self.answer(stream, &call_error(code, msg, nx)),
+      Input::Command(Command::Error {
+        stream,
+        code,
+        msg,
+        nx,
+        meta,
+        detail,
+      }) => {
+        let error = Frame::Error(CallError {
+          code: u64::from(if code == StatusCode::Ok { StatusCode::Internal } else { code }),
+          msg,
+          nx: nx.then_some(true),
+          meta,
+          data: detail,
+        });
+        self.answer(stream, &error);
+      }
       Input::Message(_) | Input::Timeout | Input::Authenticated { .. } | Input::AuthFailed(_) if expired => {
         self.close(CloseCode::HandshakeTimeout, None);
       }
@@ -682,7 +702,6 @@ impl Session {
 }
 
 fn call_error(code: StatusCode, msg: String, nx: bool) -> Frame {
-  let code = if code == StatusCode::Ok { StatusCode::Internal } else { code };
   Frame::Error(CallError {
     code: u64::from(code),
     msg,

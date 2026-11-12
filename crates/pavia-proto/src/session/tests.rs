@@ -6,8 +6,8 @@ use super::{AuthFailure, Command, Config, ConfigError, Ending, Input, Output, Se
 use crate::data::Codec;
 use crate::frame::Reject;
 use crate::frame::{
-  AckMap, Auth, Call, CallError, CallResult, Cancel, Close, Frame, FrameType, Heartbeat, Hello, Item, Limits, Resume,
-  ServerLimits, Token, Welcome,
+  AckMap, Auth, Call, CallError, CallResult, Cancel, Close, Frame, FrameType, Heartbeat, Hello, Item, Limits, Meta, MetaName,
+  MetaValue, Resume, ServerLimits, Token, Welcome,
 };
 use crate::registry::{CloseCode, StatusCode};
 use crate::session_id::SessionId;
@@ -1400,6 +1400,8 @@ fn sends_an_error_with_nx_only_when_the_handler_never_ran() {
       code: StatusCode::InvalidArgument,
       msg: "expected 2 arguments, got 1".into(),
       nx,
+      meta: None,
+      detail: Bytes::new(),
     }));
     assert_eq!(
       sent_frames(&mut session),
@@ -1451,6 +1453,8 @@ fn hands_a_call_with_an_unknown_shape_to_the_driver_and_accepts_its_error() {
     code: StatusCode::InvalidArgument,
     msg: "shape does not match the method".into(),
     nx: true,
+    meta: None,
+    detail: Bytes::new(),
   }));
   assert!(matches!(sent_frames(&mut session).as_slice(), [(2, Frame::Error(error))] if error.code == 3));
   assert_eq!(session.open_calls(), 0);
@@ -1597,6 +1601,8 @@ fn never_sends_an_error_with_the_ok_code() {
     code: StatusCode::Ok,
     msg: "done".into(),
     nx: false,
+    meta: None,
+    detail: Bytes::new(),
   }));
   let sent = sent_frames(&mut session);
   assert!(matches!(sent.as_slice(), [(2, Frame::Error(error))] if error.code == u64::from(StatusCode::Internal)));
@@ -1616,6 +1622,8 @@ fn keeps_the_session_when_items_follow_a_call_with_an_unknown_shape() {
     code: StatusCode::InvalidArgument,
     msg: "shape does not match the method".into(),
     nx: true,
+    meta: None,
+    detail: Bytes::new(),
   }));
   assert!(matches!(sent_frames(&mut session).as_slice(), [(2, Frame::Error(error))] if error.code == 3));
   assert!(!session.is_ended());
@@ -1641,4 +1649,51 @@ fn refuses_a_call_beyond_max_calls_without_reading_its_header() {
   assert_eq!(session.open_calls(), 1);
   session.feed(Input::Message(Bytes::from_static(&[0x03, 0x10, 0x00, 0x02, 0x01, 0xff])));
   assert!(ended_with(&mut session, CloseCode::ProtocolError));
+}
+
+#[test]
+fn hides_unexpected_errors_by_default_and_needs_a_generic_message() {
+  let config = ValidConfig::default();
+  assert!(!config.disclose_internal_errors());
+  assert_eq!(config.internal_error_message(), "internal error");
+  let silent = Config {
+    internal_error_message: String::new(),
+    ..Config::default()
+  };
+  assert_eq!(silent.validate(), Err(ConfigError::Empty("internal_error_message")));
+  let development = Config {
+    disclose_internal_errors: true,
+    ..Config::default()
+  };
+  assert!(development.validate().unwrap().disclose_internal_errors());
+}
+
+#[test]
+fn sends_a_deliberate_error_with_its_meta_and_detail() {
+  let (mut session, _) = welcomed(None);
+  called(&mut session, 2);
+  let reason: Meta = [(MetaName::try_from("x-reason").unwrap(), MetaValue::Text("quota".into()))]
+    .into_iter()
+    .collect();
+  session.feed(Input::Command(Command::Error {
+    stream: 2,
+    code: StatusCode::NotFound,
+    msg: "no such user".into(),
+    nx: false,
+    meta: Some(reason.clone()),
+    detail: Bytes::from_static(&[0xf6]),
+  }));
+  assert_eq!(
+    sent_frames(&mut session),
+    [(
+      2,
+      Frame::Error(CallError {
+        code: 5,
+        msg: "no such user".into(),
+        nx: None,
+        meta: Some(reason),
+        data: Bytes::from_static(&[0xf6]),
+      })
+    )]
+  );
 }
