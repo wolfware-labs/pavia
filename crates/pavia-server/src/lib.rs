@@ -10,4 +10,5 @@ mod session_id;
 pub mod sessions;
 #[cfg(test)]
 mod test_support;
+mod text;
 pub mod websocket;

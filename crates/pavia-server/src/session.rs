@@ -20,7 +20,7 @@ use pavia_proto::caps::Capability;
 use pavia_proto::data::{self, Codec, DecodeLimits, Value};
 use pavia_proto::frame::{Auth, Call, MetaValue};
 use pavia_proto::registry::{CloseCode, StatusCode};
-use pavia_proto::session::{Command, Ending, Input, Output, Session};
+use pavia_proto::session::{Command, Config as SessionConfig, Ending, Input, Output, Session};
 use pavia_proto::session_id::SessionId;
 use pavia_proto::stream::Shape;
 use tokio::sync::mpsc;
@@ -31,6 +31,7 @@ use crate::auth::{AuthFailure, Authenticator, Authorizer, Principal};
 use crate::methods::{Handler, HandlerError, Kind, MethodName, MethodRegistry};
 use crate::session_id;
 use crate::sessions::{Handle, Registration, Registry};
+use crate::text::truncate;
 use crate::websocket::{Received, Transport, TransportError};
 
 const COMMAND_QUEUE: usize = 32;
@@ -207,7 +208,7 @@ impl Disclosure {
   fn internal(&self, stream: u64, method: &MethodName, error: &(dyn Error + 'static)) -> Command {
     tracing::error!(stream, method = method.as_str(), error, "call failed unexpectedly");
     let msg = if self.disclose {
-      error.to_string()
+      truncate(&error.to_string(), SessionConfig::MAX_INTERNAL_ERROR_MESSAGE).to_owned()
     } else {
       self.generic.clone()
     };
@@ -311,9 +312,8 @@ impl<Z: Authorizer + 'static> Calls<'_, Z> {
       Ok(approved) => approved,
       Err(refusal) => return Some(refusal.answering(stream)),
     };
-    let (name, handler) = (name.clone(), handler.clone());
+    let (method, handler) = (name.clone(), handler.clone());
     let (authorizer, principal) = (Arc::clone(&self.authorizer), Arc::clone(&self.principal));
-    let method = name.clone();
     let task = self.running.spawn(async move {
       if authorizer.authorize(&principal, &method).await {
         handler.run(arguments).await.map_err(Failed::Handler)
@@ -321,7 +321,7 @@ impl<Z: Authorizer + 'static> Calls<'_, Z> {
         Err(Failed::Refused(Refusal::denied(&principal)))
       }
     });
-    self.streams.insert(task.id(), (stream, name));
+    self.streams.insert(task.id(), (stream, name.clone()));
     None
   }
 

@@ -4,7 +4,9 @@ use pavia_proto::data::Value;
 use pavia_proto::error::ErrorStatus;
 use pavia_proto::registry::StatusCode;
 
-use super::{Handler, InvalidMethodName, Kind, MethodEntry, MethodName, MethodRegistry, RegisterError, StatusError};
+use super::{
+  Handler, HandlerError, InvalidMethodName, Kind, MethodEntry, MethodName, MethodRegistry, RegisterError, StatusError,
+};
 
 #[test]
 fn accepts_names_that_follow_the_rule() {
@@ -193,4 +195,14 @@ fn keeps_the_status_and_message_of_a_deliberate_error() {
   let not_found = ErrorStatus::try_from(StatusCode::NotFound).unwrap();
   let error = StatusError::new(not_found, "no such user");
   assert_eq!((error.code(), error.msg()), (not_found, "no such user"));
+}
+
+#[test]
+fn takes_an_anyhow_error_as_unexpected_with_its_chain() {
+  let error = anyhow::anyhow!("connection reset").context("saving the user");
+  let HandlerError::Unexpected(boxed) = HandlerError::unexpected(error) else {
+    panic!("expected an unexpected error");
+  };
+  assert_eq!(boxed.to_string(), "saving the user");
+  assert_eq!(boxed.source().map(ToString::to_string).as_deref(), Some("connection reset"));
 }

@@ -1563,16 +1563,7 @@ async fn refuses_a_call_beyond_max_calls_before_looking_at_it() {
     .unwrap();
   let mut config = SessionConfig::default();
   config.max_calls = 1;
-  let (address, _) = listen_serving(
-    Registry::new(),
-    Arc::new(methods),
-    config,
-    Arc::new(Permissive),
-    Arc::new(AllowAll),
-  )
-  .await;
-  let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
-  established(&mut socket).await;
+  let mut socket = serving_with(Arc::new(methods), config).await;
   socket
     .send(Message::binary(call_frame(2, "chat/slow", &[0x80])))
     .await
@@ -1833,6 +1824,14 @@ fn failing() -> Arc<MethodRegistry<Handler>> {
     .unwrap();
   methods
     .register_server_method(
+      "users/dump",
+      MethodEntry::call(Handler::fallible(0, |_| async {
+        Err(HandlerError::unexpected(format!("x{}", "é".repeat(600))))
+      })),
+    )
+    .unwrap();
+  methods
+    .register_server_method(
       "users/odd",
       MethodEntry::call(Handler::fallible(0, |_| async {
         let invalid = ErrorStatus::try_from(StatusCode::InvalidArgument).unwrap();
@@ -1867,7 +1866,7 @@ fn capture_log() -> (Captured, DefaultGuard) {
 
 async fn logged_answer(method: &str) -> (Answer, String) {
   let (log, _logging) = capture_log();
-  let mut socket = serving_with(failing(), SessionConfig::default()).await;
+  let mut socket = serving(failing()).await;
   socket.send(Message::binary(call_frame(2, method, &[0x80]))).await.unwrap();
   let answer = next_answer(&mut socket).await;
   let logged = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
@@ -1885,7 +1884,7 @@ fn assert_hidden(answer: &Answer) {
 
 #[tokio::test]
 async fn sends_a_deliberate_error_as_given_with_its_detail_and_meta() {
-  let mut socket = serving_with(failing(), SessionConfig::default()).await;
+  let mut socket = serving(failing()).await;
   socket
     .send(Message::binary(call_frame(2, "users/get", &[0x80])))
     .await
@@ -1936,6 +1935,20 @@ async fn shows_an_unexpected_error_in_development_mode() {
   let answer = next_answer(&mut socket).await;
   assert_eq!(answer.header[&6], Value::from(13));
   assert_eq!(answer.header[&7], Value::Text("db password=hunter2".into()));
+}
+
+#[tokio::test]
+async fn cuts_a_long_disclosed_error_on_a_character_boundary() {
+  let mut config = SessionConfig::default();
+  config.disclose_internal_errors = true;
+  let mut socket = serving_with(failing(), config).await;
+  socket
+    .send(Message::binary(call_frame(2, "users/dump", &[0x80])))
+    .await
+    .unwrap();
+  let answer = next_answer(&mut socket).await;
+  assert_eq!(answer.header[&6], Value::from(13));
+  assert_eq!(answer.header[&7], Value::Text(format!("x{}", "é".repeat(511))));
 }
 
 #[tokio::test]

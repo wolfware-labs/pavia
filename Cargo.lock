@@ -803,6 +803,7 @@ dependencies = [
 name = "pavia-server"
 version = "0.1.0-alpha.0"
 dependencies = [
+ "anyhow",
  "bytes",
  "ciborium",
  "dhat",

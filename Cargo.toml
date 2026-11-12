@@ -21,6 +21,7 @@ pavia-webtransport = { path = "crates/pavia-webtransport", version = "0.1.0-alph
 pavia-codegen = { path = "crates/pavia-codegen", version = "0.1.0-alpha.0" }
 pavia-client = { path = "clients/rust", version = "0.1.0-alpha.0" }
 
+anyhow = "1.0.104"
 bytes = "1.12.1"
 criterion = { package = "codspeed-criterion-compat", version = "6.0.0", default-features = false, features = ["cargo_bench_support"] }
 data-encoding = "2.11.1"

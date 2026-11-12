@@ -47,9 +47,11 @@
 //! passes [`caps::check`]. A CALL on a new client stream becomes [`Output::Call`], and the
 //! driver's [`Command::Result`] or [`Command::Error`] answers it; every frame on the stream goes
 //! through the call state machine, and the stream is freed once the call is complete (§6.1,
-//! §6.3). A CALL beyond `max_calls` open calls is answered RESOURCE_EXHAUSTED with `nx` before
-//! its header is read, the first of the callee checks of §8.2; the driver makes the rest. Frames
-//! on the control stream other than these are otherwise ignored until their feature lands.
+//! §6.3). An answer above the client's `max_frame` (§5.2) or the default header limit (§5.4.1)
+//! is sent as RESOURCE_EXHAUSTED instead. A CALL beyond `max_calls` open calls is answered
+//! RESOURCE_EXHAUSTED with `nx` before its header is read, the first of the callee checks of
+//! §8.2; the driver makes the rest. Frames on the control stream other than these are otherwise
+//! ignored until their feature lands.
 //! PING, PONG and CLOSE skip ahead of other queued outputs, in the order they were made (§6.6,
 //! §13.5), but never ahead of WELCOME, the server's first frame (§6.2). Sending CLOSE drops what is
 //! still queued behind it, since nothing follows CLOSE on the transport (§7.7).
@@ -646,8 +648,8 @@ impl Session {
 
   fn answer(&mut self, stream: u64, frame: &Frame) {
     let too_large;
-    let fits = frame.payload_length().is_ok_and(|length| length <= self.peer_max_frame())
-      && frame.header_length() <= self.limits.max_size;
+    let fits =
+      frame.payload_length().is_ok_and(|length| length <= self.peer_max_frame()) && frame.header_length() <= peer_max_header();
     let frame = if fits {
       frame
     } else {
@@ -699,6 +701,12 @@ impl Session {
     self.state = State::Ended;
     self.outputs.push_back(Output::Ended(ending));
   }
+}
+
+/// The client's header limit: HELLO does not carry one, so it is the §5.4.1 default, whatever
+/// limit this session reads headers with.
+fn peer_max_header() -> usize {
+  DecodeLimits::default().max_size
 }
 
 fn call_error(code: StatusCode, msg: String, nx: bool) -> CallError {

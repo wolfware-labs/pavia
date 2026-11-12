@@ -44,10 +44,12 @@ pub struct Config {
   /// (§4.1). Default 256 KiB. It may be smaller than `max_frame` (§6.4).
   pub window: u64,
   /// The ERROR `msg` sent for an unexpected handler failure, whose own text may hold SQL, paths
-  /// or hostnames (§8.4, §14). Default `"internal error"`.
+  /// or hostnames (§8.4, §14). Default `"internal error"`, at most
+  /// [`Config::MAX_INTERNAL_ERROR_MESSAGE`] bytes.
   pub internal_error_message: String,
   /// Development mode: send an unexpected failure's own text as the ERROR `msg` instead of
-  /// [`internal_error_message`](Self::internal_error_message). Off by default; never in production.
+  /// [`internal_error_message`](Self::internal_error_message), cut to
+  /// [`Config::MAX_INTERNAL_ERROR_MESSAGE`] bytes. Off by default; never in production.
   pub disclose_internal_errors: bool,
 }
 
@@ -76,10 +78,15 @@ impl Config {
   /// fire at once.
   pub const MAX_DURATION: Duration = Duration::from_millis(2_147_483_647);
 
+  /// The longest `internal_error_message`, in bytes, and the length the error text sent in
+  /// development mode is cut to. An ERROR with it stays far below the 16 KiB header limit
+  /// (§5.4.1).
+  pub const MAX_INTERNAL_ERROR_MESSAGE: usize = 1024;
+
   /// Checks every setting: every duration from 1 ms to [`Self::MAX_DURATION`], `idle_timeout`
   /// longer than `heartbeat` in whole milliseconds, no zero limit, no empty version or codec list,
-  /// a non-empty `internal_error_message` (§8.4), and `max_frame` and `window` at or above the
-  /// 64 KiB floor (§4.1, §16).
+  /// an `internal_error_message` of 1 to [`Self::MAX_INTERNAL_ERROR_MESSAGE`] bytes (§8.4), and
+  /// `max_frame` and `window` at or above the 64 KiB floor (§4.1, §16).
   ///
   /// ```
   /// use pavia_proto::session::{Config, ConfigError};
@@ -130,6 +137,9 @@ impl Config {
     }
     if self.internal_error_message.is_empty() {
       return Err(ConfigError::Empty("internal_error_message"));
+    }
+    if self.internal_error_message.len() > Self::MAX_INTERNAL_ERROR_MESSAGE {
+      return Err(ConfigError::TooLarge("internal_error_message"));
     }
     Ok(ValidConfig(self))
   }
@@ -202,6 +212,9 @@ pub enum ConfigError {
   /// No protocol version, no codec, or an empty `internal_error_message`.
   #[error("{0} must not be empty")]
   Empty(&'static str),
+  /// An `internal_error_message` above [`Config::MAX_INTERNAL_ERROR_MESSAGE`] bytes.
+  #[error("{0} must be at most {max} bytes", max = Config::MAX_INTERNAL_ERROR_MESSAGE)]
+  TooLarge(&'static str),
 }
 
 fn millis(duration: Duration) -> u64 {

@@ -1666,6 +1666,18 @@ fn hides_unexpected_errors_by_default_and_needs_a_generic_message() {
     ..Config::default()
   };
   assert!(development.validate().unwrap().disclose_internal_errors());
+  let longest = Config {
+    internal_error_message: "m".repeat(Config::MAX_INTERNAL_ERROR_MESSAGE),
+    ..Config::default()
+  };
+  assert!(longest.validate().is_ok());
+  let too_long = Config {
+    internal_error_message: "m".repeat(Config::MAX_INTERNAL_ERROR_MESSAGE + 1),
+    ..Config::default()
+  };
+  let error = too_long.validate().unwrap_err();
+  assert_eq!(error, ConfigError::TooLarge("internal_error_message"));
+  assert_eq!(error.to_string(), "internal_error_message must be at most 1024 bytes");
 }
 
 #[test]

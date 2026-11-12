@@ -23,6 +23,7 @@ tokio-tungstenite.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+anyhow.workspace = true
 ciborium = "0.2.2"
 dhat = "0.3.3"
 pavia-vectors = { path = "../pavia-vectors" }
