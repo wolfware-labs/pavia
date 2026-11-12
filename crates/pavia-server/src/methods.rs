@@ -4,7 +4,8 @@
 //! names are case-sensitive. Server methods, which the client calls, and client methods, which
 //! the server calls, are separate namespaces, so one name can be both. A name is checked when it
 //! is registered, so a bad or duplicate name fails when the application builds its registry, not
-//! when a peer first calls it.
+//! when a peer first calls it. A [`Handler`] is the code behind a method: the session runs it
+//! with the CALL arguments as dynamic values.
 //!
 //! ```text
 //!  register_server_method("chat/send") ─▶ name rule ─▶ not on the server side yet ─▶ stored
@@ -16,9 +17,12 @@ use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use pavia_proto::data::Value;
 use pavia_proto::stream::{Shape, Side};
 use thiserror::Error;
 
@@ -169,6 +173,53 @@ impl<H> MethodEntry<H> {
       self.kind = Kind::Call { shape, idempotent: true };
     }
     self
+  }
+}
+
+type Running = Pin<Box<dyn Future<Output = Value> + Send>>;
+
+type Run = dyn Fn(Vec<Value>) -> Running + Send + Sync;
+
+/// The code behind a method: it takes the CALL arguments as dynamic values (§8.2, §12.3) and
+/// returns the RESULT value. A method with no return value returns [`Value::Null`], the codec's
+/// unit value. Typed handlers arrive with the typed codec mapping (#66).
+#[derive(Clone)]
+pub struct Handler {
+  params: usize,
+  run: Arc<Run>,
+}
+
+impl Handler {
+  /// A handler for a method with `params` parameters. The session checks the argument count
+  /// before it runs `run`, so `run` always gets exactly `params` values.
+  pub fn new<F, Fut>(params: usize, run: F) -> Self
+  where
+    F: Fn(Vec<Value>) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Value> + Send + 'static,
+  {
+    Self {
+      params,
+      run: Arc::new(move |arguments| Box::pin(run(arguments))),
+    }
+  }
+
+  /// How many arguments the method takes.
+  #[must_use]
+  pub const fn params(&self) -> usize {
+    self.params
+  }
+
+  pub(crate) fn run(&self, arguments: Vec<Value>) -> Running {
+    (self.run)(arguments)
+  }
+}
+
+impl fmt::Debug for Handler {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    formatter
+      .debug_struct("Handler")
+      .field("params", &self.params)
+      .finish_non_exhaustive()
   }
 }
 

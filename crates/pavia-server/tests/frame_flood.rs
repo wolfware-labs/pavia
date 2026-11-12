@@ -9,6 +9,7 @@ use std::time::Duration;
 use pavia_proto::frame::Limits;
 use pavia_proto::session::Config as SessionConfig;
 use pavia_server::auth::Permissive;
+use pavia_server::methods::MethodRegistry;
 use pavia_server::session::run;
 use pavia_server::sessions::Registry;
 use pavia_server::websocket::{Config, Endpoint, Transport};
@@ -30,7 +31,7 @@ async fn listen() -> SocketAddr {
   let endpoint = Endpoint::new(Config::new("/rt", &config), move |transport: Transport| {
     let registry = registry.clone();
     async move {
-      run(transport, &registry, &Permissive).await;
+      run(transport, &registry, &MethodRegistry::new(), &Permissive).await;
     }
   });
   let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

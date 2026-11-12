@@ -94,7 +94,7 @@ pub fn put_prefix(
   Ok(())
 }
 
-fn payload_length(header_length: usize, data_length: usize) -> Result<u64, EncodeError> {
+pub(crate) fn payload_length(header_length: usize, data_length: usize) -> Result<u64, EncodeError> {
   let header_length = u64::try_from(header_length).map_err(|_| EncodeError::PayloadTooLarge)?;
   let data_length = u64::try_from(data_length).map_err(|_| EncodeError::PayloadTooLarge)?;
   varint_length(header_length)

@@ -9,10 +9,19 @@
 use crate::error::ProtocolError;
 use crate::frame::FrameType;
 
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the WebSocket session from #24 onwards"))]
+#[cfg_attr(
+  not(test),
+  expect(dead_code, reason = "streams the server opens wait for calls to the client (#57)")
+)]
 pub(crate) mod ids;
 
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the session from #24 onwards"))]
+#[cfg_attr(
+  not(test),
+  expect(
+    dead_code,
+    reason = "peer events and response_open wait for CANCEL (#53) and WebTransport (#250)"
+  )
+)]
 pub(crate) mod call;
 
 pub use call::Shape;

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -10,6 +10,7 @@ use std::time::Duration;
 use ciborium::Value;
 use futures_util::{SinkExt, StreamExt};
 use hyper::header::{self, HeaderValue};
+use pavia_proto::data::Value as Arg;
 use pavia_proto::frame::Auth;
 use pavia_proto::registry::CloseCode;
 use pavia_proto::session::{Command, Config as SessionConfig, Ending, Input};
@@ -28,6 +29,7 @@ use tokio_tungstenite::{WebSocketStream, client_async};
 
 use super::{authenticated, run};
 use crate::auth::{AuthFailure, Authenticator, Permissive, Principal, RequestContext};
+use crate::methods::{Handler, MethodEntry, MethodRegistry};
 use crate::sessions::Registry;
 use crate::test_support::{EXPECT_WITHIN, floor_frame, has_ws_close, serve_on_loopback};
 use crate::websocket::{Config, Endpoint, SUBPROTOCOL, Transport};
@@ -60,15 +62,25 @@ async fn listen_with<A: Authenticator + 'static>(
   config: SessionConfig,
   authenticator: Arc<A>,
 ) -> (SocketAddr, oneshot::Receiver<Ending>) {
+  listen_serving(registry, Arc::new(MethodRegistry::new()), config, authenticator).await
+}
+
+async fn listen_serving<A: Authenticator + 'static>(
+  registry: Registry,
+  methods: Arc<MethodRegistry<Handler>>,
+  config: SessionConfig,
+  authenticator: Arc<A>,
+) -> (SocketAddr, oneshot::Receiver<Ending>) {
   let config = config.validate().unwrap();
   let (ended, ending) = oneshot::channel();
   let ended = Arc::new(Mutex::new(Some(ended)));
   let endpoint = Endpoint::new(Config::new("/rt", &config), move |transport: Transport| {
     let ended = ended.lock().unwrap().take();
     let registry = registry.clone();
+    let methods = Arc::clone(&methods);
     let authenticator = Arc::clone(&authenticator);
     async move {
-      let ending = run(transport, &registry, &*authenticator).await;
+      let ending = run(transport, &registry, &methods, &*authenticator).await;
       if let Some(ended) = ended {
         let _ = ended.send(ending);
       }
@@ -113,7 +125,12 @@ async fn connect() -> (Socket, oneshot::Receiver<Ending>) {
 }
 
 fn hello_frame() -> Vec<u8> {
-  let header = [0xa2, 0x0e, 0x81, 0x01, 0x10, 0x81, 0x64, b'c', b'b', b'o', b'r'];
+  hello_frame_with(b"cbor")
+}
+
+fn hello_frame_with(codec: &[u8; 4]) -> Vec<u8> {
+  let mut header = vec![0xa2, 0x0e, 0x81, 0x01, 0x10, 0x81, 0x64];
+  header.extend(codec);
   let mut frame = vec![0x00, 0x01, 0x00, header.len() as u8 + 1, header.len() as u8];
   frame.extend(header);
   frame
@@ -353,7 +370,11 @@ fn welcome(message: &[u8]) -> BTreeMap<u64, Value> {
   let mut rest = &message[3..];
   let _payload = varint(&mut rest);
   let header = varint(&mut rest);
-  let header: Value = ciborium::from_reader(&rest[..header as usize]).unwrap();
+  header_map(&rest[..header as usize])
+}
+
+fn header_map(header: &[u8]) -> BTreeMap<u64, Value> {
+  let header: Value = ciborium::from_reader(header).unwrap();
   let Value::Map(entries) = header else {
     panic!("{header:?}");
   };
@@ -880,7 +901,7 @@ fn recording(
     let registry = registry.clone();
     let ended = ended.clone();
     Box::pin(async move {
-      let _ = ended.send(run(transport, &registry, &Permissive).await);
+      let _ = ended.send(run(transport, &registry, &MethodRegistry::new(), &Permissive).await);
     })
   });
   (endpoint, endings)
@@ -1034,7 +1055,7 @@ async fn never_registers_a_session_whose_welcome_cannot_be_written() {
     let authenticator = Arc::clone(&authenticator);
     let ended = ended.lock().unwrap().take();
     Box::pin(async move {
-      let ending = run(transport, &registry, &*authenticator).await;
+      let ending = run(transport, &registry, &MethodRegistry::new(), &*authenticator).await;
       if let Some(ended) = ended {
         let _ = ended.send(ending);
       }
@@ -1054,4 +1075,371 @@ async fn never_registers_a_session_whose_welcome_cannot_be_written() {
   assert_eq!(ending, Ending::TransportLost);
   assert_eq!(*registered_at_failure.lock().unwrap(), Some(0));
   assert!(registry.is_empty());
+}
+
+fn call_frame(stream: u8, method: &str, data: &[u8]) -> Vec<u8> {
+  let mut header = vec![0xa2, 0x02, 0x60 + u8::try_from(method.len()).unwrap()];
+  header.extend(method.as_bytes());
+  header.extend([0x05, 0x00]);
+  let mut payload = vec![u8::try_from(header.len()).unwrap()];
+  payload.extend(header);
+  payload.extend(data);
+  let mut frame = vec![stream, 0x10, 0x00, 0x40, u8::try_from(payload.len()).unwrap()];
+  frame.extend(payload);
+  frame
+}
+
+struct Answer {
+  stream: u64,
+  frame_type: u8,
+  header: BTreeMap<u64, Value>,
+  data: Vec<u8>,
+}
+
+async fn next_answer(socket: &mut Socket) -> Answer {
+  let Message::Binary(message) = tokio::time::timeout(EXPECT_WITHIN, socket.next())
+    .await
+    .expect("an answer")
+    .unwrap()
+    .unwrap()
+  else {
+    panic!("expected a binary message");
+  };
+  let mut rest = &message[..];
+  let stream = varint(&mut rest);
+  let frame_type = rest[0];
+  rest = &rest[2..];
+  let _payload = varint(&mut rest);
+  let header_length = usize::try_from(varint(&mut rest)).unwrap();
+  let header = if header_length == 0 {
+    BTreeMap::new()
+  } else {
+    header_map(&rest[..header_length])
+  };
+  Answer {
+    stream,
+    frame_type,
+    header,
+    data: rest[header_length..].to_vec(),
+  }
+}
+
+fn assert_refused(answer: &Answer, stream: u64, code: u8) {
+  assert_eq!((answer.stream, answer.frame_type), (stream, 0x14));
+  assert_eq!(answer.header[&6], Value::from(code));
+  assert_eq!(answer.header.get(&45), Some(&Value::Bool(true)));
+}
+
+fn chat() -> (Arc<MethodRegistry<Handler>>, Arc<AtomicUsize>) {
+  let runs = Arc::new(AtomicUsize::new(0));
+  let counted = Arc::clone(&runs);
+  let mut methods = MethodRegistry::new();
+  methods
+    .register_server_method(
+      "chat/send",
+      MethodEntry::call(Handler::new(2, move |arguments: Vec<Arg>| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        async move {
+          let [Arg::Text(room), Arg::Text(text)] = arguments.as_slice() else {
+            return Arg::Null;
+          };
+          Arg::Text(format!("{room}:{text}"))
+        }
+      })),
+    )
+    .unwrap();
+  methods
+    .register_server_method("chat/ping", MethodEntry::call(Handler::new(0, |_| async { Arg::Null })))
+    .unwrap();
+  methods
+    .register_server_method("chat/typing", MethodEntry::notify(Handler::new(0, |_| async { Arg::Null })))
+    .unwrap();
+  methods
+    .register_server_method(
+      "chat/crash",
+      MethodEntry::call(Handler::new(0, |_| async { panic!("the handler fails") })),
+    )
+    .unwrap();
+  (Arc::new(methods), runs)
+}
+
+async fn serving(methods: Arc<MethodRegistry<Handler>>) -> Socket {
+  let (address, _) = listen_serving(Registry::new(), methods, SessionConfig::default(), Arc::new(Permissive)).await;
+  let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
+  established(&mut socket).await;
+  socket
+}
+
+const GENERAL_HELLO: &[u8] = &[
+  0x82, 0x67, b'g', b'e', b'n', b'e', b'r', b'a', b'l', 0x65, b'h', b'e', b'l', b'l', b'o',
+];
+
+#[tokio::test]
+async fn answers_a_call_with_the_handler_result() {
+  let (methods, runs) = chat();
+  let mut socket = serving(methods).await;
+  socket
+    .send(Message::binary(call_frame(2, "chat/send", GENERAL_HELLO)))
+    .await
+    .unwrap();
+  let answer = next_answer(&mut socket).await;
+  assert_eq!((answer.stream, answer.frame_type), (2, 0x13));
+  let expected = [&[0x6d][..], b"general:hello"].concat();
+  assert_eq!(answer.data, expected);
+  assert_eq!(runs.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn refuses_a_wrong_argument_count_without_running_the_handler() {
+  let (methods, runs) = chat();
+  let mut socket = serving(methods).await;
+  let one = [0x81, 0x61, b'a'];
+  let three = [0x83, 0x61, b'a', 0x61, b'b', 0x61, b'c'];
+  socket.send(Message::binary(call_frame(2, "chat/send", &one))).await.unwrap();
+  assert_refused(&next_answer(&mut socket).await, 2, 3);
+  socket
+    .send(Message::binary(call_frame(4, "chat/send", &three)))
+    .await
+    .unwrap();
+  assert_refused(&next_answer(&mut socket).await, 4, 3);
+  assert_eq!(runs.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn answers_a_method_without_parameters_or_result_with_null() {
+  let (methods, _) = chat();
+  let mut socket = serving(methods).await;
+  socket
+    .send(Message::binary(call_frame(2, "chat/ping", &[0x80])))
+    .await
+    .unwrap();
+  let answer = next_answer(&mut socket).await;
+  assert_eq!((answer.stream, answer.frame_type, answer.data), (2, 0x13, vec![0xf6]));
+}
+
+#[tokio::test]
+async fn refuses_arguments_that_are_not_an_array_or_do_not_decode() {
+  let (methods, runs) = chat();
+  let mut socket = serving(methods).await;
+  socket
+    .send(Message::binary(call_frame(2, "chat/send", &[0x61, b'x'])))
+    .await
+    .unwrap();
+  assert_refused(&next_answer(&mut socket).await, 2, 3);
+  socket
+    .send(Message::binary(call_frame(4, "chat/send", &[0xff])))
+    .await
+    .unwrap();
+  assert_refused(&next_answer(&mut socket).await, 4, 3);
+  assert_eq!(runs.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn answers_sequential_calls_on_new_streams() {
+  let (methods, runs) = chat();
+  let mut socket = serving(methods).await;
+  for stream in [2, 4] {
+    socket
+      .send(Message::binary(call_frame(stream, "chat/send", GENERAL_HELLO)))
+      .await
+      .unwrap();
+    let answer = next_answer(&mut socket).await;
+    assert_eq!((answer.stream, answer.frame_type), (u64::from(stream), 0x13));
+  }
+  assert_eq!(runs.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn refuses_an_unknown_method_and_a_notify_method_without_running_anything() {
+  let (methods, _) = chat();
+  let mut socket = serving(methods).await;
+  socket
+    .send(Message::binary(call_frame(2, "chat/nope", &[0x80])))
+    .await
+    .unwrap();
+  assert_refused(&next_answer(&mut socket).await, 2, 12);
+  socket
+    .send(Message::binary(call_frame(4, "chat/typing", &[0x80])))
+    .await
+    .unwrap();
+  assert_refused(&next_answer(&mut socket).await, 4, 3);
+}
+
+#[tokio::test]
+async fn answers_internal_when_the_handler_panics_and_keeps_the_session() {
+  let (methods, _) = chat();
+  let mut socket = serving(methods).await;
+  socket
+    .send(Message::binary(call_frame(2, "chat/crash", &[0x80])))
+    .await
+    .unwrap();
+  let answer = next_answer(&mut socket).await;
+  assert_eq!((answer.stream, answer.frame_type), (2, 0x14));
+  assert_eq!(answer.header[&6], Value::from(13));
+  assert_eq!(answer.header.get(&45), None);
+  socket
+    .send(Message::binary(call_frame(4, "chat/ping", &[0x80])))
+    .await
+    .unwrap();
+  assert_eq!(next_answer(&mut socket).await.frame_type, 0x13);
+}
+
+#[tokio::test]
+async fn answers_a_fast_call_while_a_slow_one_runs() {
+  let (release, released) = tokio::sync::watch::channel(false);
+  let mut methods = MethodRegistry::new();
+  methods
+    .register_server_method(
+      "chat/slow",
+      MethodEntry::call(Handler::new(0, move |_| {
+        let mut released = released.clone();
+        async move {
+          let _ = released.wait_for(|released| *released).await;
+          Arg::Text("slow".into())
+        }
+      })),
+    )
+    .unwrap();
+  methods
+    .register_server_method(
+      "chat/fast",
+      MethodEntry::call(Handler::new(0, |_| async { Arg::Text("fast".into()) })),
+    )
+    .unwrap();
+  let mut socket = serving(Arc::new(methods)).await;
+  socket
+    .send(Message::binary(call_frame(2, "chat/slow", &[0x80])))
+    .await
+    .unwrap();
+  socket
+    .send(Message::binary(call_frame(4, "chat/fast", &[0x80])))
+    .await
+    .unwrap();
+  assert_eq!(next_answer(&mut socket).await.stream, 4);
+  release.send(true).unwrap();
+  assert_eq!(next_answer(&mut socket).await.stream, 2);
+}
+
+#[tokio::test]
+async fn answers_internal_when_the_result_does_not_encode() {
+  let mut methods = MethodRegistry::new();
+  methods
+    .register_server_method("chat/odd", MethodEntry::call(Handler::new(0, |_| async { Arg::Simple(25) })))
+    .unwrap();
+  let mut socket = serving(Arc::new(methods)).await;
+  socket
+    .send(Message::binary(call_frame(2, "chat/odd", &[0x80])))
+    .await
+    .unwrap();
+  let answer = next_answer(&mut socket).await;
+  assert_eq!((answer.stream, answer.frame_type), (2, 0x14));
+  assert_eq!(answer.header[&6], Value::from(13));
+}
+
+#[tokio::test]
+async fn answers_internal_when_a_handler_panics_before_its_future_runs() {
+  let mut methods = MethodRegistry::new();
+  methods
+    .register_server_method(
+      "chat/early",
+      MethodEntry::call(Handler::new(0, |_| -> std::future::Ready<Arg> {
+        panic!("the handler fails before it returns a future")
+      })),
+    )
+    .unwrap();
+  methods
+    .register_server_method("chat/ping", MethodEntry::call(Handler::new(0, |_| async { Arg::Null })))
+    .unwrap();
+  let mut socket = serving(Arc::new(methods)).await;
+  socket
+    .send(Message::binary(call_frame(2, "chat/early", &[0x80])))
+    .await
+    .unwrap();
+  let answer = next_answer(&mut socket).await;
+  assert_eq!((answer.stream, answer.frame_type), (2, 0x14));
+  assert_eq!(answer.header[&6], Value::from(13));
+  socket
+    .send(Message::binary(call_frame(4, "chat/ping", &[0x80])))
+    .await
+    .unwrap();
+  assert_eq!(next_answer(&mut socket).await.frame_type, 0x13);
+}
+
+#[tokio::test]
+async fn answers_calls_in_json_when_the_session_negotiated_it() {
+  let (methods, _) = chat();
+  let mut config = SessionConfig::default();
+  config.codecs = vec![pavia_proto::data::Codec::Json];
+  let (address, _) = listen_serving(Registry::new(), methods, config, Arc::new(Permissive)).await;
+  let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
+  socket.send(Message::binary(hello_frame_with(b"json"))).await.unwrap();
+  next_welcome(&mut socket).await;
+  socket
+    .send(Message::binary(call_frame(2, "chat/send", br#"["general","hello"]"#)))
+    .await
+    .unwrap();
+  let answer = next_answer(&mut socket).await;
+  assert_eq!((answer.frame_type, answer.data), (0x13, br#""general:hello""#.to_vec()));
+  socket.send(Message::binary(call_frame(4, "chat/ping", b"[]"))).await.unwrap();
+  assert_eq!(next_answer(&mut socket).await.data, b"null".to_vec());
+  socket
+    .send(Message::binary(call_frame(6, "chat/send", br#""general""#)))
+    .await
+    .unwrap();
+  assert_refused(&next_answer(&mut socket).await, 6, 3);
+}
+
+struct Dropped(Arc<AtomicBool>);
+
+impl Drop for Dropped {
+  fn drop(&mut self) {
+    self.0.store(true, Ordering::SeqCst);
+  }
+}
+
+#[tokio::test]
+async fn drops_running_handlers_when_the_session_ends() {
+  let dropped = Arc::new(AtomicBool::new(false));
+  let started = Arc::new(AtomicBool::new(false));
+  let (flag, running) = (Arc::clone(&dropped), Arc::clone(&started));
+  let mut methods = MethodRegistry::new();
+  methods
+    .register_server_method(
+      "chat/forever",
+      MethodEntry::call(Handler::new(0, move |_| {
+        let guard = Dropped(Arc::clone(&flag));
+        running.store(true, Ordering::SeqCst);
+        async move {
+          let _guard = guard;
+          std::future::pending::<Arg>().await
+        }
+      })),
+    )
+    .unwrap();
+  let mut socket = serving(Arc::new(methods)).await;
+  socket
+    .send(Message::binary(call_frame(2, "chat/forever", &[0x80])))
+    .await
+    .unwrap();
+  eventually(|| started.load(Ordering::SeqCst), "the handler starts").await;
+  assert!(!dropped.load(Ordering::SeqCst));
+  drop(socket);
+  eventually(|| dropped.load(Ordering::SeqCst), "the handler is dropped with the session").await;
+}
+
+#[tokio::test]
+async fn refuses_a_call_whose_shape_differs_from_the_method() {
+  let mut methods = MethodRegistry::new();
+  methods
+    .register_server_method(
+      "chat/history",
+      MethodEntry::call(Handler::new(0, |_| async { Arg::Null })).with_shape(pavia_proto::stream::Shape::ServerStream),
+    )
+    .unwrap();
+  let mut socket = serving(Arc::new(methods)).await;
+  socket
+    .send(Message::binary(call_frame(2, "chat/history", &[0x80])))
+    .await
+    .unwrap();
+  assert_refused(&next_answer(&mut socket).await, 2, 3);
 }

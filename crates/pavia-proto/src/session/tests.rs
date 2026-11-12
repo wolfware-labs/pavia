@@ -6,9 +6,10 @@ use super::{AuthFailure, Command, Config, ConfigError, Ending, Input, Output, Se
 use crate::data::Codec;
 use crate::frame::Reject;
 use crate::frame::{
-  AckMap, Auth, Cancel, Close, Frame, FrameType, Heartbeat, Hello, Item, Limits, Resume, ServerLimits, Token, Welcome,
+  AckMap, Auth, Call, CallError, CallResult, Cancel, Close, Frame, FrameType, Heartbeat, Hello, Item, Limits, Resume,
+  ServerLimits, Token, Welcome,
 };
-use crate::registry::CloseCode;
+use crate::registry::{CloseCode, StatusCode};
 use crate::session_id::SessionId;
 use crate::stream::Side;
 use crate::wire::envelope::{self, MAX_FRAME_FLOOR};
@@ -113,11 +114,7 @@ fn closes_with_every_code() {
     let [Output::Transmit(sent), close_transport, ended] = outputs.as_slice() else {
       panic!("{code:?}: {outputs:?}");
     };
-    assert_eq!(
-      frames(sent),
-      [(0, close(u64::from(u16::from(code)), Some("bye")))],
-      "{code:?}"
-    );
+    assert_eq!(frames(sent), [(0, close(u64::from(code), Some("bye")))], "{code:?}");
     assert_eq!(
       *close_transport,
       Output::CloseTransport {
@@ -140,7 +137,7 @@ fn closes_with_every_code() {
 fn mirrors_every_code_the_peer_closes_with() {
   for code in CODES {
     let mut session = greeted();
-    session.feed(Input::Message(message(&[(0, close(u64::from(u16::from(code)), None))])));
+    session.feed(Input::Message(message(&[(0, close(u64::from(code), None))])));
     assert_eq!(drain(&mut session), mirrored_close(code));
   }
 }
@@ -313,7 +310,7 @@ fn closes_with_protocol_error_on_a_text_message() {
 fn ended_with(session: &mut Session, code: CloseCode) -> bool {
   let outputs = drain(session);
   let sent_close = outputs.iter().any(|output| {
-    matches!(output, Output::Transmit(sent) if matches!(frames(sent).as_slice(), [(0, Frame::Close(close))] if close.code == u64::from(u16::from(code))))
+    matches!(output, Output::Transmit(sent) if matches!(frames(sent).as_slice(), [(0, Frame::Close(close))] if close.code == u64::from(code)))
   });
   sent_close
     && matches!(
@@ -725,7 +722,7 @@ fn rejects_with_the_code_the_authenticator_chose() {
       [(
         0,
         Frame::Reject(Reject {
-          code: u64::from(u16::from(code)),
+          code: u64::from(code),
           msg: msg.into(),
           retry: None
         })
@@ -827,6 +824,7 @@ fn times_out_an_authenticator_that_answers_after_the_deadline() {
 #[test]
 fn stops_the_handshake_timer_at_welcome() {
   let (mut session, accepted) = welcomed_at(Duration::from_secs(9));
+  called_at(&mut session, 2, accepted + Duration::from_secs(9));
   let late = accepted + Duration::from_secs(11);
   session.handle_input(Input::Message(message(&[(2, Frame::Cancel(Cancel { msg: None }))])), late);
   assert_eq!(drain(&mut session), []);
@@ -957,6 +955,7 @@ fn closes_with_idle_timeout_after_idle_with_nothing_received() {
 fn moves_the_idle_deadline_on_a_message_on_any_stream() {
   for stream in [0, 2] {
     let (mut session, accepted) = welcomed_at(Duration::ZERO);
+    called_at(&mut session, 2, accepted);
     let heard = accepted + DEFAULT_IDLE - Duration::from_millis(1);
     let frame = if stream == 0 {
       pong(b"")
@@ -1039,6 +1038,7 @@ fn answers_a_ping_with_the_same_data_and_restarts_the_timer() {
 #[test]
 fn keeps_the_ping_timer_when_only_receiving() {
   let (mut session, accepted) = welcomed_at(Duration::ZERO);
+  called_at(&mut session, 2, accepted);
   for seconds in [3, 6, 9] {
     session.handle_input(
       Input::Message(message(&[(0, pong(b"")), (2, Frame::Cancel(Cancel { msg: None }))])),
@@ -1216,6 +1216,9 @@ fn takes_frames_up_to_the_configured_max_frame_before_and_after_welcome() {
   session.feed(Input::Message(item(1 << 20)));
   assert!(ended_with(&mut session, CloseCode::FrameTooLarge));
   let (mut session, _) = welcomed(None);
+  called(&mut session, 2);
+  session.feed(answer(2, &[0xf6]));
+  drain(&mut session);
   session.feed(Input::Message(item(70_000)));
   assert_eq!(drain(&mut session), []);
   assert!(!session.is_ended());
@@ -1335,4 +1338,241 @@ fn closes_with_protocol_error_when_the_transport_refuses_a_message() {
 fn allows_messages_of_twice_max_frame() {
   assert_eq!(floor_config().max_message(), 131_072);
   assert_eq!(ValidConfig::default().max_message(), 2 << 20);
+}
+
+fn call(shape: u64) -> Frame {
+  Frame::Call(Call {
+    method: "chat/send".to_owned(),
+    shape,
+    deadline: None,
+    meta: None,
+    data: Bytes::from_static(&[0x80]),
+  })
+}
+
+fn called(session: &mut Session, stream: u64) -> Call {
+  called_at(session, stream, Instant::now())
+}
+
+fn called_at(session: &mut Session, stream: u64, at: Instant) -> Call {
+  session.handle_input(Input::Message(message(&[(stream, call(0))])), at);
+  let outputs = drain(session);
+  let [Output::Call { stream: called, call }] = outputs.as_slice() else {
+    panic!("{outputs:?}");
+  };
+  assert_eq!(*called, stream);
+  call.clone()
+}
+
+fn answer(stream: u64, data: &'static [u8]) -> Input {
+  Input::Command(Command::Result {
+    stream,
+    data: Bytes::from_static(data),
+  })
+}
+
+fn result(data: &'static [u8]) -> Frame {
+  Frame::Result(CallResult {
+    meta: None,
+    data: Bytes::from_static(data),
+  })
+}
+
+#[test]
+fn hands_a_call_to_the_driver_and_sends_its_result() {
+  let (mut session, _) = welcomed(None);
+  let received = called(&mut session, 2);
+  assert_eq!(received.method, "chat/send");
+  assert_eq!(received.data, Bytes::from_static(&[0x80]));
+  assert_eq!(session.open_calls(), 1);
+  session.feed(answer(2, &[0xf6]));
+  assert_eq!(sent_frames(&mut session), [(2, result(&[0xf6]))]);
+  assert_eq!(session.open_calls(), 0);
+}
+
+#[test]
+fn sends_an_error_with_nx_only_when_the_handler_never_ran() {
+  let (mut session, _) = welcomed(None);
+  for (stream, nx, sent) in [(2, true, Some(true)), (4, false, None)] {
+    called(&mut session, stream);
+    session.feed(Input::Command(Command::Error {
+      stream,
+      code: StatusCode::InvalidArgument,
+      msg: "expected 2 arguments, got 1".into(),
+      nx,
+    }));
+    assert_eq!(
+      sent_frames(&mut session),
+      [(
+        stream,
+        Frame::Error(CallError {
+          code: 3,
+          msg: "expected 2 arguments, got 1".into(),
+          nx: sent,
+          meta: None,
+          data: Bytes::new(),
+        })
+      )]
+    );
+    assert_eq!(session.open_calls(), 0);
+  }
+}
+
+#[test]
+fn answers_a_call_once_and_frees_its_stream() {
+  let (mut session, _) = welcomed(None);
+  called(&mut session, 2);
+  session.feed(answer(2, &[0xf6]));
+  drain(&mut session);
+  session.feed(answer(2, &[0xf6]));
+  assert_eq!(drain(&mut session), []);
+  session.feed(Input::Message(message(&[(2, Frame::Cancel(Cancel { msg: None }))])));
+  assert_eq!(drain(&mut session), []);
+  assert!(!session.is_ended());
+  called(&mut session, 4);
+}
+
+#[test]
+fn ignores_an_answer_for_a_stream_without_a_call() {
+  let (mut session, _) = welcomed(None);
+  session.feed(answer(2, &[0xf6]));
+  session.feed(answer(3, &[0xf6]));
+  assert_eq!(drain(&mut session), []);
+}
+
+#[test]
+fn refuses_an_unknown_shape_without_handing_the_call_on() {
+  let (mut session, _) = welcomed(None);
+  session.feed(Input::Message(message(&[(2, call(7))])));
+  let sent = sent_frames(&mut session);
+  let [(2, Frame::Error(error))] = sent.as_slice() else {
+    panic!("{sent:?}");
+  };
+  assert_eq!((error.code, error.nx), (3, Some(true)));
+}
+
+#[test]
+fn closes_on_a_call_that_reuses_or_skips_back_to_an_old_stream() {
+  let (mut session, _) = welcomed(None);
+  called(&mut session, 4);
+  session.feed(Input::Message(message(&[(2, call(0))])));
+  assert!(ended_with(&mut session, CloseCode::ProtocolError));
+}
+
+#[test]
+fn closes_on_a_call_on_a_server_stream_id() {
+  let (mut session, _) = welcomed(None);
+  session.feed(Input::Message(message(&[(3, call(0))])));
+  assert!(ended_with(&mut session, CloseCode::ProtocolError));
+}
+
+#[test]
+fn ignores_a_call_before_welcome() {
+  let mut session = greeted();
+  session.feed(Input::Message(message(&[(2, call(0))])));
+  assert_eq!(drain(&mut session), []);
+  session.feed(answer(2, &[0xf6]));
+  assert_eq!(drain(&mut session), []);
+}
+
+#[test]
+fn drops_an_extension_frame_on_any_stream() {
+  let (mut session, _) = welcomed(None);
+  for stream in [2, 9] {
+    session.feed(Input::Message(Bytes::from(vec![stream, 0x80, 0x00, 0x01, 0x00])));
+    assert_eq!(drain(&mut session), [], "stream {stream}");
+  }
+  assert!(!session.is_ended());
+  called(&mut session, 2);
+}
+
+#[test]
+fn ignores_a_call_frame_on_the_control_stream() {
+  let (mut session, _) = welcomed(None);
+  session.feed(Input::Message(message(&[(0, Frame::Cancel(Cancel { msg: None }))])));
+  assert_eq!(drain(&mut session), []);
+  assert!(!session.is_ended());
+}
+
+#[test]
+fn closes_on_an_item_from_the_caller_of_a_unary_call() {
+  let (mut session, _) = welcomed(None);
+  called(&mut session, 2);
+  let item = Frame::Item(Item {
+    meta: None,
+    data: Bytes::from_static(&[0xf6]),
+  });
+  session.feed(Input::Message(message(&[(2, item)])));
+  assert!(ended_with(&mut session, CloseCode::ProtocolError));
+}
+
+fn welcomed_by_a_client_with(max_frame: u64) -> Session {
+  let mut session = server();
+  let hello = Hello {
+    limits: Some(Limits {
+      max_calls: None,
+      max_frame: Some(max_frame),
+      max_subs: None,
+      max_dgram: None,
+      window: None,
+    }),
+    ..hello()
+  };
+  session.feed(Input::Message(message(&[(0, Frame::Hello(hello))])));
+  session.feed(authenticated(None));
+  drain(&mut session);
+  session
+}
+
+#[test]
+fn refuses_an_answer_above_the_client_max_frame_and_keeps_the_session() {
+  let mut session = welcomed_by_a_client_with(MAX_FRAME_FLOOR);
+  let fitting = usize::try_from(MAX_FRAME_FLOOR).unwrap() - 1;
+  for (stream, length, code) in [(2, fitting, 0x13), (4, fitting + 1, 0x14)] {
+    called(&mut session, stream);
+    session.feed(Input::Command(Command::Result {
+      stream,
+      data: Bytes::from(vec![0; length]),
+    }));
+    let sent = sent_frames(&mut session);
+    let [(sent_stream, frame)] = sent.as_slice() else {
+      panic!("{} frames", sent.len());
+    };
+    assert_eq!(
+      (*sent_stream, frame.frame_type().map(u8::from)),
+      (stream, Some(code)),
+      "{length}"
+    );
+    if let Frame::Error(error) = frame {
+      assert_eq!((error.code, error.nx), (8, None));
+    }
+  }
+  assert_eq!(session.open_calls(), 0);
+  assert!(!session.is_ended());
+}
+
+#[test]
+fn bounds_answers_by_one_mebibyte_when_the_client_advertises_no_max_frame() {
+  let (mut session, _) = welcomed(None);
+  called(&mut session, 2);
+  session.feed(Input::Command(Command::Result {
+    stream: 2,
+    data: Bytes::from(vec![0; 1 << 20]),
+  }));
+  let sent = sent_frames(&mut session);
+  assert!(matches!(sent.as_slice(), [(2, Frame::Error(error))] if error.code == 8));
+}
+
+#[test]
+fn never_sends_an_error_with_the_ok_code() {
+  let (mut session, _) = welcomed(None);
+  called(&mut session, 2);
+  session.feed(Input::Command(Command::Error {
+    stream: 2,
+    code: StatusCode::Ok,
+    msg: "done".into(),
+    nx: false,
+  }));
+  let sent = sent_frames(&mut session);
+  assert!(matches!(sent.as_slice(), [(2, Frame::Error(error))] if error.code == u64::from(StatusCode::Internal)));
 }

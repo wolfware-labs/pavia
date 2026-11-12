@@ -44,13 +44,18 @@
 //! is read (§5.2), and a message above [`ValidConfig::max_message`] with PROTOCOL_ERROR (§4.3).
 //! A text message is a PROTOCOL_ERROR in every state (§4.3). Frames the client pipelines before
 //! WELCOME are dropped until the pre-authentication buffer exists (#40). After WELCOME every frame
-//! passes [`caps::check`] and is otherwise ignored until its feature lands.
+//! passes [`caps::check`]. A CALL on a new client stream becomes [`Output::Call`], and the
+//! driver's [`Command::Result`] or [`Command::Error`] answers it; every frame on the stream goes
+//! through the call state machine, and the stream is freed once the call is complete (§6.1,
+//! §6.3). An unknown shape is answered INVALID_ARGUMENT with `nx` without reaching the driver.
+//! Frames on the control stream other than these are otherwise ignored until their feature
+//! lands.
 //! PING, PONG and CLOSE skip ahead of other queued outputs, in the order they were made (§6.6,
 //! §13.5), but never ahead of WELCOME, the server's first frame (§6.2). Sending CLOSE drops what is
 //! still queued behind it, since nothing follows CLOSE on the transport (§7.7).
 //! Only the WebSocket binding exists so far: one [`Output::Transmit`] is one binary message.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
 use bytes::{Bytes, BytesMut};
@@ -58,11 +63,13 @@ use bytes::{Bytes, BytesMut};
 use crate::caps::{self, Capability, Caps};
 use crate::data::Codec;
 use crate::error::{Outcome, ProtocolError};
-use crate::frame::{Auth, Close, Frame, Heartbeat, Hello, Reject, Welcome};
+use crate::frame::{Auth, Call, CallError, CallResult, Close, Frame, Heartbeat, Hello, Reject, Welcome};
 use crate::negotiate;
-use crate::registry::CloseCode;
+use crate::registry::{CloseCode, StatusCode};
 use crate::session_id::SessionId;
-use crate::stream::Side;
+use crate::stream::call::{CallState, Step};
+use crate::stream::ids::{self, Admitted, StreamIds};
+use crate::stream::{Role, Shape, Side};
 use crate::wire::envelope;
 use crate::wire::header::DecodeLimits;
 use crate::wire::varint;
@@ -113,6 +120,26 @@ pub enum Command {
     /// The CLOSE `msg`, also the transport close reason.
     msg: Option<String>,
   },
+  /// Answer the call on `stream` with RESULT carrying `data`, the return value already encoded in
+  /// the session codec (§8.4). Ignored once the call has its answer or has gone.
+  Result {
+    /// The call stream, from [`Output::Call`].
+    stream: u64,
+    /// The data section.
+    data: Bytes,
+  },
+  /// Answer the call on `stream` with ERROR (§8.4). Ignored once the call has its answer or has
+  /// gone. ERROR never carries OK, so [`StatusCode::Ok`] is sent as INTERNAL.
+  Error {
+    /// The call stream, from [`Output::Call`].
+    stream: u64,
+    /// The status code.
+    code: StatusCode,
+    /// The message.
+    msg: String,
+    /// `nx`: the handler never ran.
+    nx: bool,
+  },
 }
 
 /// What the session asks the driver to do, in order.
@@ -142,6 +169,15 @@ pub enum Output {
     code: CloseCode,
     /// The close reason.
     reason: String,
+  },
+  /// The client called a server method on `stream` (§8.2). The driver runs it and answers with
+  /// [`Command::Result`] or [`Command::Error`] for the same stream. Only established sessions
+  /// emit it, one per call stream; `call.shape` is a shape this session can run.
+  Call {
+    /// The call stream.
+    stream: u64,
+    /// The CALL frame: method, shape, deadline, meta and the encoded arguments.
+    call: Call,
   },
   /// The session is over. Emitted once, as the last output.
   Ended(Ending),
@@ -222,6 +258,21 @@ enum State {
   Ended,
 }
 
+#[derive(Debug)]
+struct Calls {
+  ids: StreamIds,
+  open: HashMap<u64, CallState>,
+}
+
+impl Calls {
+  fn settle(&mut self, stream: u64) {
+    if self.open.get(&stream).is_some_and(CallState::is_complete) {
+      self.open.remove(&stream);
+      self.ids.close(stream);
+    }
+  }
+}
+
 /// One server session.
 #[derive(Debug)]
 pub struct Session {
@@ -229,6 +280,7 @@ pub struct Session {
   now: Instant,
   config: ValidConfig,
   limits: DecodeLimits,
+  calls: Calls,
   state: State,
   outputs: VecDeque<Output>,
   urgent: usize,
@@ -244,12 +296,22 @@ impl Session {
       now,
       config: config.clone(),
       limits: DecodeLimits::default(),
+      calls: Calls {
+        ids: StreamIds::new(Side::Server),
+        open: HashMap::new(),
+      },
       state: State::AwaitHello {
         deadline: now + config.0.handshake_timeout,
       },
       outputs: VecDeque::new(),
       urgent: 0,
     }
+  }
+
+  /// How many calls are open: opened by CALL and not complete yet (§6.3).
+  #[must_use]
+  pub fn open_calls(&self) -> usize {
+    self.calls.open.len()
   }
 
   /// Whether the session has ended. Every later input is ignored.
@@ -300,6 +362,10 @@ impl Session {
       Input::TextMessage => self.fail(&ProtocolError::TextMessage),
       Input::MessageTooLarge => self.fail(&ProtocolError::MessageTooLarge),
       Input::Command(Command::Close { code, msg }) => self.close(code, msg),
+      Input::Command(Command::Result { stream, data }) => {
+        self.answer(stream, &Frame::Result(CallResult { meta: None, data }));
+      }
+      Input::Command(Command::Error { stream, code, msg, nx }) => self.answer(stream, &call_error(code, msg, nx)),
       Input::Message(_) | Input::Timeout | Input::Authenticated { .. } | Input::AuthFailed(_) if expired => {
         self.close(CloseCode::HandshakeTimeout, None);
       }
@@ -395,6 +461,12 @@ impl Session {
           if let Err(error) = caps::check(&negotiated.caps, &frame, self.local.peer()) {
             return self.fail(&error);
           }
+          if !on_control {
+            self.on_call_stream(ws_frame.stream_id, frame);
+            if self.is_ended() {
+              return;
+            }
+          }
         }
         (State::Ended, _) => return,
       }
@@ -461,7 +533,7 @@ impl Session {
   fn close(&mut self, code: CloseCode, msg: Option<String>) {
     self.outputs.truncate(self.urgent);
     let close = Frame::Close(Close {
-      code: u64::from(u16::from(code)),
+      code: u64::from(code),
       msg: msg.clone(),
     });
     self.transmit(&close);
@@ -478,7 +550,7 @@ impl Session {
 
   fn reject(&mut self, code: CloseCode, msg: &str) {
     let reject = Frame::Reject(Reject {
-      code: u64::from(u16::from(code)),
+      code: u64::from(code),
       msg: msg.to_owned(),
       retry: None,
     });
@@ -493,9 +565,73 @@ impl Session {
     });
   }
 
+  fn on_call_stream(&mut self, stream: u64, frame: Frame) {
+    let Some(frame_type) = frame.frame_type() else {
+      return;
+    };
+    match (self.calls.ids.receive(stream, ids::opens_stream(frame_type)), frame) {
+      (Err(error), _) => self.fail(&error),
+      (Ok(Admitted::Opened), Frame::Call(call)) => self.open_call(stream, call),
+      (Ok(_), _) => {
+        let step = self
+          .calls
+          .open
+          .get_mut(&stream)
+          .map_or(Ok(Step::Ignored), |call| call.on_frame(Role::Caller, frame_type));
+        self.calls.settle(stream);
+        if let Err(error) = step {
+          self.fail(&error);
+        }
+      }
+    }
+  }
+
+  fn open_call(&mut self, stream: u64, call: Call) {
+    if let Ok(shape) = Shape::try_from(call.shape) {
+      self.calls.open.insert(stream, CallState::new(shape, Role::Callee));
+      self.outputs.push_back(Output::Call { stream, call });
+    } else {
+      self.calls.ids.close(stream);
+      let refusal = call_error(StatusCode::InvalidArgument, "unknown call shape".to_owned(), true);
+      self.transmit_on(stream, &refusal);
+    }
+  }
+
+  fn answer(&mut self, stream: u64, frame: &Frame) {
+    let too_large;
+    let frame = if frame.payload_length().is_ok_and(|length| length <= self.peer_max_frame()) {
+      frame
+    } else {
+      too_large = call_error(
+        StatusCode::ResourceExhausted,
+        "answer above the client's max_frame".to_owned(),
+        false,
+      );
+      &too_large
+    };
+    if let (Some(call), Some(frame_type)) = (self.calls.open.get_mut(&stream), frame.frame_type())
+      && call.on_frame(Role::Callee, frame_type).is_ok()
+    {
+      self.calls.settle(stream);
+      self.transmit_on(stream, frame);
+    }
+  }
+
+  fn peer_max_frame(&self) -> u64 {
+    self
+      .hello()
+      .and_then(|hello| hello.limits.as_ref())
+      .and_then(|limits| limits.max_frame)
+      .unwrap_or(config::DEFAULT_MAX_FRAME)
+  }
+
   fn transmit(&mut self, frame: &Frame) {
+    self.transmit_on(CONTROL_STREAM, frame);
+  }
+
+  fn transmit_on(&mut self, stream: u64, frame: &Frame) {
     let mut message = BytesMut::new();
-    varint::encode(CONTROL_STREAM, &mut message).expect("stream 0 fits a varint");
+    varint::encode(stream, &mut message).expect("stream IDs come from varints, so they fit one");
     if frame.encode(&mut message).is_ok() {
       let output = Output::Transmit(message.freeze());
       if matches!(frame, Frame::Ping { .. } | Frame::Pong { .. } | Frame::Close(_)) {
@@ -514,6 +650,17 @@ impl Session {
     self.state = State::Ended;
     self.outputs.push_back(Output::Ended(ending));
   }
+}
+
+fn call_error(code: StatusCode, msg: String, nx: bool) -> Frame {
+  let code = if code == StatusCode::Ok { StatusCode::Internal } else { code };
+  Frame::Error(CallError {
+    code: u64::from(code),
+    msg,
+    nx: nx.then_some(true),
+    meta: None,
+    data: Bytes::new(),
+  })
 }
 
 #[cfg(test)]
