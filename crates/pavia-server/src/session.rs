@@ -24,7 +24,7 @@ use pavia_proto::session::{Command, Config as SessionConfig, Ending, Input, Outp
 use pavia_proto::session_id::SessionId;
 use pavia_proto::stream::Shape;
 use tokio::sync::mpsc;
-use tokio::task::{self, JoinError, JoinSet};
+use tokio::task::{self, AbortHandle, JoinError, JoinSet};
 use tokio::time::{Instant, sleep_until};
 
 use crate::auth::{AuthFailure, Authenticator, Authorizer, Principal};
@@ -58,7 +58,10 @@ type Authenticating<'a> = Pin<Box<dyn Future<Output = Result<Principal, AuthFail
 /// value the codec cannot encode) is answered INTERNAL with the configured generic message, or its
 /// own text cut to `MAX_INTERNAL_ERROR_MESSAGE` bytes in development mode, and logged in full with
 /// `tracing` either way (§8.4, §14).
-/// Handlers still running when the session ends are dropped with it.
+/// Handlers still running when the session ends are dropped with it. A CANCEL from the client on a
+/// call not answered yet drops that call's handler, and once it is dropped the call is answered
+/// ERROR CANCELLED in place of whatever the handler returned; a failure it had already hit is
+/// still logged (§8.5).
 ///
 /// `authenticator` runs once, after HELLO (§7.5). The transport keeps being read while it runs,
 /// so a CLOSE, a transport loss or the handshake deadline still ends the session. When it
@@ -100,6 +103,7 @@ pub async fn run<A: Authenticator, Z: Authorizer + 'static>(
     },
     running: JoinSet::new(),
     streams: HashMap::new(),
+    tasks: HashMap::new(),
   };
   let mut session = Session::server(transport.session(), transport.accepted().into_std());
   let context = transport.context().clone();
@@ -191,7 +195,14 @@ struct Calls<'a, Z> {
   principal: Arc<Principal>,
   disclosure: Disclosure,
   running: JoinSet<Result<Value, Failed>>,
-  streams: HashMap<task::Id, (u64, MethodName)>,
+  streams: HashMap<task::Id, RunningCall>,
+  tasks: HashMap<u64, AbortHandle>,
+}
+
+struct RunningCall {
+  stream: u64,
+  method: MethodName,
+  cancelled: bool,
 }
 
 enum Failed {
@@ -323,8 +334,25 @@ impl<Z: Authorizer + 'static> Calls<'_, Z> {
         Err(Failed::Refused(Refusal::denied(&principal)))
       }
     });
-    self.streams.insert(task.id(), (stream, name.clone()));
+    let running = RunningCall {
+      stream,
+      method: name.clone(),
+      cancelled: false,
+    };
+    self.streams.insert(task.id(), running);
+    self.tasks.insert(stream, task);
     None
+  }
+
+  fn cancel(&mut self, stream: u64) {
+    if let Some(task) = self.tasks.get(&stream) {
+      task.abort();
+      self
+        .streams
+        .get_mut(&task.id())
+        .expect("every running call has a stream")
+        .cancelled = true;
+    }
   }
 
   fn answered(&mut self, joined: Result<(task::Id, Result<Value, Failed>), JoinError>, codec: Codec) -> Input {
@@ -332,8 +360,14 @@ impl<Z: Authorizer + 'static> Calls<'_, Z> {
       Ok((id, answer)) => (id, Ok(answer)),
       Err(error) => (error.id(), Err(error)),
     };
-    let (stream, method) = self.streams.remove(&id).expect("every running call has a stream");
+    let RunningCall {
+      stream,
+      method,
+      cancelled,
+    } = self.streams.remove(&id).expect("every running call has a stream");
+    self.tasks.remove(&stream);
     let command = match answer {
+      Err(error) if error.is_cancelled() => cancelled_answer(stream),
       Ok(Ok(value)) => match encode(&value, codec) {
         Ok(data) => Command::Result { stream, data },
         Err(error) => self.disclosure.internal(stream, &method, &error),
@@ -356,7 +390,18 @@ impl<Z: Authorizer + 'static> Calls<'_, Z> {
       Ok(Err(Failed::Handler(HandlerError::Unexpected(error)))) => self.disclosure.internal(stream, &method, &*error),
       Err(error) => self.disclosure.internal(stream, &method, &error),
     };
-    Input::Command(command)
+    Input::Command(if cancelled { cancelled_answer(stream) } else { command })
+  }
+}
+
+fn cancelled_answer(stream: u64) -> Command {
+  Command::Error {
+    stream,
+    code: StatusCode::Cancelled,
+    msg: "cancelled".to_owned(),
+    nx: false,
+    meta: None,
+    detail: Bytes::new(),
   }
 }
 
@@ -405,6 +450,7 @@ async fn carry_out<Z: Authorizer + 'static>(
           session.handle_input(Input::Command(refusal), Instant::now().into_std());
         }
       }
+      Output::Cancelled { stream } => calls.cancel(stream),
       Output::Ended(ending) => return Step::Ended(ending),
       _ => {}
     }

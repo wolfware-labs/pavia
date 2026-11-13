@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -21,6 +21,7 @@ use pavia_proto::stream::{Shape, Side};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf};
 use tokio::net::TcpStream;
 use tokio::sync::{Barrier, Semaphore, mpsc, oneshot};
+use tokio::task::JoinSet;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::handshake::client::Request;
 use tokio_tungstenite::tungstenite::protocol::frame::Frame;
@@ -32,7 +33,7 @@ use tracing::Dispatch;
 use tracing::dispatcher::DefaultGuard;
 use tracing::subscriber::NoSubscriber;
 
-use super::{Refusal, authenticated, run, validate_call};
+use super::{Calls, Disclosure, Failed, Refusal, RunningCall, authenticated, run, validate_call};
 use crate::auth::{AllowAll, AuthFailure, Authenticator, Authorizer, Permissive, Principal, RequestContext};
 use crate::methods::{Handler, HandlerError, MethodEntry, MethodName, MethodRegistry, StatusError};
 use crate::sessions::Registry;
@@ -145,9 +146,7 @@ fn hello_frame() -> Vec<u8> {
 fn hello_frame_with(codec: &[u8; 4]) -> Vec<u8> {
   let mut header = vec![0xa2, 0x0e, 0x81, 0x01, 0x10, 0x81, 0x64];
   header.extend(codec);
-  let mut frame = vec![0x00, 0x01, 0x00, header.len() as u8 + 1, header.len() as u8];
-  frame.extend(header);
-  frame
+  raw_frame(0x01, &header)
 }
 
 fn close_frame(code: u8) -> Vec<u8> {
@@ -156,9 +155,7 @@ fn close_frame(code: u8) -> Vec<u8> {
     header.push(0x18);
   }
   header.push(code);
-  let mut frame = vec![0x00, 0x07, 0x00, header.len() as u8 + 1, header.len() as u8];
-  frame.extend(header);
-  frame
+  raw_frame(0x07, &header)
 }
 
 async fn closed(socket: &mut Socket) -> (Vec<Vec<u8>>, WsCloseCode, Utf8Bytes) {
@@ -453,7 +450,11 @@ async fn closes_with_protocol_error_when_the_first_frame_is_not_hello() {
 }
 
 fn raw_frame(frame_type: u8, header: &[u8]) -> Vec<u8> {
-  let mut frame = vec![0x00, frame_type, 0x00, header.len() as u8 + 1, header.len() as u8];
+  raw_frame_on(0, frame_type, header)
+}
+
+fn raw_frame_on(stream: u8, frame_type: u8, header: &[u8]) -> Vec<u8> {
+  let mut frame = vec![stream, frame_type, 0x00, header.len() as u8 + 1, header.len() as u8];
   frame.extend(header);
   frame
 }
@@ -1155,6 +1156,12 @@ fn assert_refused(answer: &Answer, stream: u64, code: u8) {
   assert_eq!(answer.header.get(&45), Some(&Value::Bool(true)));
 }
 
+fn assert_error(answer: &Answer, stream: u64, code: u8) {
+  assert_eq!((answer.stream, answer.frame_type), (stream, 0x14));
+  assert_eq!(answer.header[&6], Value::from(code));
+  assert_eq!(answer.header.get(&45), None);
+}
+
 fn chat() -> (Arc<MethodRegistry<Handler>>, Arc<AtomicUsize>) {
   let runs = Arc::new(AtomicUsize::new(0));
   let counted = Arc::clone(&runs);
@@ -1302,10 +1309,7 @@ async fn answers_internal_when_the_handler_panics_and_keeps_the_session() {
     .send(Message::binary(call_frame(2, "chat/crash", &[0x80])))
     .await
     .unwrap();
-  let answer = next_answer(&mut socket).await;
-  assert_eq!((answer.stream, answer.frame_type), (2, 0x14));
-  assert_eq!(answer.header[&6], Value::from(13));
-  assert_eq!(answer.header.get(&45), None);
+  assert_error(&next_answer(&mut socket).await, 2, 13);
   socket
     .send(Message::binary(call_frame(4, "chat/ping", &[0x80])))
     .await
@@ -1368,9 +1372,7 @@ async fn answers_internal_when_the_result_does_not_encode() {
     .send(Message::binary(call_frame(2, "chat/odd", &[0x80])))
     .await
     .unwrap();
-  let answer = next_answer(&mut socket).await;
-  assert_eq!((answer.stream, answer.frame_type), (2, 0x14));
-  assert_eq!(answer.header[&6], Value::from(13));
+  assert_error(&next_answer(&mut socket).await, 2, 13);
 }
 
 #[tokio::test]
@@ -1392,9 +1394,7 @@ async fn answers_internal_when_a_handler_panics_before_its_future_runs() {
     .send(Message::binary(call_frame(2, "chat/early", &[0x80])))
     .await
     .unwrap();
-  let answer = next_answer(&mut socket).await;
-  assert_eq!((answer.stream, answer.frame_type), (2, 0x14));
-  assert_eq!(answer.header[&6], Value::from(13));
+  assert_error(&next_answer(&mut socket).await, 2, 13);
   socket
     .send(Message::binary(call_frame(4, "chat/ping", &[0x80])))
     .await
@@ -1434,8 +1434,7 @@ impl Drop for Dropped {
   }
 }
 
-#[tokio::test]
-async fn drops_running_handlers_when_the_session_ends() {
+fn forever() -> (MethodRegistry<Handler>, Arc<AtomicBool>, Arc<AtomicBool>) {
   let dropped = Arc::new(AtomicBool::new(false));
   let started = Arc::new(AtomicBool::new(false));
   let (flag, running) = (Arc::clone(&dropped), Arc::clone(&started));
@@ -1453,6 +1452,12 @@ async fn drops_running_handlers_when_the_session_ends() {
       })),
     )
     .unwrap();
+  (methods, started, dropped)
+}
+
+#[tokio::test]
+async fn drops_running_handlers_when_the_session_ends() {
+  let (methods, started, dropped) = forever();
   let mut socket = serving(Arc::new(methods)).await;
   socket
     .send(Message::binary(call_frame(2, "chat/forever", &[0x80])))
@@ -1772,6 +1777,12 @@ async fn shares_one_authorizer_between_the_calls_of_a_session() {
 #[derive(Clone, Default)]
 struct Captured(Arc<Mutex<Vec<u8>>>);
 
+impl Captured {
+  fn text(&self) -> String {
+    String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+  }
+}
+
 impl io::Write for Captured {
   fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
     self.0.lock().unwrap().extend_from_slice(bytes);
@@ -1864,7 +1875,7 @@ async fn logged_answer(method: &str) -> (Answer, String) {
   let mut socket = serving(failing()).await;
   socket.send(Message::binary(call_frame(2, method, &[0x80]))).await.unwrap();
   let answer = next_answer(&mut socket).await;
-  let logged = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+  let logged = log.text();
   (answer, logged)
 }
 
@@ -1885,10 +1896,8 @@ async fn sends_a_deliberate_error_as_given_with_its_detail_and_meta() {
     .await
     .unwrap();
   let answer = next_answer(&mut socket).await;
-  assert_eq!((answer.stream, answer.frame_type), (2, 0x14));
-  assert_eq!(answer.header[&6], Value::from(5));
+  assert_error(&answer, 2, 5);
   assert_eq!(answer.header[&7], Value::Text("no such user".into()));
-  assert_eq!(answer.header.get(&45), None);
   let meta = answer.header[&3].as_map().unwrap();
   assert_eq!(meta, &vec![(Value::Text("x-reason".into()), Value::Text("quota".into()))]);
   assert_eq!(answer.data, [0xa1, 0x62, b'i', b'd', 0x62, b'u', b'1']);
@@ -2023,4 +2032,127 @@ async fn refuses_a_third_call_beyond_max_calls_two_and_admits_a_fourth_once_a_sl
   answered.sort_unstable();
   assert_eq!(answered, [2, 4, 8]);
   assert_eq!(runs.load(Ordering::SeqCst), 3);
+}
+
+fn cancel_frame(stream: u8, msg: Option<&str>) -> Vec<u8> {
+  let header = msg.map_or_else(Vec::new, |msg| {
+    let mut header = vec![0xa1, 0x07, 0x60 + u8::try_from(msg.len()).unwrap()];
+    header.extend(msg.as_bytes());
+    header
+  });
+  raw_frame_on(stream, 0x15, &header)
+}
+
+#[tokio::test]
+async fn answers_cancelled_once_the_handler_of_a_cancelled_call_is_dropped() {
+  for msg in [None, Some("user left")] {
+    let (log, _logging) = capture_log();
+    let (methods, started, dropped) = forever();
+    let mut socket = serving(Arc::new(methods)).await;
+    socket
+      .send(Message::binary(call_frame(2, "chat/forever", &[0x80])))
+      .await
+      .unwrap();
+    eventually(|| started.load(Ordering::SeqCst), "the handler starts").await;
+    socket.send(Message::binary(cancel_frame(2, msg))).await.unwrap();
+    let answer = next_answer(&mut socket).await;
+    assert!(dropped.load(Ordering::SeqCst), "answered before the handler was dropped");
+    assert_error(&answer, 2, 1);
+    assert_eq!(answer.header[&7], Value::Text("cancelled".into()));
+    let logged = log.text();
+    assert!(!logged.contains("ERROR"), "{logged}");
+  }
+}
+
+#[tokio::test]
+async fn admits_a_call_after_a_cancelled_one_with_max_calls_one() {
+  let (methods, gate, runs) = slow();
+  let mut config = SessionConfig::default();
+  config.max_calls = 1;
+  let mut socket = serving_with(Arc::new(methods), config).await;
+  socket
+    .send(Message::binary(call_frame(2, "chat/slow", &[0x80])))
+    .await
+    .unwrap();
+  eventually(|| runs.load(Ordering::SeqCst) == 1, "the first call to run").await;
+  socket.send(Message::binary(cancel_frame(2, None))).await.unwrap();
+  assert_error(&next_answer(&mut socket).await, 2, 1);
+  socket
+    .send(Message::binary(call_frame(4, "chat/slow", &[0x80])))
+    .await
+    .unwrap();
+  eventually(|| runs.load(Ordering::SeqCst) == 2, "the call after the cancelled one to run").await;
+  gate.add_permits(1);
+  let answer = next_answer(&mut socket).await;
+  assert_eq!((answer.stream, answer.frame_type), (4, 0x13));
+}
+
+#[tokio::test]
+async fn answers_a_refused_call_cancelled_in_the_same_message_once() {
+  let (methods, started, _) = forever();
+  let mut socket = serving(Arc::new(methods)).await;
+  let mut message = call_frame(2, "chat/missing", &[0x80]);
+  message.extend(cancel_frame(2, None));
+  socket.send(Message::binary(message)).await.unwrap();
+  assert_refused(&next_answer(&mut socket).await, 2, 12);
+  socket
+    .send(Message::binary(call_frame(4, "chat/forever", &[0x80])))
+    .await
+    .unwrap();
+  eventually(|| started.load(Ordering::SeqCst), "the next call to run").await;
+  socket.send(Message::binary(cancel_frame(4, None))).await.unwrap();
+  assert_error(&next_answer(&mut socket).await, 4, 1);
+}
+
+async fn cancelled_after_it_finished(outcome: Result<Arg, Failed>) -> Command {
+  let methods = MethodRegistry::new();
+  let mut calls = Calls {
+    methods: &methods,
+    authorizer: Arc::new(AllowAll),
+    principal: Arc::new(Principal::anonymous()),
+    disclosure: Disclosure {
+      generic: "internal error".to_owned(),
+      disclose: false,
+    },
+    running: JoinSet::new(),
+    streams: HashMap::new(),
+    tasks: HashMap::new(),
+  };
+  let task = calls.running.spawn(async move { outcome });
+  let running = RunningCall {
+    stream: 2,
+    method: MethodName::parse("chat/done").unwrap(),
+    cancelled: false,
+  };
+  calls.streams.insert(task.id(), running);
+  calls.tasks.insert(2, task.clone());
+  eventually(|| task.is_finished(), "the handler to finish").await;
+  calls.cancel(2);
+  let joined = calls.running.join_next_with_id().await.unwrap();
+  let Input::Command(command) = calls.answered(joined, Codec::Cbor) else {
+    panic!("expected a command");
+  };
+  assert!(calls.streams.is_empty() && calls.tasks.is_empty());
+  command
+}
+
+#[tokio::test]
+async fn answers_cancelled_for_a_handler_that_finished_before_the_cancel() {
+  let (log, _logging) = capture_log();
+  let cancelled = |command: &Command| {
+    matches!(
+      command,
+      Command::Error {
+        stream: 2,
+        code: StatusCode::Cancelled,
+        nx: false,
+        ..
+      }
+    )
+  };
+  assert!(cancelled(&cancelled_after_it_finished(Ok(Arg::Null)).await));
+  assert!(!log.text().contains("ERROR"));
+  let failed = Failed::Handler(HandlerError::unexpected("disk full"));
+  assert!(cancelled(&cancelled_after_it_finished(Err(failed)).await));
+  assert!(log.text().contains("call failed unexpectedly"), "{}", log.text());
 }

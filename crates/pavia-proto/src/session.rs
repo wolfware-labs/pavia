@@ -50,8 +50,10 @@
 //! §6.3). An answer above the client's `max_frame` (§5.2) or the default header limit (§5.4.1)
 //! is sent as RESOURCE_EXHAUSTED instead. A CALL beyond `max_calls` open calls is answered
 //! RESOURCE_EXHAUSTED with `nx` before its header is read, the first of the callee checks of
-//! §8.2; the driver makes the rest. Frames on the control stream other than these are otherwise
-//! ignored until their feature lands.
+//! §8.2; the driver makes the rest. CANCEL on a call still waiting for its answer yields
+//! [`Output::Cancelled`]; the driver answers ERROR CANCELLED once the handler has stopped, and
+//! that answer frees the call's slot (§8.5). Frames on the control stream other than these are
+//! otherwise ignored until their feature lands.
 //! PING, PONG and CLOSE skip ahead of other queued outputs, in the order they were made (§6.6,
 //! §13.5), but never ahead of WELCOME, the server's first frame (§6.2). Sending CLOSE drops what is
 //! still queued behind it, since nothing follows CLOSE on the transport (§7.7).
@@ -189,6 +191,14 @@ pub enum Output {
     stream: u64,
     /// The CALL frame: method, shape, deadline, meta and the encoded arguments.
     call: Call,
+  },
+  /// The client cancelled the call on `stream` before its answer (§8.5). The driver stops the
+  /// call's handler and, once it has stopped, answers [`Command::Error`] with
+  /// [`StatusCode::Cancelled`] in place of whatever the handler returned. The call keeps its
+  /// `max_calls` slot until that answer, so a handler still stopping is counted.
+  Cancelled {
+    /// The call stream, from [`Output::Call`].
+    stream: u64,
   },
   /// The session is over. Emitted once, as the last output.
   Ended(Ending),
@@ -615,8 +625,12 @@ impl Session {
           .get_mut(&stream)
           .map_or(Ok(Step::Ignored), |call| call.on_frame(Role::Caller, frame_type));
         self.calls.settle(stream);
-        if let Err(error) = step {
-          self.fail(&error);
+        match step {
+          Ok(Step::Accepted) if frame_type == FrameType::Cancel && self.calls.open.contains_key(&stream) => {
+            self.outputs.push_back(Output::Cancelled { stream });
+          }
+          Ok(_) => {}
+          Err(error) => self.fail(&error),
         }
       }
     }

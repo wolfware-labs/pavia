@@ -824,9 +824,9 @@ fn times_out_an_authenticator_that_answers_after_the_deadline() {
 #[test]
 fn stops_the_handshake_timer_at_welcome() {
   let (mut session, accepted) = welcomed_at(Duration::from_secs(9));
-  called_at(&mut session, 2, accepted + Duration::from_secs(9));
+  called_shaped_at(&mut session, 2, 7, accepted + Duration::from_secs(9));
   let late = accepted + Duration::from_secs(11);
-  session.handle_input(Input::Message(message(&[(2, Frame::Cancel(Cancel { msg: None }))])), late);
+  session.handle_input(Input::Message(message(&[(2, item_frame())])), late);
   assert_eq!(drain(&mut session), []);
   assert!(!session.is_ended());
 }
@@ -955,13 +955,9 @@ fn closes_with_idle_timeout_after_idle_with_nothing_received() {
 fn moves_the_idle_deadline_on_a_message_on_any_stream() {
   for stream in [0, 2] {
     let (mut session, accepted) = welcomed_at(Duration::ZERO);
-    called_at(&mut session, 2, accepted);
+    called_shaped_at(&mut session, 2, 7, accepted);
     let heard = accepted + DEFAULT_IDLE - Duration::from_millis(1);
-    let frame = if stream == 0 {
-      pong(b"")
-    } else {
-      Frame::Cancel(Cancel { msg: None })
-    };
+    let frame = if stream == 0 { pong(b"") } else { item_frame() };
     session.handle_input(Input::Message(message(&[(stream, frame)])), heard);
     session.handle_input(Input::Timeout, heard);
     assert_eq!(sent_frames(&mut session), [(0, ping(b""))], "stream {stream}");
@@ -1038,10 +1034,10 @@ fn answers_a_ping_with_the_same_data_and_restarts_the_timer() {
 #[test]
 fn keeps_the_ping_timer_when_only_receiving() {
   let (mut session, accepted) = welcomed_at(Duration::ZERO);
-  called_at(&mut session, 2, accepted);
+  called_shaped_at(&mut session, 2, 7, accepted);
   for seconds in [3, 6, 9] {
     session.handle_input(
-      Input::Message(message(&[(0, pong(b"")), (2, Frame::Cancel(Cancel { msg: None }))])),
+      Input::Message(message(&[(0, pong(b"")), (2, item_frame())])),
       accepted + Duration::from_secs(seconds),
     );
     assert_eq!(drain(&mut session), []);
@@ -1355,13 +1351,95 @@ fn called(session: &mut Session, stream: u64) -> Call {
 }
 
 fn called_at(session: &mut Session, stream: u64, at: Instant) -> Call {
-  session.handle_input(Input::Message(message(&[(stream, call(0))])), at);
+  called_shaped_at(session, stream, 0, at)
+}
+
+fn called_shaped_at(session: &mut Session, stream: u64, shape: u64, at: Instant) -> Call {
+  session.handle_input(Input::Message(message(&[(stream, call(shape))])), at);
   let outputs = drain(session);
   let [Output::Call { stream: called, call }] = outputs.as_slice() else {
     panic!("{outputs:?}");
   };
   assert_eq!(*called, stream);
   call.clone()
+}
+
+fn cancel(msg: Option<&str>) -> Input {
+  Input::Message(message(&[(
+    2,
+    Frame::Cancel(Cancel {
+      msg: msg.map(str::to_owned),
+    }),
+  )]))
+}
+
+fn cancelled() -> Frame {
+  Frame::Error(CallError {
+    code: u64::from(StatusCode::Cancelled),
+    msg: "cancelled".into(),
+    nx: None,
+    meta: None,
+    data: Bytes::new(),
+  })
+}
+
+fn answer_cancelled() -> Input {
+  Input::Command(Command::Error {
+    stream: 2,
+    code: StatusCode::Cancelled,
+    msg: "cancelled".into(),
+    nx: false,
+    meta: None,
+    detail: Bytes::new(),
+  })
+}
+
+#[test]
+fn tells_the_driver_to_stop_a_cancelled_call_and_holds_its_slot_until_the_answer() {
+  for msg in [None, Some("user left")] {
+    let config = Config {
+      max_calls: 1,
+      ..Config::default()
+    };
+    let (mut session, _) = welcomed_with(config, None);
+    called(&mut session, 2);
+    session.feed(cancel(msg));
+    assert_eq!(drain(&mut session), [Output::Cancelled { stream: 2 }], "{msg:?}");
+    assert_eq!(session.open_calls(), 1);
+    session.feed(answer_cancelled());
+    assert_eq!(sent_frames(&mut session), [(2, cancelled())]);
+    assert_eq!(session.open_calls(), 0);
+    called(&mut session, 4);
+  }
+}
+
+#[test]
+fn ignores_a_second_cancel_and_a_cancel_after_the_answer() {
+  let (mut session, _) = welcomed(None);
+  called(&mut session, 2);
+  session.feed(cancel(None));
+  assert_eq!(drain(&mut session), [Output::Cancelled { stream: 2 }]);
+  session.feed(cancel(Some("again")));
+  assert_eq!(drain(&mut session), []);
+  session.feed(answer_cancelled());
+  assert_eq!(sent_frames(&mut session), [(2, cancelled())]);
+  session.feed(answer(2, &[0xf6]));
+  session.feed(cancel(None));
+  assert_eq!(drain(&mut session), []);
+  assert!(!session.is_ended());
+}
+
+#[test]
+fn tells_the_driver_to_stop_a_streaming_call_cancelled_before_its_request_ends() {
+  let (mut session, _) = welcomed(None);
+  called_shaped_at(&mut session, 2, 7, Instant::now());
+  session.feed(Input::Message(message(&[(2, item_frame())])));
+  session.feed(cancel(None));
+  assert_eq!(drain(&mut session), [Output::Cancelled { stream: 2 }]);
+  session.feed(answer_cancelled());
+  assert_eq!(sent_frames(&mut session), [(2, cancelled())]);
+  assert!(!session.is_ended());
+  assert_eq!(session.open_calls(), 0);
 }
 
 fn answer(stream: u64, data: &'static [u8]) -> Input {

@@ -15,13 +15,7 @@ use crate::frame::FrameType;
 )]
 pub(crate) mod ids;
 
-#[cfg_attr(
-  not(test),
-  expect(
-    dead_code,
-    reason = "peer events and response_open wait for CANCEL (#53) and WebTransport (#250)"
-  )
-)]
+#[cfg_attr(not(test), expect(dead_code, reason = "peer events wait for WebTransport (#250)"))]
 pub(crate) mod call;
 
 pub use call::Shape;
