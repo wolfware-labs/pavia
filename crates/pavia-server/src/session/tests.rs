@@ -2024,3 +2024,86 @@ async fn refuses_a_third_call_beyond_max_calls_two_and_admits_a_fourth_once_a_sl
   assert_eq!(answered, [2, 4, 8]);
   assert_eq!(runs.load(Ordering::SeqCst), 3);
 }
+
+fn cancel_frame(stream: u8, msg: Option<&str>) -> Vec<u8> {
+  let header = msg.map_or_else(Vec::new, |msg| {
+    let mut header = vec![0xa1, 0x07, 0x60 + u8::try_from(msg.len()).unwrap()];
+    header.extend(msg.as_bytes());
+    header
+  });
+  let mut frame = raw_frame(0x15, &header);
+  frame[0] = stream;
+  frame
+}
+
+struct CountsDrop(Arc<AtomicUsize>);
+
+impl Drop for CountsDrop {
+  fn drop(&mut self) {
+    self.0.fetch_add(1, Ordering::SeqCst);
+  }
+}
+
+fn endless() -> (MethodRegistry<Handler>, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+  let (runs, drops) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+  let (counted, dropped) = (Arc::clone(&runs), Arc::clone(&drops));
+  let mut methods = MethodRegistry::new();
+  methods
+    .register_server_method(
+      "chat/endless",
+      MethodEntry::call(Handler::new(0, move |_| {
+        let (runs, guard) = (Arc::clone(&counted), CountsDrop(Arc::clone(&dropped)));
+        async move {
+          let _guard = guard;
+          runs.fetch_add(1, Ordering::SeqCst);
+          std::future::pending::<()>().await;
+          Arg::Null
+        }
+      })),
+    )
+    .unwrap();
+  (methods, runs, drops)
+}
+
+#[tokio::test]
+async fn answers_cancelled_and_drops_the_handler_of_a_cancelled_call() {
+  for msg in [None, Some("user left")] {
+    let (methods, runs, drops) = endless();
+    let mut socket = serving(Arc::new(methods)).await;
+    socket
+      .send(Message::binary(call_frame(2, "chat/endless", &[0x80])))
+      .await
+      .unwrap();
+    eventually(|| runs.load(Ordering::SeqCst) == 1, "the handler to run").await;
+    socket.send(Message::binary(cancel_frame(2, msg))).await.unwrap();
+    let answer = next_answer(&mut socket).await;
+    assert_eq!((answer.stream, answer.frame_type), (2, 0x14), "{msg:?}");
+    assert_eq!(answer.header[&6], Value::from(1));
+    assert_eq!(answer.header.get(&45), None);
+    eventually(|| drops.load(Ordering::SeqCst) == 1, "the handler's future to be dropped").await;
+  }
+}
+
+#[tokio::test]
+async fn admits_a_call_after_a_cancelled_one_with_max_calls_one() {
+  let (methods, gate, runs) = slow();
+  let mut config = SessionConfig::default();
+  config.max_calls = 1;
+  let mut socket = serving_with(Arc::new(methods), config).await;
+  socket
+    .send(Message::binary(call_frame(2, "chat/slow", &[0x80])))
+    .await
+    .unwrap();
+  eventually(|| runs.load(Ordering::SeqCst) == 1, "the first call to run").await;
+  socket.send(Message::binary(cancel_frame(2, None))).await.unwrap();
+  let cancelled = next_answer(&mut socket).await;
+  assert_eq!((cancelled.stream, cancelled.frame_type), (2, 0x14));
+  socket
+    .send(Message::binary(call_frame(4, "chat/slow", &[0x80])))
+    .await
+    .unwrap();
+  eventually(|| runs.load(Ordering::SeqCst) == 2, "the call after the cancelled one to run").await;
+  gate.add_permits(1);
+  let answer = next_answer(&mut socket).await;
+  assert_eq!((answer.stream, answer.frame_type), (4, 0x13));
+}

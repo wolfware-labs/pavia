@@ -824,9 +824,9 @@ fn times_out_an_authenticator_that_answers_after_the_deadline() {
 #[test]
 fn stops_the_handshake_timer_at_welcome() {
   let (mut session, accepted) = welcomed_at(Duration::from_secs(9));
-  called_at(&mut session, 2, accepted + Duration::from_secs(9));
+  streaming_called_at(&mut session, accepted + Duration::from_secs(9));
   let late = accepted + Duration::from_secs(11);
-  session.handle_input(Input::Message(message(&[(2, Frame::Cancel(Cancel { msg: None }))])), late);
+  session.handle_input(Input::Message(message(&[(2, item_frame())])), late);
   assert_eq!(drain(&mut session), []);
   assert!(!session.is_ended());
 }
@@ -955,13 +955,9 @@ fn closes_with_idle_timeout_after_idle_with_nothing_received() {
 fn moves_the_idle_deadline_on_a_message_on_any_stream() {
   for stream in [0, 2] {
     let (mut session, accepted) = welcomed_at(Duration::ZERO);
-    called_at(&mut session, 2, accepted);
+    streaming_called_at(&mut session, accepted);
     let heard = accepted + DEFAULT_IDLE - Duration::from_millis(1);
-    let frame = if stream == 0 {
-      pong(b"")
-    } else {
-      Frame::Cancel(Cancel { msg: None })
-    };
+    let frame = if stream == 0 { pong(b"") } else { item_frame() };
     session.handle_input(Input::Message(message(&[(stream, frame)])), heard);
     session.handle_input(Input::Timeout, heard);
     assert_eq!(sent_frames(&mut session), [(0, ping(b""))], "stream {stream}");
@@ -1038,10 +1034,10 @@ fn answers_a_ping_with_the_same_data_and_restarts_the_timer() {
 #[test]
 fn keeps_the_ping_timer_when_only_receiving() {
   let (mut session, accepted) = welcomed_at(Duration::ZERO);
-  called_at(&mut session, 2, accepted);
+  streaming_called_at(&mut session, accepted);
   for seconds in [3, 6, 9] {
     session.handle_input(
-      Input::Message(message(&[(0, pong(b"")), (2, Frame::Cancel(Cancel { msg: None }))])),
+      Input::Message(message(&[(0, pong(b"")), (2, item_frame())])),
       accepted + Duration::from_secs(seconds),
     );
     assert_eq!(drain(&mut session), []);
@@ -1362,6 +1358,83 @@ fn called_at(session: &mut Session, stream: u64, at: Instant) -> Call {
   };
   assert_eq!(*called, stream);
   call.clone()
+}
+
+fn streaming_called_at(session: &mut Session, at: Instant) {
+  session.handle_input(Input::Message(message(&[(2, call(7))])), at);
+  assert!(matches!(drain(session).as_slice(), [Output::Call { stream: 2, .. }]));
+}
+
+fn cancel(msg: Option<&str>) -> Input {
+  Input::Message(message(&[(
+    2,
+    Frame::Cancel(Cancel {
+      msg: msg.map(str::to_owned),
+    }),
+  )]))
+}
+
+fn cancelled() -> Frame {
+  Frame::Error(CallError {
+    code: u64::from(StatusCode::Cancelled),
+    msg: "cancelled".into(),
+    nx: None,
+    meta: None,
+    data: Bytes::new(),
+  })
+}
+
+#[test]
+fn answers_a_cancelled_call_with_cancelled_and_tells_the_driver_to_stop_it() {
+  for msg in [None, Some("user left")] {
+    let (mut session, _) = welcomed(None);
+    called(&mut session, 2);
+    session.feed(cancel(msg));
+    let outputs = drain(&mut session);
+    let [Output::Cancelled { stream: 2 }, Output::Transmit(sent)] = outputs.as_slice() else {
+      panic!("{outputs:?}");
+    };
+    assert_eq!(frames(sent), [(2, cancelled())], "{msg:?}");
+    assert_eq!(session.open_calls(), 0);
+    session.feed(answer(2, &[0xf6]));
+    session.feed(cancel(None));
+    assert_eq!(drain(&mut session), []);
+    assert!(!session.is_ended());
+  }
+}
+
+#[test]
+fn frees_the_slot_of_a_cancelled_call() {
+  let config = Config {
+    max_calls: 1,
+    ..Config::default()
+  };
+  let (mut session, _) = welcomed_with(config, None);
+  called(&mut session, 2);
+  session.feed(cancel(None));
+  drain(&mut session);
+  called(&mut session, 4);
+  assert_eq!(session.open_calls(), 1);
+}
+
+#[test]
+fn answers_a_streaming_call_cancelled_before_its_request_ends() {
+  let (mut session, _) = welcomed(None);
+  streaming_called_at(&mut session, Instant::now());
+  session.feed(Input::Message(message(&[(2, item_frame())])));
+  session.feed(cancel(None));
+  let outputs = drain(&mut session);
+  assert!(
+    matches!(outputs.as_slice(), [Output::Cancelled { stream: 2 }, Output::Transmit(_)]),
+    "{outputs:?}"
+  );
+  session.feed(Input::Message(message(&[
+    (2, item_frame()),
+    (2, Frame::End(End { meta: None })),
+  ])));
+  assert_eq!(drain(&mut session), []);
+  assert!(!session.is_ended());
+  assert_eq!(session.open_calls(), 0);
 }
 
 fn answer(stream: u64, data: &'static [u8]) -> Input {

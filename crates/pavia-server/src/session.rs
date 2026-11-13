@@ -24,7 +24,7 @@ use pavia_proto::session::{Command, Config as SessionConfig, Ending, Input, Outp
 use pavia_proto::session_id::SessionId;
 use pavia_proto::stream::Shape;
 use tokio::sync::mpsc;
-use tokio::task::{self, JoinError, JoinSet};
+use tokio::task::{self, AbortHandle, JoinError, JoinSet};
 use tokio::time::{Instant, sleep_until};
 
 use crate::auth::{AuthFailure, Authenticator, Authorizer, Principal};
@@ -100,6 +100,7 @@ pub async fn run<A: Authenticator, Z: Authorizer + 'static>(
     },
     running: JoinSet::new(),
     streams: HashMap::new(),
+    tasks: HashMap::new(),
   };
   let mut session = Session::server(transport.session(), transport.accepted().into_std());
   let context = transport.context().clone();
@@ -126,7 +127,10 @@ pub async fn run<A: Authenticator, Z: Authorizer + 'static>(
       received = transport.recv() => received_input(received),
       Some(command) = commands.recv() => Input::Command(command),
       Some(joined) = calls.running.join_next_with_id(), if !calls.running.is_empty() => {
-        calls.answered(joined, codec(&session))
+        let Some(input) = calls.answered(joined, codec(&session)) else {
+          continue;
+        };
+        input
       }
     };
     if answered {
@@ -192,6 +196,7 @@ struct Calls<'a, Z> {
   disclosure: Disclosure,
   running: JoinSet<Result<Value, Failed>>,
   streams: HashMap<task::Id, (u64, MethodName)>,
+  tasks: HashMap<u64, AbortHandle>,
 }
 
 enum Failed {
@@ -324,15 +329,24 @@ impl<Z: Authorizer + 'static> Calls<'_, Z> {
       }
     });
     self.streams.insert(task.id(), (stream, name.clone()));
+    self.tasks.insert(stream, task);
     None
   }
 
-  fn answered(&mut self, joined: Result<(task::Id, Result<Value, Failed>), JoinError>, codec: Codec) -> Input {
+  fn cancel(&mut self, stream: u64) {
+    if let Some(task) = self.tasks.remove(&stream) {
+      task.abort();
+      self.streams.remove(&task.id());
+    }
+  }
+
+  fn answered(&mut self, joined: Result<(task::Id, Result<Value, Failed>), JoinError>, codec: Codec) -> Option<Input> {
     let (id, answer) = match joined {
       Ok((id, answer)) => (id, Ok(answer)),
       Err(error) => (error.id(), Err(error)),
     };
-    let (stream, method) = self.streams.remove(&id).expect("every running call has a stream");
+    let (stream, method) = self.streams.remove(&id)?;
+    self.tasks.remove(&stream);
     let command = match answer {
       Ok(Ok(value)) => match encode(&value, codec) {
         Ok(data) => Command::Result { stream, data },
@@ -356,7 +370,7 @@ impl<Z: Authorizer + 'static> Calls<'_, Z> {
       Ok(Err(Failed::Handler(HandlerError::Unexpected(error)))) => self.disclosure.internal(stream, &method, &*error),
       Err(error) => self.disclosure.internal(stream, &method, &error),
     };
-    Input::Command(command)
+    Some(Input::Command(command))
   }
 }
 
@@ -405,6 +419,7 @@ async fn carry_out<Z: Authorizer + 'static>(
           session.handle_input(Input::Command(refusal), Instant::now().into_std());
         }
       }
+      Output::Cancelled { stream } => calls.cancel(stream),
       Output::Ended(ending) => return Step::Ended(ending),
       _ => {}
     }
