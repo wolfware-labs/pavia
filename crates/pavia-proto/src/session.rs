@@ -626,17 +626,13 @@ impl Session {
           .map_or(Ok(Step::Ignored), |call| call.on_frame(Role::Caller, frame_type));
         self.calls.settle(stream);
         match step {
-          Ok(Step::Accepted) if frame_type == FrameType::Cancel => self.cancel_call(stream),
+          Ok(Step::Accepted) if frame_type == FrameType::Cancel && self.calls.open.contains_key(&stream) => {
+            self.outputs.push_back(Output::Cancelled { stream });
+          }
           Ok(_) => {}
           Err(error) => self.fail(&error),
         }
       }
-    }
-  }
-
-  fn cancel_call(&mut self, stream: u64) {
-    if self.calls.open.contains_key(&stream) {
-      self.outputs.push_back(Output::Cancelled { stream });
     }
   }
 

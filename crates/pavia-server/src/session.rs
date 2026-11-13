@@ -347,9 +347,11 @@ impl<Z: Authorizer + 'static> Calls<'_, Z> {
   fn cancel(&mut self, stream: u64) {
     if let Some(task) = self.tasks.get(&stream) {
       task.abort();
-      if let Some(running) = self.streams.get_mut(&task.id()) {
-        running.cancelled = true;
-      }
+      self
+        .streams
+        .get_mut(&task.id())
+        .expect("every running call has a stream")
+        .cancelled = true;
     }
   }
 
