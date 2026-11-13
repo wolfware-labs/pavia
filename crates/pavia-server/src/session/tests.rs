@@ -33,7 +33,7 @@ use tracing::Dispatch;
 use tracing::dispatcher::DefaultGuard;
 use tracing::subscriber::NoSubscriber;
 
-use super::{Calls, Disclosure, Failed, Refusal, RunningCall, authenticated, run, validate_call};
+use super::{Calls, Disclosure, Failed, Lane, Refusal, RunningCall, authenticated, run, validate_call};
 use crate::auth::{AllowAll, AuthFailure, Authenticator, Authorizer, Permissive, Principal, RequestContext};
 use crate::methods::{Handler, HandlerError, MethodEntry, MethodName, MethodRegistry, StatusError};
 use crate::sessions::Registry;
@@ -2117,6 +2117,7 @@ async fn cancelled_after_it_finished(outcome: Result<Arg, Failed>) -> Command {
     running: JoinSet::new(),
     streams: HashMap::new(),
     tasks: HashMap::new(),
+    lane: Lane::default(),
   };
   let task = calls.running.spawn(async move { outcome });
   let running = RunningCall {
@@ -2155,4 +2156,200 @@ async fn answers_cancelled_for_a_handler_that_finished_before_the_cancel() {
   let failed = Failed::Handler(HandlerError::unexpected("disk full"));
   assert!(cancelled(&cancelled_after_it_finished(Err(failed)).await));
   assert!(log.text().contains("call failed unexpectedly"), "{}", log.text());
+}
+
+fn notification_frame(method: &str, data: &[u8]) -> Vec<u8> {
+  let mut header = vec![0xa1, 0x02, 0x60 + u8::try_from(method.len()).unwrap()];
+  header.extend(method.as_bytes());
+  let mut payload = vec![u8::try_from(header.len()).unwrap()];
+  payload.extend(header);
+  payload.extend(data);
+  let mut frame = vec![0x00, 0x20, 0x00, 0x40, u8::try_from(payload.len()).unwrap()];
+  frame.extend(payload);
+  frame
+}
+
+const GENERAL: &[u8] = &[0x81, 0x67, b'g', b'e', b'n', b'e', b'r', b'a', b'l'];
+
+type Record = Arc<Mutex<Vec<&'static str>>>;
+
+fn notified() -> (Arc<MethodRegistry<Handler>>, Record, Arc<Semaphore>) {
+  let record: Record = Arc::default();
+  let gate = Arc::new(Semaphore::new(0));
+  let mut methods = MethodRegistry::new();
+  let noting = |entry: &'static str| {
+    let record = Arc::clone(&record);
+    move |_| {
+      record.lock().unwrap().push(entry);
+      async { Arg::Null }
+    }
+  };
+  methods
+    .register_server_method("chat/typing", MethodEntry::notify(Handler::new(1, noting("typing"))))
+    .unwrap();
+  methods
+    .register_server_method("chat/send", MethodEntry::call(Handler::new(1, noting("send"))))
+    .unwrap();
+  methods
+    .register_server_method("chat/ping", MethodEntry::call(Handler::new(0, |_| async { Arg::Null })))
+    .unwrap();
+  methods
+    .register_server_method("test/fast", MethodEntry::notify(Handler::new(0, noting("b"))))
+    .unwrap();
+  let (slow_record, held) = (Arc::clone(&record), Arc::clone(&gate));
+  methods
+    .register_server_method(
+      "test/slow",
+      MethodEntry::notify(Handler::new(0, move |_| {
+        let (record, gate) = (Arc::clone(&slow_record), Arc::clone(&held));
+        async move {
+          record.lock().unwrap().push("slow");
+          gate.acquire().await.unwrap().forget();
+          record.lock().unwrap().push("a");
+          Arg::Null
+        }
+      })),
+    )
+    .unwrap();
+  methods
+    .register_server_method(
+      "test/broken",
+      MethodEntry::notify(Handler::fallible(0, |_| async { Err(HandlerError::unexpected("disk full")) })),
+    )
+    .unwrap();
+  methods
+    .register_server_method(
+      "test/panics",
+      MethodEntry::notify(Handler::new(0, |_| async { panic!("handler bug") })),
+    )
+    .unwrap();
+  (Arc::new(methods), record, gate)
+}
+
+async fn pinged(socket: &mut Socket, stream: u8) {
+  socket
+    .send(Message::binary(call_frame(stream, "chat/ping", &[0x80])))
+    .await
+    .unwrap();
+  let answer = next_answer(socket).await;
+  assert_eq!((answer.stream, answer.frame_type), (u64::from(stream), 0x13));
+}
+
+fn lines_naming(log: &Captured, method: &str) -> usize {
+  log.text().lines().filter(|line| line.contains(method)).count()
+}
+
+#[tokio::test]
+async fn runs_a_notification_once_and_sends_nothing_back() {
+  let (methods, record, _) = notified();
+  let mut socket = serving(methods).await;
+  socket
+    .send(Message::binary(notification_frame("chat/typing", GENERAL)))
+    .await
+    .unwrap();
+  pinged(&mut socket, 2).await;
+  eventually(|| record.lock().unwrap().len() == 1, "the notification handler to run").await;
+  pinged(&mut socket, 4).await;
+  assert_eq!(*record.lock().unwrap(), ["typing"]);
+}
+
+#[tokio::test]
+async fn drops_and_logs_once_a_notification_to_an_unknown_or_a_call_method() {
+  let (log, _logging) = capture_log();
+  let (methods, record, _) = notified();
+  let mut socket = serving(methods).await;
+  for method in ["nope/nope", "chat/send"] {
+    socket
+      .send(Message::binary(notification_frame(method, GENERAL)))
+      .await
+      .unwrap();
+  }
+  pinged(&mut socket, 2).await;
+  for method in ["nope/nope", "chat/send"] {
+    assert_eq!(lines_naming(&log, method), 1, "{}", log.text());
+  }
+  assert!(log.text().contains("unknown method"));
+  assert_eq!(*record.lock().unwrap(), [] as [&str; 0]);
+}
+
+#[tokio::test]
+async fn drops_and_logs_once_a_notification_with_arguments_that_do_not_fit() {
+  let (log, _logging) = capture_log();
+  let (methods, record, _) = notified();
+  let mut socket = serving(methods).await;
+  for data in [&[0x83, 0x01, 0x02, 0x03][..], &[0x01], &[0xff]] {
+    socket
+      .send(Message::binary(notification_frame("chat/typing", data)))
+      .await
+      .unwrap();
+  }
+  pinged(&mut socket, 2).await;
+  assert_eq!(lines_naming(&log, "chat/typing"), 3, "{}", log.text());
+  assert!(log.text().contains("expected 1 arguments, got 3"));
+  assert_eq!(*record.lock().unwrap(), [] as [&str; 0]);
+}
+
+#[tokio::test]
+async fn logs_a_failing_or_panicking_notification_handler_and_keeps_the_session() {
+  let (log, _logging) = capture_log();
+  let (methods, _, _) = notified();
+  let mut socket = serving(methods).await;
+  for method in ["test/broken", "test/panics"] {
+    socket
+      .send(Message::binary(notification_frame(method, &[0x80])))
+      .await
+      .unwrap();
+  }
+  eventually(
+    || lines_naming(&log, "test/broken") == 1 && lines_naming(&log, "test/panics") == 1,
+    "both failures to be logged",
+  )
+  .await;
+  assert!(log.text().contains("disk full"), "{}", log.text());
+  pinged(&mut socket, 2).await;
+  assert_eq!(lines_naming(&log, "test/broken") + lines_naming(&log, "test/panics"), 2);
+}
+
+#[tokio::test]
+async fn runs_notification_handlers_one_at_a_time_in_delivery_order() {
+  let (methods, record, gate) = notified();
+  let mut socket = serving(methods).await;
+  let mut both = notification_frame("test/slow", &[0x80]);
+  both.extend(notification_frame("test/fast", &[0x80]));
+  socket.send(Message::binary(both)).await.unwrap();
+  eventually(|| !record.lock().unwrap().is_empty(), "the slow handler to start").await;
+  pinged(&mut socket, 2).await;
+  assert_eq!(*record.lock().unwrap(), ["slow"]);
+  gate.add_permits(1);
+  eventually(|| record.lock().unwrap().len() == 3, "both handlers to finish").await;
+  assert_eq!(*record.lock().unwrap(), ["slow", "a", "b"]);
+}
+
+#[tokio::test]
+async fn drops_and_logs_once_a_notification_the_authorizer_denies() {
+  let (log, _logging) = capture_log();
+  let (methods, record, _) = notified();
+  let (address, _) = listen_serving(
+    Registry::new(),
+    methods,
+    SessionConfig::default(),
+    Arc::new(Permissive),
+    Arc::new(DenyAll),
+  )
+  .await;
+  let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
+  let session = established(&mut socket).await;
+  socket
+    .send(Message::binary(notification_frame("chat/typing", GENERAL)))
+    .await
+    .unwrap();
+  eventually(|| lines_naming(&log, "chat/typing") == 1, "the refusal to be logged").await;
+  assert!(log.text().contains("not authorized"));
+  assert!(log.text().contains(session.as_str()), "{}", log.text());
+  socket
+    .send(Message::binary(call_frame(2, "chat/ping", &[0x80])))
+    .await
+    .unwrap();
+  assert_refused(&next_answer(&mut socket).await, 2, 16);
+  assert_eq!(*record.lock().unwrap(), [] as [&str; 0]);
 }

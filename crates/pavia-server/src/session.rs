@@ -32,6 +32,7 @@ use crate::methods::{Handler, HandlerError, Kind, MethodName, MethodRegistry};
 use crate::session_id;
 use crate::sessions::{Handle, Registration, Registry};
 use crate::websocket::{Received, Transport, TransportError};
+use lane::Lane;
 
 const COMMAND_QUEUE: usize = 32;
 
@@ -62,6 +63,10 @@ type Authenticating<'a> = Pin<Box<dyn Future<Output = Result<Principal, AuthFail
 /// call not answered yet drops that call's handler, and once it is dropped the call is answered
 /// ERROR CANCELLED in place of whatever the handler returned; a failure it had already hit is
 /// still logged (§8.5).
+/// A NOTIFY on the control stream runs its `notify` method and is never answered: an unknown
+/// method, a `call` method, arguments that do not fit, a refusal by the authorizer or a failing
+/// handler is logged with the session ID and the method and dropped. Notification handlers run one
+/// at a time, in delivery order, each after the previous one has completed (§9.1, §9.2).
 ///
 /// `authenticator` runs once, after HELLO (§7.5). The transport keeps being read while it runs,
 /// so a CLOSE, a transport loss or the handshake deadline still ends the session. When it
@@ -104,6 +109,7 @@ pub async fn run<A: Authenticator, Z: Authorizer + 'static>(
     running: JoinSet::new(),
     streams: HashMap::new(),
     tasks: HashMap::new(),
+    lane: Lane::default(),
   };
   let mut session = Session::server(transport.session(), transport.accepted().into_std());
   let context = transport.context().clone();
@@ -131,6 +137,10 @@ pub async fn run<A: Authenticator, Z: Authorizer + 'static>(
       Some(command) = commands.recv() => Input::Command(command),
       Some(joined) = calls.running.join_next_with_id(), if !calls.running.is_empty() => {
         calls.answered(joined, codec(&session))
+      }
+      Some(joined) = calls.lane.join(), if calls.lane.is_running() => {
+        calls.lane.finished(joined);
+        continue;
       }
     };
     if answered {
@@ -197,6 +207,7 @@ struct Calls<'a, Z> {
   running: JoinSet<Result<Value, Failed>>,
   streams: HashMap<task::Id, RunningCall>,
   tasks: HashMap<u64, AbortHandle>,
+  lane: Lane,
 }
 
 struct RunningCall {
@@ -289,19 +300,24 @@ fn validate_call<'m>(
   if shape != Shape::Unary {
     return Err(Refusal::new(StatusCode::Unimplemented, "streaming calls are not served yet"));
   }
-  let arguments = match data::decode(&call.data, codec, &DecodeLimits::default()) {
-    Ok(Value::Array(arguments)) => arguments,
-    Ok(_) => return Err(Refusal::new(StatusCode::InvalidArgument, "arguments are not an array")),
-    Err(_) => return Err(Refusal::new(StatusCode::InvalidArgument, "arguments do not decode")),
-  };
-  if arguments.len() != method.handler.params() {
-    let msg = format!("expected {} arguments, got {}", method.handler.params(), arguments.len());
-    return Err(Refusal::new(StatusCode::InvalidArgument, msg));
-  }
+  let arguments = arguments(&call.data, codec, &method.handler)?;
   if idempotency && idempotency_key_length(call).is_some_and(|length| length > MAX_IDEMPOTENCY_KEY) {
     return Err(Refusal::new(StatusCode::InvalidArgument, "idempotency key above 128 bytes"));
   }
   Ok((name, &method.handler, arguments))
+}
+
+fn arguments(data: &Bytes, codec: Codec, handler: &Handler) -> Result<Vec<Value>, Refusal> {
+  let arguments = match data::decode(data, codec, &DecodeLimits::default()) {
+    Ok(Value::Array(arguments)) => arguments,
+    Ok(_) => return Err(Refusal::new(StatusCode::InvalidArgument, "arguments are not an array")),
+    Err(_) => return Err(Refusal::new(StatusCode::InvalidArgument, "arguments do not decode")),
+  };
+  if arguments.len() != handler.params() {
+    let msg = format!("expected {} arguments, got {}", handler.params(), arguments.len());
+    return Err(Refusal::new(StatusCode::InvalidArgument, msg));
+  }
+  Ok(arguments)
 }
 
 fn idempotency_key_length(call: &Call) -> Option<usize> {
@@ -444,7 +460,16 @@ async fn carry_out<Z: Authorizer + 'static>(
         let _ = transport.close(code, &reason).await;
       }
       Output::Authenticate { auth } => step = Step::Authenticate(auth),
-      Output::Established { session } => membership.welcoming = Some(session),
+      Output::Established { session } => {
+        calls.lane.established(session.clone());
+        membership.welcoming = Some(session);
+      }
+      Output::Notify { notify } => {
+        let codec = codec(session);
+        calls
+          .lane
+          .receive(&notify, calls.methods, codec, &calls.authorizer, &calls.principal);
+      }
       Output::Call { stream, call } => {
         if let Some(refusal) = calls.dispatch(stream, &call, session) {
           session.handle_input(Input::Command(refusal), Instant::now().into_std());
@@ -457,6 +482,8 @@ async fn carry_out<Z: Authorizer + 'static>(
   }
   step
 }
+
+mod lane;
 
 #[cfg(test)]
 mod tests;
