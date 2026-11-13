@@ -32,6 +32,9 @@ use crate::methods::{Handler, HandlerError, Kind, MethodName, MethodRegistry};
 use crate::session_id;
 use crate::sessions::{Handle, Registration, Registry};
 use crate::websocket::{Received, Transport, TransportError};
+
+mod lane;
+
 use lane::Lane;
 
 const COMMAND_QUEUE: usize = 32;
@@ -138,7 +141,7 @@ pub async fn run<A: Authenticator, Z: Authorizer + 'static>(
       Some(joined) = calls.running.join_next_with_id(), if !calls.running.is_empty() => {
         calls.answered(joined, codec(&session))
       }
-      Some(joined) = calls.lane.join(), if calls.lane.is_running() => {
+      Some(joined) = calls.lane.join() => {
         calls.lane.finished(joined);
         continue;
       }
@@ -482,8 +485,6 @@ async fn carry_out<Z: Authorizer + 'static>(
   }
   step
 }
-
-mod lane;
 
 #[cfg(test)]
 mod tests;

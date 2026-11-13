@@ -13,26 +13,21 @@ use std::sync::Arc;
 
 use pavia_proto::data::Codec;
 use pavia_proto::frame::Notify;
+use pavia_proto::registry::StatusCode;
 use pavia_proto::session_id::SessionId;
 use tokio::task::{JoinError, JoinSet};
 
-use super::arguments;
+use super::{Failed, Refusal, arguments};
 use crate::auth::{Authorizer, Principal};
 use crate::methods::{Handler, HandlerError, Kind, MethodName, MethodRegistry};
 
-type Notifying = Pin<Box<dyn Future<Output = Notified> + Send>>;
-
-pub(super) enum Notified {
-  Done,
-  Denied,
-  Failed(HandlerError),
-}
+type Notifying = Pin<Box<dyn Future<Output = Result<(), Failed>> + Send>>;
 
 #[derive(Default)]
 pub(super) struct Lane {
   session: Option<SessionId>,
   waiting: VecDeque<(MethodName, Notifying)>,
-  running: JoinSet<Notified>,
+  running: JoinSet<Result<(), Failed>>,
   current: Option<MethodName>,
 }
 
@@ -73,46 +68,38 @@ impl Lane {
     let (authorizer, principal) = (Arc::clone(authorizer), Arc::clone(principal));
     let notifying = Box::pin(async move {
       if !authorizer.authorize(&principal, &method_name).await {
-        return Notified::Denied;
+        return Err(Failed::Refused(Refusal::denied(&principal)));
       }
-      handler.run(arguments).await.map_or_else(Notified::Failed, |_| Notified::Done)
+      handler.run(arguments).await.map(drop).map_err(Failed::Handler)
     });
     self.waiting.push_back((name.clone(), notifying));
     self.start_next();
   }
 
-  pub(super) fn is_running(&self) -> bool {
-    !self.running.is_empty()
-  }
-
-  pub(super) async fn join(&mut self) -> Option<Result<Notified, JoinError>> {
+  pub(super) async fn join(&mut self) -> Option<Result<Result<(), Failed>, JoinError>> {
     self.running.join_next().await
   }
 
-  pub(super) fn finished(&mut self, joined: Result<Notified, JoinError>) {
+  pub(super) fn finished(&mut self, joined: Result<Result<(), Failed>, JoinError>) {
     let method = self.current.take().expect("a joined notification was started");
     let (session, method) = (self.session.as_ref().map(SessionId::as_str), method.as_str());
     match joined {
-      Ok(Notified::Done) => {}
-      Ok(Notified::Denied) => tracing::warn!(session, method, "notification not authorized, dropped"),
-      Ok(Notified::Failed(HandlerError::Status(status))) => {
-        let code = format!("{:?}", status.code());
+      Ok(Ok(())) => {}
+      Ok(Err(Failed::Refused(refusal))) => {
+        tracing::warn!(session, method, reason = refusal.msg, "notification not authorized, dropped");
+      }
+      Ok(Err(Failed::Handler(HandlerError::Status(status)))) => {
+        let code = StatusCode::from(status.code());
         tracing::warn!(
           session,
           method,
-          code,
+          code = ?code,
           msg = status.msg(),
           "notification handler returned an error"
         );
       }
-      Ok(Notified::Failed(HandlerError::Unexpected(error))) => {
-        let error: &(dyn Error + 'static) = &*error;
-        tracing::error!(session, method, error, "notification failed unexpectedly");
-      }
-      Err(error) => {
-        let error: &(dyn Error + 'static) = &error;
-        tracing::error!(session, method, error, "notification failed unexpectedly");
-      }
+      Ok(Err(Failed::Handler(HandlerError::Unexpected(error)))) => unexpected(session, method, &*error),
+      Err(error) => unexpected(session, method, &error),
     }
     self.start_next();
   }
@@ -125,4 +112,8 @@ impl Lane {
       self.running.spawn(notifying);
     }
   }
+}
+
+fn unexpected(session: Option<&str>, method: &str, error: &(dyn Error + 'static)) {
+  tracing::error!(session, method, error, "notification failed unexpectedly");
 }

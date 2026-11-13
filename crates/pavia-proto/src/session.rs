@@ -203,7 +203,7 @@ pub enum Output {
     /// The call stream, from [`Output::Call`].
     stream: u64,
   },
-  /// The client sent `notify` on the control stream, lane 0 (§9.1, §9.2). The driver runs the
+  /// The client sent NOTIFY on the control stream, lane 0 (§9.1, §9.2). The driver runs the
   /// named server method and never answers: an unknown method, a `call` method, arguments that do
   /// not fit, a refusal by the authorizer or a failing handler is logged and dropped. Handlers of
   /// one lane run one at a time, in the order these outputs come.

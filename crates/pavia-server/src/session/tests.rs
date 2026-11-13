@@ -37,7 +37,7 @@ use super::{Calls, Disclosure, Failed, Lane, Refusal, RunningCall, authenticated
 use crate::auth::{AllowAll, AuthFailure, Authenticator, Authorizer, Permissive, Principal, RequestContext};
 use crate::methods::{Handler, HandlerError, MethodEntry, MethodName, MethodRegistry, StatusError};
 use crate::sessions::Registry;
-use crate::test_support::{EXPECT_WITHIN, floor_frame, has_ws_close, serve_on_loopback};
+use crate::test_support::{EXPECT_WITHIN, floor_frame, has_ws_close, send, serve_on_loopback};
 use crate::websocket::{Config, Endpoint, SUBPROTOCOL, Transport};
 
 type Socket = WebSocketStream<TcpStream>;
@@ -196,7 +196,7 @@ async fn closed_by_server(socket: &mut Socket, ending: oneshot::Receiver<Ending>
 }
 
 async fn established<S: AsyncRead + AsyncWrite + Unpin>(socket: &mut WebSocketStream<S>) -> SessionId {
-  socket.send(Message::binary(hello_frame())).await.unwrap();
+  send(socket, hello_frame()).await;
   let welcome = next_welcome(socket).await;
   assert_eq!(welcome.len(), 7);
   let Value::Text(id) = &welcome[&19] else {
@@ -253,15 +253,15 @@ async fn cuts_the_close_reason_on_a_character_boundary() {
 async fn mirrors_a_client_close() {
   let (mut socket, ending) = connect().await;
   established(&mut socket).await;
-  socket.send(Message::binary(close_frame(0))).await.unwrap();
+  send(&mut socket, close_frame(0)).await;
   assert!(mirrored_client_close(&mut socket, ending).await.is_empty());
 }
 
 #[tokio::test]
 async fn records_an_unknown_client_code_as_internal() {
   let (mut socket, ending) = connect().await;
-  socket.send(Message::binary(hello_frame())).await.unwrap();
-  socket.send(Message::binary(close_frame(99))).await.unwrap();
+  send(&mut socket, hello_frame()).await;
+  send(&mut socket, close_frame(99)).await;
   let (_, ws_code, _) = closed(&mut socket).await;
   assert_eq!(ws_code, WsCloseCode::from(4008));
   assert!(matches!(
@@ -292,7 +292,7 @@ async fn ends_on_a_websocket_close_without_close_frame() {
 #[tokio::test]
 async fn closes_with_protocol_error_on_a_malformed_message() {
   let (mut socket, ending) = connect().await;
-  socket.send(Message::binary(&b"\x00\x7f\x00\x01\x00"[..])).await.unwrap();
+  send(&mut socket, &b"\x00\x7f\x00\x01\x00"[..]).await;
   let (binary, ws_code, _) = closed(&mut socket).await;
   assert_eq!(binary.len(), 1);
   assert_eq!(&binary[0][..2], [0x00, 0x07]);
@@ -311,8 +311,8 @@ async fn closes_with_protocol_error_on_a_malformed_message() {
 async fn keeps_running_after_a_message_that_needs_no_answer() {
   let (mut socket, ending) = connect().await;
   established(&mut socket).await;
-  socket.send(Message::binary(heartbeat_frame(0x05, b"x"))).await.unwrap();
-  socket.send(Message::binary(close_frame(0))).await.unwrap();
+  send(&mut socket, heartbeat_frame(0x05, b"x")).await;
+  send(&mut socket, close_frame(0)).await;
   assert!(mirrored_client_close(&mut socket, ending).await.is_empty());
 }
 
@@ -353,7 +353,7 @@ async fn closes_with_handshake_timeout_when_nothing_arrives() {
 #[tokio::test]
 async fn sends_welcome_and_stops_the_handshake_timer() {
   let (mut socket, ending) = connect_with(short_timeout()).await;
-  socket.send(Message::binary(hello_frame())).await.unwrap();
+  send(&mut socket, hello_frame()).await;
   let welcome = next_welcome(&mut socket).await;
   let keys: Vec<u64> = welcome.keys().copied().collect();
   assert_eq!(keys, [15, 17, 18, 19, 21, 22, 23]);
@@ -365,7 +365,7 @@ async fn sends_welcome_and_stops_the_handshake_timer() {
   };
   assert!(SessionId::parse(id).is_ok(), "{id}");
   assert!(tokio::time::timeout(Duration::from_millis(400), socket.next()).await.is_err());
-  socket.send(Message::binary(close_frame(0))).await.unwrap();
+  send(&mut socket, close_frame(0)).await;
   assert!(mirrored_client_close(&mut socket, ending).await.is_empty());
 }
 
@@ -445,7 +445,7 @@ async fn closes_a_slow_hello_with_handshake_timeout() {
 #[tokio::test]
 async fn closes_with_protocol_error_when_the_first_frame_is_not_hello() {
   let (mut socket, ending) = connect().await;
-  socket.send(Message::binary(heartbeat_frame(0x04, &[]))).await.unwrap();
+  send(&mut socket, heartbeat_frame(0x04, &[])).await;
   closed_by_server(&mut socket, ending, CloseCode::ProtocolError).await;
 }
 
@@ -476,7 +476,7 @@ async fn rejects_a_hello_with_no_common_version_or_codec() {
   ];
   for hello in hellos {
     let (mut socket, ending) = connect().await;
-    socket.send(Message::binary(raw_frame(0x01, &hello))).await.unwrap();
+    send(&mut socket, raw_frame(0x01, &hello)).await;
     let (binary, ws_code, reason) = closed(&mut socket).await;
     assert_eq!(binary, [raw_frame(0x03, &reject)], "{hello:02x?}");
     assert_eq!(ws_code, WsCloseCode::from(4002));
@@ -502,7 +502,7 @@ async fn rejects_a_resume_with_resume_failed() {
   hello.extend(b"s_x");
   hello.extend([0x18, 0x2c, 0xa1, 0x00, 0x00]);
   let (mut socket, ending) = connect().await;
-  socket.send(Message::binary(raw_frame(0x01, &hello))).await.unwrap();
+  send(&mut socket, raw_frame(0x01, &hello)).await;
   let (binary, ws_code, reason) = closed(&mut socket).await;
   assert_eq!(binary, [raw_frame(0x03, &reject)]);
   assert_eq!(ws_code, WsCloseCode::from(4011));
@@ -601,7 +601,7 @@ async fn rejects_with_the_code_the_authenticator_chose() {
       SessionConfig::default(),
     )
     .await;
-    socket.send(Message::binary(bearer_hello())).await.unwrap();
+    send(&mut socket, bearer_hello()).await;
     let (binary, ws_code, reason) = closed(&mut socket).await;
     assert_eq!(binary, [raw_frame(0x03, &reject)], "{failure:?}");
     assert_eq!(ws_code, WsCloseCode::from(4000 + u16::from(code)));
@@ -614,9 +614,9 @@ async fn rejects_with_the_code_the_authenticator_chose() {
 async fn gives_the_authenticator_the_credential_and_the_upgrade_request() {
   let authenticator = Recording::answering(Some(Ok(Principal::for_user("u-42"))));
   let (mut socket, local, ending) = connect_to(Registry::new(), Arc::clone(&authenticator), SessionConfig::default()).await;
-  socket.send(Message::binary(bearer_hello())).await.unwrap();
+  send(&mut socket, bearer_hello()).await;
   assert_eq!(next_welcome(&mut socket).await.get(&36), Some(&Value::Text("u-42".into())));
-  socket.send(Message::binary(close_frame(0))).await.unwrap();
+  send(&mut socket, close_frame(0)).await;
   assert!(mirrored_client_close(&mut socket, ending).await.is_empty());
   assert_eq!(
     authenticator.seen(),
@@ -633,9 +633,9 @@ async fn gives_the_authenticator_the_credential_and_the_upgrade_request() {
 async fn keeps_reading_the_transport_while_the_authenticator_runs() {
   let authenticator = Recording::answering(None);
   let (mut socket, _, ending) = connect_to(Registry::new(), Arc::clone(&authenticator), SessionConfig::default()).await;
-  socket.send(Message::binary(bearer_hello())).await.unwrap();
+  send(&mut socket, bearer_hello()).await;
   eventually(|| !authenticator.seen().is_empty(), "the authenticator runs").await;
-  socket.send(Message::binary(close_frame(0))).await.unwrap();
+  send(&mut socket, close_frame(0)).await;
   mirrored_client_close(&mut socket, ending).await;
   assert_eq!(authenticator.seen().len(), 1);
 }
@@ -643,7 +643,7 @@ async fn keeps_reading_the_transport_while_the_authenticator_runs() {
 #[tokio::test]
 async fn closes_a_slow_authenticator_with_handshake_timeout() {
   let (mut socket, _, ending) = connect_to(Registry::new(), Recording::answering(None), short_timeout()).await;
-  socket.send(Message::binary(bearer_hello())).await.unwrap();
+  send(&mut socket, bearer_hello()).await;
   let (binary, ws_code, _) = closed(&mut socket).await;
   assert_eq!(binary, [close_frame(12)]);
   assert_eq!(ws_code, WsCloseCode::from(4012));
@@ -748,7 +748,7 @@ async fn keeps_a_client_that_answers_every_ping() {
     loop {
       match socket.next().await.unwrap().unwrap() {
         Message::Binary(ping) if ping == heartbeat_frame(0x04, &[]) => {
-          socket.send(Message::binary(heartbeat_frame(0x05, &[]))).await.unwrap();
+          send(&mut socket, heartbeat_frame(0x05, &[])).await;
         }
         other => panic!("unexpected {other:?}"),
       }
@@ -764,7 +764,7 @@ async fn reads_a_waiting_message_before_a_passed_idle_deadline() {
   config.idle_timeout = Duration::from_millis(200);
   let (mut socket, _) = welcomed(config).await;
   for _ in 0..10 {
-    socket.send(Message::binary(heartbeat_frame(0x04, &[7]))).await.unwrap();
+    send(&mut socket, heartbeat_frame(0x04, &[7])).await;
     std::thread::sleep(Duration::from_millis(300));
     loop {
       match socket.next().await.unwrap().unwrap() {
@@ -782,7 +782,7 @@ async fn mirrors_a_close_waiting_past_the_idle_deadline() {
   config.idle_timeout = Duration::from_millis(200);
   for _ in 0..10 {
     let (mut socket, ending) = welcomed(config.clone()).await;
-    socket.send(Message::binary(close_frame(0))).await.unwrap();
+    send(&mut socket, close_frame(0)).await;
     std::thread::sleep(Duration::from_millis(300));
     let binary = mirrored_client_close(&mut socket, ending).await;
     assert!(binary.iter().all(|ping| *ping == heartbeat_frame(0x04, &[])), "{binary:02x?}");
@@ -793,7 +793,7 @@ async fn mirrors_a_close_waiting_past_the_idle_deadline() {
 async fn answers_a_ping_with_its_data() {
   let (mut socket, _) = welcomed(SessionConfig::default()).await;
   let data = [1, 2, 3, 4, 5, 6, 7, 8];
-  socket.send(Message::binary(heartbeat_frame(0x04, &data))).await.unwrap();
+  send(&mut socket, heartbeat_frame(0x04, &data)).await;
   assert_eq!(
     socket.next().await.unwrap().unwrap(),
     Message::binary(heartbeat_frame(0x05, &data))
@@ -804,14 +804,14 @@ async fn answers_a_ping_with_its_data() {
 async fn closes_a_length_above_max_frame_with_frame_too_large_from_the_prefix() {
   let (mut socket, ending) = connect_with(floor_frame()).await;
   let prefix_of_65537 = vec![0x00, 0x04, 0x00, 0x80, 0x01, 0x00, 0x01];
-  socket.send(Message::binary(prefix_of_65537)).await.unwrap();
+  send(&mut socket, prefix_of_65537).await;
   closed_by_server(&mut socket, ending, CloseCode::FrameTooLarge).await;
 }
 
 #[tokio::test]
 async fn closes_a_message_above_twice_max_frame_with_protocol_error() {
   let (mut socket, ending) = connect_with(floor_frame()).await;
-  socket.send(Message::binary(vec![0; 131_073])).await.unwrap();
+  send(&mut socket, vec![0; 131_073]).await;
   closed_by_server(&mut socket, ending, CloseCode::ProtocolError).await;
 }
 
@@ -836,9 +836,9 @@ fn notify_frame(payload_length: usize) -> Vec<u8> {
 
 async fn welcomes_a_pipelined_message(message: Vec<u8>) {
   let (mut socket, ending) = connect_with(floor_frame()).await;
-  socket.send(Message::binary(message)).await.unwrap();
+  send(&mut socket, message).await;
   assert_eq!(next_welcome(&mut socket).await.len(), 7);
-  socket.send(Message::binary(close_frame(0))).await.unwrap();
+  send(&mut socket, close_frame(0)).await;
   assert!(mirrored_client_close(&mut socket, ending).await.is_empty());
 }
 
@@ -862,7 +862,7 @@ async fn accepts_a_message_of_exactly_twice_max_frame() {
 #[tokio::test]
 async fn delivers_the_close_to_a_client_still_sending_a_refused_message() {
   let (mut socket, ending) = connect_with(floor_frame()).await;
-  socket.send(Message::binary(vec![0; 4 << 20])).await.unwrap();
+  send(&mut socket, vec![0; 4 << 20]).await;
   closed_by_server(&mut socket, ending, CloseCode::ProtocolError).await;
 }
 
@@ -871,19 +871,19 @@ async fn registers_at_welcome_and_removes_when_the_session_ends() {
   let registry = Registry::new();
   let authenticator = Recording::answering(None);
   let (mut socket, _, _) = connect_to(registry.clone(), Arc::clone(&authenticator), SessionConfig::default()).await;
-  socket.send(Message::binary(bearer_hello())).await.unwrap();
+  send(&mut socket, bearer_hello()).await;
   eventually(|| !authenticator.seen().is_empty(), "the authenticator runs").await;
   assert!(registry.is_empty());
   let (mut socket, ending, id) = welcomed_in(&registry, SessionConfig::default()).await;
   eventually(|| registry.len() == 1, "the session is registered after WELCOME").await;
   assert!(registry.get(&id).is_some());
-  socket.send(Message::binary(heartbeat_frame(0x04, b"1"))).await.unwrap();
+  send(&mut socket, heartbeat_frame(0x04, b"1")).await;
   assert_eq!(
     socket.next().await.unwrap().unwrap(),
     Message::binary(heartbeat_frame(0x05, b"1"))
   );
   assert!(registry.get(&id).is_some(), "a later send must keep the session registered");
-  socket.send(Message::binary(close_frame(0))).await.unwrap();
+  send(&mut socket, close_frame(0)).await;
   mirrored_client_close(&mut socket, ending).await;
   assert!(registry.is_empty());
   assert!(registry.get(&id).is_none());
@@ -894,7 +894,7 @@ async fn never_registers_a_rejected_session() {
   let registry = Registry::new();
   let authenticator = Recording::answering(Some(Err(AuthFailure::Forbidden)));
   let (mut socket, _, ending) = connect_to(registry.clone(), authenticator, SessionConfig::default()).await;
-  socket.send(Message::binary(bearer_hello())).await.unwrap();
+  send(&mut socket, bearer_hello()).await;
   let _ = closed(&mut socket).await;
   assert!(matches!(ending.await.unwrap(), Ending::Rejected { .. }));
   assert!(registry.is_empty());
@@ -970,7 +970,7 @@ async fn leaves_the_registry_empty_after_ten_thousand_sessions() {
         let (mut socket, id) = welcomed_over_duplex(&endpoint).await;
         eventually(|| registry.get(&id).is_some(), "the session is registered after WELCOME").await;
         if (client + cycle) % 2 == 0 {
-          socket.send(Message::binary(close_frame(0))).await.unwrap();
+          send(&mut socket, close_frame(0)).await;
           while let Some(Ok(message)) = socket.next().await {
             if message.is_close() {
               break;
@@ -1092,7 +1092,7 @@ async fn never_registers_a_session_whose_welcome_cannot_be_written() {
   };
   tokio::spawn(async move { endpoint.serve_connection(server, None).await });
   let mut socket = open(client).await;
-  socket.send(Message::binary(hello_frame())).await.unwrap();
+  send(&mut socket, hello_frame()).await;
   let ending = tokio::time::timeout(EXPECT_WITHIN, ending).await.unwrap().unwrap();
   assert_eq!(ending, Ending::TransportLost);
   assert_eq!(*registered_at_failure.lock().unwrap(), Some(0));
@@ -1104,13 +1104,22 @@ fn call_frame(stream: u8, method: &str, data: &[u8]) -> Vec<u8> {
 }
 
 fn call_frame_shaped(stream: u8, method: &str, shape: u8, data: &[u8]) -> Vec<u8> {
-  let mut header = vec![0xa2, 0x02, 0x60 + u8::try_from(method.len()).unwrap()];
-  header.extend(method.as_bytes());
+  let mut header = method_header(method, 2);
   header.extend([0x05, shape]);
+  method_frame(stream, 0x10, &header, data)
+}
+
+fn method_header(method: &str, entries: u8) -> Vec<u8> {
+  let mut header = vec![0xa0 + entries, 0x02, 0x60 + u8::try_from(method.len()).unwrap()];
+  header.extend(method.as_bytes());
+  header
+}
+
+fn method_frame(stream: u8, frame_type: u8, header: &[u8], data: &[u8]) -> Vec<u8> {
   let mut payload = vec![u8::try_from(header.len()).unwrap()];
   payload.extend(header);
   payload.extend(data);
-  let mut frame = vec![stream, 0x10, 0x00, 0x40, u8::try_from(payload.len()).unwrap()];
+  let mut frame = vec![stream, frame_type, 0x00, 0x40, u8::try_from(payload.len()).unwrap()];
   frame.extend(payload);
   frame
 }
@@ -1200,10 +1209,18 @@ async fn serving(methods: Arc<MethodRegistry<Handler>>) -> Socket {
 }
 
 async fn serving_with(methods: Arc<MethodRegistry<Handler>>, config: SessionConfig) -> Socket {
-  let (address, _) = listen_serving(Registry::new(), methods, config, Arc::new(Permissive), Arc::new(AllowAll)).await;
+  serving_as(methods, config, Arc::new(AllowAll)).await.0
+}
+
+async fn serving_as<Z: Authorizer + 'static>(
+  methods: Arc<MethodRegistry<Handler>>,
+  config: SessionConfig,
+  authorizer: Arc<Z>,
+) -> (Socket, SessionId) {
+  let (address, _) = listen_serving(Registry::new(), methods, config, Arc::new(Permissive), authorizer).await;
   let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
-  established(&mut socket).await;
-  socket
+  let session = established(&mut socket).await;
+  (socket, session)
 }
 
 const GENERAL_HELLO: &[u8] = &[
@@ -1214,10 +1231,7 @@ const GENERAL_HELLO: &[u8] = &[
 async fn answers_a_call_with_the_handler_result() {
   let (methods, runs) = chat();
   let mut socket = serving(methods).await;
-  socket
-    .send(Message::binary(call_frame(2, "chat/send", GENERAL_HELLO)))
-    .await
-    .unwrap();
+  send(&mut socket, call_frame(2, "chat/send", GENERAL_HELLO)).await;
   let answer = next_answer(&mut socket).await;
   assert_eq!((answer.stream, answer.frame_type), (2, 0x13));
   let expected = [&[0x6d][..], b"general:hello"].concat();
@@ -1231,12 +1245,9 @@ async fn refuses_a_wrong_argument_count_without_running_the_handler() {
   let mut socket = serving(methods).await;
   let one = [0x81, 0x61, b'a'];
   let three = [0x83, 0x61, b'a', 0x61, b'b', 0x61, b'c'];
-  socket.send(Message::binary(call_frame(2, "chat/send", &one))).await.unwrap();
+  send(&mut socket, call_frame(2, "chat/send", &one)).await;
   assert_refused(&next_answer(&mut socket).await, 2, 3);
-  socket
-    .send(Message::binary(call_frame(4, "chat/send", &three)))
-    .await
-    .unwrap();
+  send(&mut socket, call_frame(4, "chat/send", &three)).await;
   assert_refused(&next_answer(&mut socket).await, 4, 3);
   assert_eq!(runs.load(Ordering::SeqCst), 0);
 }
@@ -1245,10 +1256,7 @@ async fn refuses_a_wrong_argument_count_without_running_the_handler() {
 async fn answers_a_method_without_parameters_or_result_with_null() {
   let (methods, _) = chat();
   let mut socket = serving(methods).await;
-  socket
-    .send(Message::binary(call_frame(2, "chat/ping", &[0x80])))
-    .await
-    .unwrap();
+  send(&mut socket, call_frame(2, "chat/ping", &[0x80])).await;
   let answer = next_answer(&mut socket).await;
   assert_eq!((answer.stream, answer.frame_type, answer.data), (2, 0x13, vec![0xf6]));
 }
@@ -1257,15 +1265,9 @@ async fn answers_a_method_without_parameters_or_result_with_null() {
 async fn refuses_arguments_that_are_not_an_array_or_do_not_decode() {
   let (methods, runs) = chat();
   let mut socket = serving(methods).await;
-  socket
-    .send(Message::binary(call_frame(2, "chat/send", &[0x61, b'x'])))
-    .await
-    .unwrap();
+  send(&mut socket, call_frame(2, "chat/send", &[0x61, b'x'])).await;
   assert_refused(&next_answer(&mut socket).await, 2, 3);
-  socket
-    .send(Message::binary(call_frame(4, "chat/send", &[0xff])))
-    .await
-    .unwrap();
+  send(&mut socket, call_frame(4, "chat/send", &[0xff])).await;
   assert_refused(&next_answer(&mut socket).await, 4, 3);
   assert_eq!(runs.load(Ordering::SeqCst), 0);
 }
@@ -1275,10 +1277,7 @@ async fn answers_sequential_calls_on_new_streams() {
   let (methods, runs) = chat();
   let mut socket = serving(methods).await;
   for stream in [2, 4] {
-    socket
-      .send(Message::binary(call_frame(stream, "chat/send", GENERAL_HELLO)))
-      .await
-      .unwrap();
+    send(&mut socket, call_frame(stream, "chat/send", GENERAL_HELLO)).await;
     let answer = next_answer(&mut socket).await;
     assert_eq!((answer.stream, answer.frame_type), (u64::from(stream), 0x13));
   }
@@ -1289,15 +1288,9 @@ async fn answers_sequential_calls_on_new_streams() {
 async fn refuses_an_unknown_method_and_a_notify_method_without_running_anything() {
   let (methods, _) = chat();
   let mut socket = serving(methods).await;
-  socket
-    .send(Message::binary(call_frame(2, "chat/nope", &[0x80])))
-    .await
-    .unwrap();
+  send(&mut socket, call_frame(2, "chat/nope", &[0x80])).await;
   assert_refused(&next_answer(&mut socket).await, 2, 12);
-  socket
-    .send(Message::binary(call_frame(4, "chat/typing", &[0x80])))
-    .await
-    .unwrap();
+  send(&mut socket, call_frame(4, "chat/typing", &[0x80])).await;
   assert_refused(&next_answer(&mut socket).await, 4, 3);
 }
 
@@ -1305,15 +1298,9 @@ async fn refuses_an_unknown_method_and_a_notify_method_without_running_anything(
 async fn answers_internal_when_the_handler_panics_and_keeps_the_session() {
   let (methods, _) = chat();
   let mut socket = serving(methods).await;
-  socket
-    .send(Message::binary(call_frame(2, "chat/crash", &[0x80])))
-    .await
-    .unwrap();
+  send(&mut socket, call_frame(2, "chat/crash", &[0x80])).await;
   assert_error(&next_answer(&mut socket).await, 2, 13);
-  socket
-    .send(Message::binary(call_frame(4, "chat/ping", &[0x80])))
-    .await
-    .unwrap();
+  send(&mut socket, call_frame(4, "chat/ping", &[0x80])).await;
   assert_eq!(next_answer(&mut socket).await.frame_type, 0x13);
 }
 
@@ -1348,14 +1335,8 @@ async fn answers_a_fast_call_while_a_slow_one_runs() {
     )
     .unwrap();
   let mut socket = serving(Arc::new(methods)).await;
-  socket
-    .send(Message::binary(call_frame(2, "chat/slow", &[0x80])))
-    .await
-    .unwrap();
-  socket
-    .send(Message::binary(call_frame(4, "chat/fast", &[0x80])))
-    .await
-    .unwrap();
+  send(&mut socket, call_frame(2, "chat/slow", &[0x80])).await;
+  send(&mut socket, call_frame(4, "chat/fast", &[0x80])).await;
   assert_eq!(next_answer(&mut socket).await.stream, 4);
   gate.add_permits(1);
   assert_eq!(next_answer(&mut socket).await.stream, 2);
@@ -1368,10 +1349,7 @@ async fn answers_internal_when_the_result_does_not_encode() {
     .register_server_method("chat/odd", MethodEntry::call(Handler::new(0, |_| async { Arg::Simple(25) })))
     .unwrap();
   let mut socket = serving(Arc::new(methods)).await;
-  socket
-    .send(Message::binary(call_frame(2, "chat/odd", &[0x80])))
-    .await
-    .unwrap();
+  send(&mut socket, call_frame(2, "chat/odd", &[0x80])).await;
   assert_error(&next_answer(&mut socket).await, 2, 13);
 }
 
@@ -1390,15 +1368,9 @@ async fn answers_internal_when_a_handler_panics_before_its_future_runs() {
     .register_server_method("chat/ping", MethodEntry::call(Handler::new(0, |_| async { Arg::Null })))
     .unwrap();
   let mut socket = serving(Arc::new(methods)).await;
-  socket
-    .send(Message::binary(call_frame(2, "chat/early", &[0x80])))
-    .await
-    .unwrap();
+  send(&mut socket, call_frame(2, "chat/early", &[0x80])).await;
   assert_error(&next_answer(&mut socket).await, 2, 13);
-  socket
-    .send(Message::binary(call_frame(4, "chat/ping", &[0x80])))
-    .await
-    .unwrap();
+  send(&mut socket, call_frame(4, "chat/ping", &[0x80])).await;
   assert_eq!(next_answer(&mut socket).await.frame_type, 0x13);
 }
 
@@ -1409,20 +1381,14 @@ async fn answers_calls_in_json_when_the_session_negotiated_it() {
   config.codecs = vec![Codec::Json];
   let (address, _) = listen_serving(Registry::new(), methods, config, Arc::new(Permissive), Arc::new(AllowAll)).await;
   let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
-  socket.send(Message::binary(hello_frame_with(b"json"))).await.unwrap();
+  send(&mut socket, hello_frame_with(b"json")).await;
   next_welcome(&mut socket).await;
-  socket
-    .send(Message::binary(call_frame(2, "chat/send", br#"["general","hello"]"#)))
-    .await
-    .unwrap();
+  send(&mut socket, call_frame(2, "chat/send", br#"["general","hello"]"#)).await;
   let answer = next_answer(&mut socket).await;
   assert_eq!((answer.frame_type, answer.data), (0x13, br#""general:hello""#.to_vec()));
-  socket.send(Message::binary(call_frame(4, "chat/ping", b"[]"))).await.unwrap();
+  send(&mut socket, call_frame(4, "chat/ping", b"[]")).await;
   assert_eq!(next_answer(&mut socket).await.data, b"null".to_vec());
-  socket
-    .send(Message::binary(call_frame(6, "chat/send", br#""general""#)))
-    .await
-    .unwrap();
+  send(&mut socket, call_frame(6, "chat/send", br#""general""#)).await;
   assert_refused(&next_answer(&mut socket).await, 6, 3);
 }
 
@@ -1459,10 +1425,7 @@ fn forever() -> (MethodRegistry<Handler>, Arc<AtomicBool>, Arc<AtomicBool>) {
 async fn drops_running_handlers_when_the_session_ends() {
   let (methods, started, dropped) = forever();
   let mut socket = serving(Arc::new(methods)).await;
-  socket
-    .send(Message::binary(call_frame(2, "chat/forever", &[0x80])))
-    .await
-    .unwrap();
+  send(&mut socket, call_frame(2, "chat/forever", &[0x80])).await;
   eventually(|| started.load(Ordering::SeqCst), "the handler starts").await;
   assert!(!dropped.load(Ordering::SeqCst));
   drop(socket);
@@ -1479,10 +1442,7 @@ async fn refuses_a_call_whose_shape_differs_from_the_method() {
     )
     .unwrap();
   let mut socket = serving(Arc::new(methods)).await;
-  socket
-    .send(Message::binary(call_frame(2, "chat/history", &[0x80])))
-    .await
-    .unwrap();
+  send(&mut socket, call_frame(2, "chat/history", &[0x80])).await;
   assert_refused(&next_answer(&mut socket).await, 2, 3);
 }
 
@@ -1564,14 +1524,8 @@ async fn refuses_a_call_beyond_max_calls_before_looking_at_it() {
   let mut config = SessionConfig::default();
   config.max_calls = 1;
   let mut socket = serving_with(Arc::new(methods), config).await;
-  socket
-    .send(Message::binary(call_frame(2, "chat/slow", &[0x80])))
-    .await
-    .unwrap();
-  socket
-    .send(Message::binary(call_frame(4, "nope/nope", &[0xff])))
-    .await
-    .unwrap();
+  send(&mut socket, call_frame(2, "chat/slow", &[0x80])).await;
+  send(&mut socket, call_frame(4, "nope/nope", &[0xff])).await;
   assert_refused(&next_answer(&mut socket).await, 4, 8);
   gate.add_permits(1);
   assert_eq!(next_answer(&mut socket).await.stream, 2);
@@ -1581,15 +1535,9 @@ async fn refuses_a_call_beyond_max_calls_before_looking_at_it() {
 async fn refuses_an_unknown_shape_after_the_method_lookup() {
   let (methods, runs) = chat();
   let mut socket = serving(methods).await;
-  socket
-    .send(Message::binary(call_frame_shaped(2, "nope/nope", 7, &[0x80])))
-    .await
-    .unwrap();
+  send(&mut socket, call_frame_shaped(2, "nope/nope", 7, &[0x80])).await;
   assert_refused(&next_answer(&mut socket).await, 2, 12);
-  socket
-    .send(Message::binary(call_frame_shaped(4, "chat/send", 7, GENERAL_HELLO)))
-    .await
-    .unwrap();
+  send(&mut socket, call_frame_shaped(4, "chat/send", 7, GENERAL_HELLO)).await;
   assert_refused(&next_answer(&mut socket).await, 4, 3);
   assert_eq!(runs.load(Ordering::SeqCst), 0);
 }
@@ -1619,12 +1567,9 @@ async fn answers_a_denied_call_by_whether_the_session_is_anonymous() {
     )
     .await;
     let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
-    socket.send(Message::binary(hello)).await.unwrap();
+    send(&mut socket, hello).await;
     next_welcome(&mut socket).await;
-    socket
-      .send(Message::binary(call_frame(2, "chat/send", GENERAL_HELLO)))
-      .await
-      .unwrap();
+    send(&mut socket, call_frame(2, "chat/send", GENERAL_HELLO)).await;
     assert_refused(&next_answer(&mut socket).await, 2, code);
     assert_eq!(runs.load(Ordering::SeqCst), 0, "{code}");
   }
@@ -1653,17 +1598,13 @@ fn call_with_header(stream: u8, header: &[u8], data: &[u8]) -> Vec<u8> {
 async fn runs_a_call_with_a_long_idempotency_key_when_idempotency_is_not_granted() {
   let (methods, runs) = chat();
   let mut socket = serving(methods).await;
-  let mut header = vec![0xa3, 0x02, 0x69];
-  header.extend(b"chat/send");
+  let mut header = method_header("chat/send", 3);
   header.extend([0x03, 0xa1, 0x75]);
   header.extend(b"pavia-idempotency-key");
   header.extend([0x78, 129]);
   header.extend([b'k'; 129]);
   header.extend([0x05, 0x00]);
-  socket
-    .send(Message::binary(call_with_header(2, &header, GENERAL_HELLO)))
-    .await
-    .unwrap();
+  send(&mut socket, call_with_header(2, &header, GENERAL_HELLO)).await;
   let answer = next_answer(&mut socket).await;
   assert_eq!((answer.stream, answer.frame_type), (2, 0x13));
   assert_eq!(runs.load(Ordering::SeqCst), 1);
@@ -1699,17 +1640,11 @@ async fn hands_the_authorizer_the_session_principal_and_the_method() {
   )
   .await;
   let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
-  socket.send(Message::binary(bearer_hello())).await.unwrap();
+  send(&mut socket, bearer_hello()).await;
   next_welcome(&mut socket).await;
-  socket
-    .send(Message::binary(call_frame(2, "chat/send", GENERAL_HELLO)))
-    .await
-    .unwrap();
+  send(&mut socket, call_frame(2, "chat/send", GENERAL_HELLO)).await;
   assert_eq!(next_answer(&mut socket).await.frame_type, 0x13);
-  socket
-    .send(Message::binary(call_frame(4, "chat/ping", &[0x80])))
-    .await
-    .unwrap();
+  send(&mut socket, call_frame(4, "chat/ping", &[0x80])).await;
   assert_refused(&next_answer(&mut socket).await, 4, 7);
   assert_eq!(runs.load(Ordering::SeqCst), 1);
   assert_eq!(
@@ -1761,15 +1696,9 @@ async fn shares_one_authorizer_between_the_calls_of_a_session() {
   .await;
   let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
   established(&mut socket).await;
-  socket
-    .send(Message::binary(call_frame(2, "chat/send", GENERAL_HELLO)))
-    .await
-    .unwrap();
+  send(&mut socket, call_frame(2, "chat/send", GENERAL_HELLO)).await;
   assert_eq!(next_answer(&mut socket).await.frame_type, 0x13);
-  socket
-    .send(Message::binary(call_frame(4, "chat/send", GENERAL_HELLO)))
-    .await
-    .unwrap();
+  send(&mut socket, call_frame(4, "chat/send", GENERAL_HELLO)).await;
   assert_refused(&next_answer(&mut socket).await, 4, 16);
   assert_eq!((runs.load(Ordering::SeqCst), authorizer.0.load(Ordering::SeqCst)), (1, 2));
 }
@@ -1873,7 +1802,7 @@ fn capture_log() -> (Captured, DefaultGuard) {
 async fn logged_answer(method: &str) -> (Answer, String) {
   let (log, _logging) = capture_log();
   let mut socket = serving(failing()).await;
-  socket.send(Message::binary(call_frame(2, method, &[0x80]))).await.unwrap();
+  send(&mut socket, call_frame(2, method, &[0x80])).await;
   let answer = next_answer(&mut socket).await;
   let logged = log.text();
   (answer, logged)
@@ -1891,10 +1820,7 @@ fn assert_hidden(answer: &Answer) {
 #[tokio::test]
 async fn sends_a_deliberate_error_as_given_with_its_detail_and_meta() {
   let mut socket = serving(failing()).await;
-  socket
-    .send(Message::binary(call_frame(2, "users/get", &[0x80])))
-    .await
-    .unwrap();
+  send(&mut socket, call_frame(2, "users/get", &[0x80])).await;
   let answer = next_answer(&mut socket).await;
   assert_error(&answer, 2, 5);
   assert_eq!(answer.header[&7], Value::Text("no such user".into()));
@@ -1932,10 +1858,7 @@ async fn shows_an_unexpected_error_in_development_mode() {
   let mut config = SessionConfig::default();
   config.disclose_internal_errors = true;
   let mut socket = serving_with(failing(), config).await;
-  socket
-    .send(Message::binary(call_frame(2, "users/save", &[0x80])))
-    .await
-    .unwrap();
+  send(&mut socket, call_frame(2, "users/save", &[0x80])).await;
   let answer = next_answer(&mut socket).await;
   assert_eq!(answer.header[&6], Value::from(13));
   assert_eq!(answer.header[&7], Value::Text("db password=hunter2".into()));
@@ -1946,10 +1869,7 @@ async fn cuts_a_long_disclosed_error_on_a_character_boundary() {
   let mut config = SessionConfig::default();
   config.disclose_internal_errors = true;
   let mut socket = serving_with(failing(), config).await;
-  socket
-    .send(Message::binary(call_frame(2, "users/dump", &[0x80])))
-    .await
-    .unwrap();
+  send(&mut socket, call_frame(2, "users/dump", &[0x80])).await;
   let answer = next_answer(&mut socket).await;
   assert_eq!(answer.header[&6], Value::from(13));
   assert_eq!(answer.header[&7], Value::Text(format!("x{}", "é".repeat(511))));
@@ -1961,10 +1881,7 @@ async fn sends_the_configured_generic_message_for_a_panic() {
   let mut config = SessionConfig::default();
   config.internal_error_message = "something went wrong".into();
   let mut socket = serving_with(methods, config).await;
-  socket
-    .send(Message::binary(call_frame(2, "chat/crash", &[0x80])))
-    .await
-    .unwrap();
+  send(&mut socket, call_frame(2, "chat/crash", &[0x80])).await;
   let answer = next_answer(&mut socket).await;
   assert_eq!(answer.header[&7], Value::Text("something went wrong".into()));
 }
@@ -1987,10 +1904,7 @@ async fn runs_two_slow_calls_at_the_same_time() {
     .unwrap();
   let mut socket = serving(Arc::new(methods)).await;
   for stream in [2, 4] {
-    socket
-      .send(Message::binary(call_frame(stream, "chat/meet", &[0x80])))
-      .await
-      .unwrap();
+    send(&mut socket, call_frame(stream, "chat/meet", &[0x80])).await;
   }
   let mut answered = [next_answer(&mut socket).await, next_answer(&mut socket).await].map(|answer| {
     assert_eq!(answer.frame_type, 0x13);
@@ -2007,20 +1921,14 @@ async fn refuses_a_third_call_beyond_max_calls_two_and_admits_a_fourth_once_a_sl
   config.max_calls = 2;
   let mut socket = serving_with(Arc::new(methods), config).await;
   for stream in [2, 4, 6] {
-    socket
-      .send(Message::binary(call_frame(stream, "chat/slow", &[0x80])))
-      .await
-      .unwrap();
+    send(&mut socket, call_frame(stream, "chat/slow", &[0x80])).await;
   }
   assert_refused(&next_answer(&mut socket).await, 6, 8);
   eventually(|| runs.load(Ordering::SeqCst) == 2, "both admitted calls to run").await;
   gate.add_permits(1);
   let first = next_answer(&mut socket).await;
   assert_eq!(first.frame_type, 0x13);
-  socket
-    .send(Message::binary(call_frame(8, "chat/slow", &[0x80])))
-    .await
-    .unwrap();
+  send(&mut socket, call_frame(8, "chat/slow", &[0x80])).await;
   eventually(|| runs.load(Ordering::SeqCst) == 3, "the call after the freed slot to run").await;
   gate.add_permits(2);
   let mut answered = vec![first.stream];
@@ -2049,12 +1957,9 @@ async fn answers_cancelled_once_the_handler_of_a_cancelled_call_is_dropped() {
     let (log, _logging) = capture_log();
     let (methods, started, dropped) = forever();
     let mut socket = serving(Arc::new(methods)).await;
-    socket
-      .send(Message::binary(call_frame(2, "chat/forever", &[0x80])))
-      .await
-      .unwrap();
+    send(&mut socket, call_frame(2, "chat/forever", &[0x80])).await;
     eventually(|| started.load(Ordering::SeqCst), "the handler starts").await;
-    socket.send(Message::binary(cancel_frame(2, msg))).await.unwrap();
+    send(&mut socket, cancel_frame(2, msg)).await;
     let answer = next_answer(&mut socket).await;
     assert!(dropped.load(Ordering::SeqCst), "answered before the handler was dropped");
     assert_error(&answer, 2, 1);
@@ -2070,17 +1975,11 @@ async fn admits_a_call_after_a_cancelled_one_with_max_calls_one() {
   let mut config = SessionConfig::default();
   config.max_calls = 1;
   let mut socket = serving_with(Arc::new(methods), config).await;
-  socket
-    .send(Message::binary(call_frame(2, "chat/slow", &[0x80])))
-    .await
-    .unwrap();
+  send(&mut socket, call_frame(2, "chat/slow", &[0x80])).await;
   eventually(|| runs.load(Ordering::SeqCst) == 1, "the first call to run").await;
-  socket.send(Message::binary(cancel_frame(2, None))).await.unwrap();
+  send(&mut socket, cancel_frame(2, None)).await;
   assert_error(&next_answer(&mut socket).await, 2, 1);
-  socket
-    .send(Message::binary(call_frame(4, "chat/slow", &[0x80])))
-    .await
-    .unwrap();
+  send(&mut socket, call_frame(4, "chat/slow", &[0x80])).await;
   eventually(|| runs.load(Ordering::SeqCst) == 2, "the call after the cancelled one to run").await;
   gate.add_permits(1);
   let answer = next_answer(&mut socket).await;
@@ -2093,14 +1992,11 @@ async fn answers_a_refused_call_cancelled_in_the_same_message_once() {
   let mut socket = serving(Arc::new(methods)).await;
   let mut message = call_frame(2, "chat/missing", &[0x80]);
   message.extend(cancel_frame(2, None));
-  socket.send(Message::binary(message)).await.unwrap();
+  send(&mut socket, message).await;
   assert_refused(&next_answer(&mut socket).await, 2, 12);
-  socket
-    .send(Message::binary(call_frame(4, "chat/forever", &[0x80])))
-    .await
-    .unwrap();
+  send(&mut socket, call_frame(4, "chat/forever", &[0x80])).await;
   eventually(|| started.load(Ordering::SeqCst), "the next call to run").await;
-  socket.send(Message::binary(cancel_frame(4, None))).await.unwrap();
+  send(&mut socket, cancel_frame(4, None)).await;
   assert_error(&next_answer(&mut socket).await, 4, 1);
 }
 
@@ -2159,14 +2055,7 @@ async fn answers_cancelled_for_a_handler_that_finished_before_the_cancel() {
 }
 
 fn notification_frame(method: &str, data: &[u8]) -> Vec<u8> {
-  let mut header = vec![0xa1, 0x02, 0x60 + u8::try_from(method.len()).unwrap()];
-  header.extend(method.as_bytes());
-  let mut payload = vec![u8::try_from(header.len()).unwrap()];
-  payload.extend(header);
-  payload.extend(data);
-  let mut frame = vec![0x00, 0x20, 0x00, 0x40, u8::try_from(payload.len()).unwrap()];
-  frame.extend(payload);
-  frame
+  method_frame(0, 0x20, &method_header(method, 1), data)
 }
 
 const GENERAL: &[u8] = &[0x81, 0x67, b'g', b'e', b'n', b'e', b'r', b'a', b'l'];
@@ -2219,6 +2108,15 @@ fn notified() -> (Arc<MethodRegistry<Handler>>, Record, Arc<Semaphore>) {
     .unwrap();
   methods
     .register_server_method(
+      "test/declined",
+      MethodEntry::notify(Handler::fallible(0, |_| async {
+        let not_found = ErrorStatus::try_from(StatusCode::NotFound).unwrap();
+        Err(StatusError::new(not_found, "no such room").into())
+      })),
+    )
+    .unwrap();
+  methods
+    .register_server_method(
       "test/panics",
       MethodEntry::notify(Handler::new(0, |_| async { panic!("handler bug") })),
     )
@@ -2227,10 +2125,7 @@ fn notified() -> (Arc<MethodRegistry<Handler>>, Record, Arc<Semaphore>) {
 }
 
 async fn pinged(socket: &mut Socket, stream: u8) {
-  socket
-    .send(Message::binary(call_frame(stream, "chat/ping", &[0x80])))
-    .await
-    .unwrap();
+  send(socket, call_frame(stream, "chat/ping", &[0x80])).await;
   let answer = next_answer(socket).await;
   assert_eq!((answer.stream, answer.frame_type), (u64::from(stream), 0x13));
 }
@@ -2239,14 +2134,23 @@ fn lines_naming(log: &Captured, method: &str) -> usize {
   log.text().lines().filter(|line| line.contains(method)).count()
 }
 
+fn assert_every_line_names(log: &Captured, session: &SessionId) {
+  let text = log.text();
+  assert!(
+    !text.is_empty() && text.lines().all(|line| line.contains(session.as_str())),
+    "{text}"
+  );
+}
+
+async fn serving_notified(methods: Arc<MethodRegistry<Handler>>) -> (Socket, SessionId) {
+  serving_as(methods, SessionConfig::default(), Arc::new(AllowAll)).await
+}
+
 #[tokio::test]
 async fn runs_a_notification_once_and_sends_nothing_back() {
   let (methods, record, _) = notified();
   let mut socket = serving(methods).await;
-  socket
-    .send(Message::binary(notification_frame("chat/typing", GENERAL)))
-    .await
-    .unwrap();
+  send(&mut socket, notification_frame("chat/typing", GENERAL)).await;
   pinged(&mut socket, 2).await;
   eventually(|| record.lock().unwrap().len() == 1, "the notification handler to run").await;
   pinged(&mut socket, 4).await;
@@ -2257,57 +2161,53 @@ async fn runs_a_notification_once_and_sends_nothing_back() {
 async fn drops_and_logs_once_a_notification_to_an_unknown_or_a_call_method() {
   let (log, _logging) = capture_log();
   let (methods, record, _) = notified();
-  let mut socket = serving(methods).await;
+  let (mut socket, session) = serving_notified(methods).await;
   for method in ["nope/nope", "chat/send"] {
-    socket
-      .send(Message::binary(notification_frame(method, GENERAL)))
-      .await
-      .unwrap();
+    send(&mut socket, notification_frame(method, GENERAL)).await;
   }
   pinged(&mut socket, 2).await;
   for method in ["nope/nope", "chat/send"] {
     assert_eq!(lines_naming(&log, method), 1, "{}", log.text());
   }
   assert!(log.text().contains("unknown method"));
-  assert_eq!(*record.lock().unwrap(), [] as [&str; 0]);
+  assert_every_line_names(&log, &session);
+  assert!(record.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
 async fn drops_and_logs_once_a_notification_with_arguments_that_do_not_fit() {
   let (log, _logging) = capture_log();
   let (methods, record, _) = notified();
-  let mut socket = serving(methods).await;
+  let (mut socket, session) = serving_notified(methods).await;
   for data in [&[0x83, 0x01, 0x02, 0x03][..], &[0x01], &[0xff]] {
-    socket
-      .send(Message::binary(notification_frame("chat/typing", data)))
-      .await
-      .unwrap();
+    send(&mut socket, notification_frame("chat/typing", data)).await;
   }
   pinged(&mut socket, 2).await;
   assert_eq!(lines_naming(&log, "chat/typing"), 3, "{}", log.text());
   assert!(log.text().contains("expected 1 arguments, got 3"));
-  assert_eq!(*record.lock().unwrap(), [] as [&str; 0]);
+  assert_every_line_names(&log, &session);
+  assert!(record.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
 async fn logs_a_failing_or_panicking_notification_handler_and_keeps_the_session() {
   let (log, _logging) = capture_log();
   let (methods, _, _) = notified();
-  let mut socket = serving(methods).await;
-  for method in ["test/broken", "test/panics"] {
-    socket
-      .send(Message::binary(notification_frame(method, &[0x80])))
-      .await
-      .unwrap();
+  let (mut socket, session) = serving_notified(methods).await;
+  let failing = ["test/broken", "test/declined", "test/panics"];
+  for method in failing {
+    send(&mut socket, notification_frame(method, &[0x80])).await;
   }
   eventually(
-    || lines_naming(&log, "test/broken") == 1 && lines_naming(&log, "test/panics") == 1,
-    "both failures to be logged",
+    || failing.iter().all(|method| lines_naming(&log, method) == 1),
+    "every failure to be logged",
   )
   .await;
   assert!(log.text().contains("disk full"), "{}", log.text());
+  assert!(log.text().contains("code=NotFound msg=\"no such room\""), "{}", log.text());
+  assert_every_line_names(&log, &session);
   pinged(&mut socket, 2).await;
-  assert_eq!(lines_naming(&log, "test/broken") + lines_naming(&log, "test/panics"), 2);
+  assert_eq!(failing.iter().map(|method| lines_naming(&log, method)).sum::<usize>(), 3);
 }
 
 #[tokio::test]
@@ -2316,7 +2216,7 @@ async fn runs_notification_handlers_one_at_a_time_in_delivery_order() {
   let mut socket = serving(methods).await;
   let mut both = notification_frame("test/slow", &[0x80]);
   both.extend(notification_frame("test/fast", &[0x80]));
-  socket.send(Message::binary(both)).await.unwrap();
+  send(&mut socket, both).await;
   eventually(|| !record.lock().unwrap().is_empty(), "the slow handler to start").await;
   pinged(&mut socket, 2).await;
   assert_eq!(*record.lock().unwrap(), ["slow"]);
@@ -2329,27 +2229,12 @@ async fn runs_notification_handlers_one_at_a_time_in_delivery_order() {
 async fn drops_and_logs_once_a_notification_the_authorizer_denies() {
   let (log, _logging) = capture_log();
   let (methods, record, _) = notified();
-  let (address, _) = listen_serving(
-    Registry::new(),
-    methods,
-    SessionConfig::default(),
-    Arc::new(Permissive),
-    Arc::new(DenyAll),
-  )
-  .await;
-  let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
-  let session = established(&mut socket).await;
-  socket
-    .send(Message::binary(notification_frame("chat/typing", GENERAL)))
-    .await
-    .unwrap();
+  let (mut socket, session) = serving_as(methods, SessionConfig::default(), Arc::new(DenyAll)).await;
+  send(&mut socket, notification_frame("chat/typing", GENERAL)).await;
   eventually(|| lines_naming(&log, "chat/typing") == 1, "the refusal to be logged").await;
   assert!(log.text().contains("not authorized"));
   assert!(log.text().contains(session.as_str()), "{}", log.text());
-  socket
-    .send(Message::binary(call_frame(2, "chat/ping", &[0x80])))
-    .await
-    .unwrap();
+  send(&mut socket, call_frame(2, "chat/ping", &[0x80])).await;
   assert_refused(&next_answer(&mut socket).await, 2, 16);
-  assert_eq!(*record.lock().unwrap(), [] as [&str; 0]);
+  assert!(record.lock().unwrap().is_empty());
 }
