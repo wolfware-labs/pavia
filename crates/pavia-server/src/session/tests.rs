@@ -145,9 +145,7 @@ fn hello_frame() -> Vec<u8> {
 fn hello_frame_with(codec: &[u8; 4]) -> Vec<u8> {
   let mut header = vec![0xa2, 0x0e, 0x81, 0x01, 0x10, 0x81, 0x64];
   header.extend(codec);
-  let mut frame = vec![0x00, 0x01, 0x00, header.len() as u8 + 1, header.len() as u8];
-  frame.extend(header);
-  frame
+  raw_frame(0x01, &header)
 }
 
 fn close_frame(code: u8) -> Vec<u8> {
@@ -156,9 +154,7 @@ fn close_frame(code: u8) -> Vec<u8> {
     header.push(0x18);
   }
   header.push(code);
-  let mut frame = vec![0x00, 0x07, 0x00, header.len() as u8 + 1, header.len() as u8];
-  frame.extend(header);
-  frame
+  raw_frame(0x07, &header)
 }
 
 async fn closed(socket: &mut Socket) -> (Vec<Vec<u8>>, WsCloseCode, Utf8Bytes) {
@@ -453,7 +449,11 @@ async fn closes_with_protocol_error_when_the_first_frame_is_not_hello() {
 }
 
 fn raw_frame(frame_type: u8, header: &[u8]) -> Vec<u8> {
-  let mut frame = vec![0x00, frame_type, 0x00, header.len() as u8 + 1, header.len() as u8];
+  raw_frame_on(0, frame_type, header)
+}
+
+fn raw_frame_on(stream: u8, frame_type: u8, header: &[u8]) -> Vec<u8> {
+  let mut frame = vec![stream, frame_type, 0x00, header.len() as u8 + 1, header.len() as u8];
   frame.extend(header);
   frame
 }
@@ -1155,6 +1155,12 @@ fn assert_refused(answer: &Answer, stream: u64, code: u8) {
   assert_eq!(answer.header.get(&45), Some(&Value::Bool(true)));
 }
 
+fn assert_error(answer: &Answer, stream: u64, code: u8) {
+  assert_eq!((answer.stream, answer.frame_type), (stream, 0x14));
+  assert_eq!(answer.header[&6], Value::from(code));
+  assert_eq!(answer.header.get(&45), None);
+}
+
 fn chat() -> (Arc<MethodRegistry<Handler>>, Arc<AtomicUsize>) {
   let runs = Arc::new(AtomicUsize::new(0));
   let counted = Arc::clone(&runs);
@@ -1302,10 +1308,7 @@ async fn answers_internal_when_the_handler_panics_and_keeps_the_session() {
     .send(Message::binary(call_frame(2, "chat/crash", &[0x80])))
     .await
     .unwrap();
-  let answer = next_answer(&mut socket).await;
-  assert_eq!((answer.stream, answer.frame_type), (2, 0x14));
-  assert_eq!(answer.header[&6], Value::from(13));
-  assert_eq!(answer.header.get(&45), None);
+  assert_error(&next_answer(&mut socket).await, 2, 13);
   socket
     .send(Message::binary(call_frame(4, "chat/ping", &[0x80])))
     .await
@@ -1368,9 +1371,7 @@ async fn answers_internal_when_the_result_does_not_encode() {
     .send(Message::binary(call_frame(2, "chat/odd", &[0x80])))
     .await
     .unwrap();
-  let answer = next_answer(&mut socket).await;
-  assert_eq!((answer.stream, answer.frame_type), (2, 0x14));
-  assert_eq!(answer.header[&6], Value::from(13));
+  assert_error(&next_answer(&mut socket).await, 2, 13);
 }
 
 #[tokio::test]
@@ -1392,9 +1393,7 @@ async fn answers_internal_when_a_handler_panics_before_its_future_runs() {
     .send(Message::binary(call_frame(2, "chat/early", &[0x80])))
     .await
     .unwrap();
-  let answer = next_answer(&mut socket).await;
-  assert_eq!((answer.stream, answer.frame_type), (2, 0x14));
-  assert_eq!(answer.header[&6], Value::from(13));
+  assert_error(&next_answer(&mut socket).await, 2, 13);
   socket
     .send(Message::binary(call_frame(4, "chat/ping", &[0x80])))
     .await
@@ -1434,8 +1433,7 @@ impl Drop for Dropped {
   }
 }
 
-#[tokio::test]
-async fn drops_running_handlers_when_the_session_ends() {
+fn forever() -> (MethodRegistry<Handler>, Arc<AtomicBool>, Arc<AtomicBool>) {
   let dropped = Arc::new(AtomicBool::new(false));
   let started = Arc::new(AtomicBool::new(false));
   let (flag, running) = (Arc::clone(&dropped), Arc::clone(&started));
@@ -1453,6 +1451,12 @@ async fn drops_running_handlers_when_the_session_ends() {
       })),
     )
     .unwrap();
+  (methods, started, dropped)
+}
+
+#[tokio::test]
+async fn drops_running_handlers_when_the_session_ends() {
+  let (methods, started, dropped) = forever();
   let mut socket = serving(Arc::new(methods)).await;
   socket
     .send(Message::binary(call_frame(2, "chat/forever", &[0x80])))
@@ -1885,10 +1889,8 @@ async fn sends_a_deliberate_error_as_given_with_its_detail_and_meta() {
     .await
     .unwrap();
   let answer = next_answer(&mut socket).await;
-  assert_eq!((answer.stream, answer.frame_type), (2, 0x14));
-  assert_eq!(answer.header[&6], Value::from(5));
+  assert_error(&answer, 2, 5);
   assert_eq!(answer.header[&7], Value::Text("no such user".into()));
-  assert_eq!(answer.header.get(&45), None);
   let meta = answer.header[&3].as_map().unwrap();
   assert_eq!(meta, &vec![(Value::Text("x-reason".into()), Value::Text("quota".into()))]);
   assert_eq!(answer.data, [0xa1, 0x62, b'i', b'd', 0x62, b'u', b'1']);
@@ -2031,56 +2033,27 @@ fn cancel_frame(stream: u8, msg: Option<&str>) -> Vec<u8> {
     header.extend(msg.as_bytes());
     header
   });
-  let mut frame = raw_frame(0x15, &header);
-  frame[0] = stream;
-  frame
-}
-
-struct CountsDrop(Arc<AtomicUsize>);
-
-impl Drop for CountsDrop {
-  fn drop(&mut self) {
-    self.0.fetch_add(1, Ordering::SeqCst);
-  }
-}
-
-fn endless() -> (MethodRegistry<Handler>, Arc<AtomicUsize>, Arc<AtomicUsize>) {
-  let (runs, drops) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
-  let (counted, dropped) = (Arc::clone(&runs), Arc::clone(&drops));
-  let mut methods = MethodRegistry::new();
-  methods
-    .register_server_method(
-      "chat/endless",
-      MethodEntry::call(Handler::new(0, move |_| {
-        let (runs, guard) = (Arc::clone(&counted), CountsDrop(Arc::clone(&dropped)));
-        async move {
-          let _guard = guard;
-          runs.fetch_add(1, Ordering::SeqCst);
-          std::future::pending::<()>().await;
-          Arg::Null
-        }
-      })),
-    )
-    .unwrap();
-  (methods, runs, drops)
+  raw_frame_on(stream, 0x15, &header)
 }
 
 #[tokio::test]
-async fn answers_cancelled_and_drops_the_handler_of_a_cancelled_call() {
+async fn answers_cancelled_once_the_handler_of_a_cancelled_call_is_dropped() {
   for msg in [None, Some("user left")] {
-    let (methods, runs, drops) = endless();
+    let (log, _logging) = capture_log();
+    let (methods, started, dropped) = forever();
     let mut socket = serving(Arc::new(methods)).await;
     socket
-      .send(Message::binary(call_frame(2, "chat/endless", &[0x80])))
+      .send(Message::binary(call_frame(2, "chat/forever", &[0x80])))
       .await
       .unwrap();
-    eventually(|| runs.load(Ordering::SeqCst) == 1, "the handler to run").await;
+    eventually(|| started.load(Ordering::SeqCst), "the handler starts").await;
     socket.send(Message::binary(cancel_frame(2, msg))).await.unwrap();
     let answer = next_answer(&mut socket).await;
-    assert_eq!((answer.stream, answer.frame_type), (2, 0x14), "{msg:?}");
-    assert_eq!(answer.header[&6], Value::from(1));
-    assert_eq!(answer.header.get(&45), None);
-    eventually(|| drops.load(Ordering::SeqCst) == 1, "the handler's future to be dropped").await;
+    assert!(dropped.load(Ordering::SeqCst), "answered before the handler was dropped");
+    assert_error(&answer, 2, 1);
+    assert_eq!(answer.header[&7], Value::Text("cancelled".into()));
+    let logged = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+    assert!(!logged.contains("ERROR"), "{logged}");
   }
 }
 
@@ -2096,8 +2069,7 @@ async fn admits_a_call_after_a_cancelled_one_with_max_calls_one() {
     .unwrap();
   eventually(|| runs.load(Ordering::SeqCst) == 1, "the first call to run").await;
   socket.send(Message::binary(cancel_frame(2, None))).await.unwrap();
-  let cancelled = next_answer(&mut socket).await;
-  assert_eq!((cancelled.stream, cancelled.frame_type), (2, 0x14));
+  assert_error(&next_answer(&mut socket).await, 2, 1);
   socket
     .send(Message::binary(call_frame(4, "chat/slow", &[0x80])))
     .await

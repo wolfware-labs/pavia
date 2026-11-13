@@ -51,8 +51,9 @@
 //! is sent as RESOURCE_EXHAUSTED instead. A CALL beyond `max_calls` open calls is answered
 //! RESOURCE_EXHAUSTED with `nx` before its header is read, the first of the callee checks of
 //! §8.2; the driver makes the rest. CANCEL on a call still waiting for its answer yields
-//! [`Output::Cancelled`] and ERROR CANCELLED, which frees the call's slot (§8.5). Frames on the
-//! control stream other than these are otherwise ignored until their feature lands.
+//! [`Output::Cancelled`]; the driver answers ERROR CANCELLED once the handler has stopped, and
+//! that answer frees the call's slot (§8.5). Frames on the control stream other than these are
+//! otherwise ignored until their feature lands.
 //! PING, PONG and CLOSE skip ahead of other queued outputs, in the order they were made (§6.6,
 //! §13.5), but never ahead of WELCOME, the server's first frame (§6.2). Sending CLOSE drops what is
 //! still queued behind it, since nothing follows CLOSE on the transport (§7.7).
@@ -192,8 +193,9 @@ pub enum Output {
     call: Call,
   },
   /// The client cancelled the call on `stream` before its answer (§8.5). The driver stops the
-  /// call's handler. The session has already queued ERROR CANCELLED and freed the call's slot, so
-  /// an answer the driver still sends for `stream` is ignored.
+  /// call's handler and, once it has stopped, answers [`Command::Error`] with
+  /// [`StatusCode::Cancelled`] in place of whatever the handler returned. The call keeps its
+  /// `max_calls` slot until that answer, so a handler still stopping is counted.
   Cancelled {
     /// The call stream, from [`Output::Call`].
     stream: u64,
@@ -633,10 +635,8 @@ impl Session {
   }
 
   fn cancel_call(&mut self, stream: u64) {
-    if self.calls.open.get(&stream).is_some_and(CallState::response_open) {
+    if self.calls.open.contains_key(&stream) {
       self.outputs.push_back(Output::Cancelled { stream });
-      let cancelled = call_error(StatusCode::Cancelled, "cancelled".to_owned(), false);
-      self.answer(stream, &Frame::Error(cancelled));
     }
   }
 

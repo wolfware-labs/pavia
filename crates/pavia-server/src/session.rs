@@ -58,7 +58,9 @@ type Authenticating<'a> = Pin<Box<dyn Future<Output = Result<Principal, AuthFail
 /// value the codec cannot encode) is answered INTERNAL with the configured generic message, or its
 /// own text cut to `MAX_INTERNAL_ERROR_MESSAGE` bytes in development mode, and logged in full with
 /// `tracing` either way (§8.4, §14).
-/// Handlers still running when the session ends are dropped with it.
+/// Handlers still running when the session ends are dropped with it. A CANCEL from the client on a
+/// call not answered yet drops that call's handler, and once it is dropped the call is answered
+/// ERROR CANCELLED (§8.5).
 ///
 /// `authenticator` runs once, after HELLO (§7.5). The transport keeps being read while it runs,
 /// so a CLOSE, a transport loss or the handshake deadline still ends the session. When it
@@ -127,10 +129,7 @@ pub async fn run<A: Authenticator, Z: Authorizer + 'static>(
       received = transport.recv() => received_input(received),
       Some(command) = commands.recv() => Input::Command(command),
       Some(joined) = calls.running.join_next_with_id(), if !calls.running.is_empty() => {
-        let Some(input) = calls.answered(joined, codec(&session)) else {
-          continue;
-        };
-        input
+        calls.answered(joined, codec(&session))
       }
     };
     if answered {
@@ -195,8 +194,14 @@ struct Calls<'a, Z> {
   principal: Arc<Principal>,
   disclosure: Disclosure,
   running: JoinSet<Result<Value, Failed>>,
-  streams: HashMap<task::Id, (u64, MethodName)>,
+  streams: HashMap<task::Id, Running>,
   tasks: HashMap<u64, AbortHandle>,
+}
+
+struct Running {
+  stream: u64,
+  method: MethodName,
+  cancelled: bool,
 }
 
 enum Failed {
@@ -328,26 +333,45 @@ impl<Z: Authorizer + 'static> Calls<'_, Z> {
         Err(Failed::Refused(Refusal::denied(&principal)))
       }
     });
-    self.streams.insert(task.id(), (stream, name.clone()));
+    let running = Running {
+      stream,
+      method: name.clone(),
+      cancelled: false,
+    };
+    self.streams.insert(task.id(), running);
     self.tasks.insert(stream, task);
     None
   }
 
   fn cancel(&mut self, stream: u64) {
-    if let Some(task) = self.tasks.remove(&stream) {
+    if let Some(task) = self.tasks.get(&stream) {
       task.abort();
-      self.streams.remove(&task.id());
+      if let Some(running) = self.streams.get_mut(&task.id()) {
+        running.cancelled = true;
+      }
     }
   }
 
-  fn answered(&mut self, joined: Result<(task::Id, Result<Value, Failed>), JoinError>, codec: Codec) -> Option<Input> {
+  fn answered(&mut self, joined: Result<(task::Id, Result<Value, Failed>), JoinError>, codec: Codec) -> Input {
     let (id, answer) = match joined {
       Ok((id, answer)) => (id, Ok(answer)),
       Err(error) => (error.id(), Err(error)),
     };
-    let (stream, method) = self.streams.remove(&id)?;
+    let Running {
+      stream,
+      method,
+      cancelled,
+    } = self.streams.remove(&id).expect("every running call has a stream");
     self.tasks.remove(&stream);
     let command = match answer {
+      _ if cancelled => Command::Error {
+        stream,
+        code: StatusCode::Cancelled,
+        msg: "cancelled".to_owned(),
+        nx: false,
+        meta: None,
+        detail: Bytes::new(),
+      },
       Ok(Ok(value)) => match encode(&value, codec) {
         Ok(data) => Command::Result { stream, data },
         Err(error) => self.disclosure.internal(stream, &method, &error),
@@ -370,7 +394,7 @@ impl<Z: Authorizer + 'static> Calls<'_, Z> {
       Ok(Err(Failed::Handler(HandlerError::Unexpected(error)))) => self.disclosure.internal(stream, &method, &*error),
       Err(error) => self.disclosure.internal(stream, &method, &error),
     };
-    Some(Input::Command(command))
+    Input::Command(command)
   }
 }
 
