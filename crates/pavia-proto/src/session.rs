@@ -52,8 +52,9 @@
 //! RESOURCE_EXHAUSTED with `nx` before its header is read, the first of the callee checks of
 //! §8.2; the driver makes the rest. CANCEL on a call still waiting for its answer yields
 //! [`Output::Cancelled`]; the driver answers ERROR CANCELLED once the handler has stopped, and
-//! that answer frees the call's slot (§8.5). Frames on the control stream other than these are
-//! otherwise ignored until their feature lands.
+//! that answer frees the call's slot (§8.5). A NOTIFY on the control stream becomes
+//! [`Output::Notify`], in arrival order, and is never answered (§9.1). Frames on the control
+//! stream other than these are otherwise ignored until their feature lands.
 //! PING, PONG and CLOSE skip ahead of other queued outputs, in the order they were made (§6.6,
 //! §13.5), but never ahead of WELCOME, the server's first frame (§6.2). Sending CLOSE drops what is
 //! still queued behind it, since nothing follows CLOSE on the transport (§7.7).
@@ -67,7 +68,9 @@ use bytes::{Bytes, BytesMut};
 use crate::caps::{self, Capability, Caps};
 use crate::data::Codec;
 use crate::error::{Outcome, ProtocolError};
-use crate::frame::{Auth, Call, CallError, CallResult, Close, Frame, FrameType, Heartbeat, Hello, Meta, Reject, Welcome};
+use crate::frame::{
+  Auth, Call, CallError, CallResult, Close, Frame, FrameType, Heartbeat, Hello, Meta, Notify, Reject, Welcome,
+};
 use crate::negotiate;
 use crate::registry::{CloseCode, StatusCode};
 use crate::session_id::SessionId;
@@ -199,6 +202,14 @@ pub enum Output {
   Cancelled {
     /// The call stream, from [`Output::Call`].
     stream: u64,
+  },
+  /// The client sent NOTIFY on the control stream, lane 0 (§9.1, §9.2). The driver runs the
+  /// named server method and never answers: an unknown method, a `call` method, arguments that do
+  /// not fit, a refusal by the authorizer or a failing handler is logged and dropped. Handlers of
+  /// one lane run one at a time, in the order these outputs come.
+  Notify {
+    /// The NOTIFY frame: method, meta and the encoded arguments.
+    notify: Notify,
   },
   /// The session is over. Emitted once, as the last output.
   Ended(Ending),
@@ -507,11 +518,15 @@ impl Session {
           if let Err(error) = caps::check(&negotiated.caps, &frame, self.local.peer()) {
             return self.fail(&error);
           }
-          if !on_control {
-            self.on_call_stream(ws_frame.stream_id, frame);
-            if self.is_ended() {
-              return;
+          match frame {
+            frame if !on_control => {
+              self.on_call_stream(ws_frame.stream_id, frame);
+              if self.is_ended() {
+                return;
+              }
             }
+            Frame::Notify(notify) => self.outputs.push_back(Output::Notify { notify }),
+            _ => {}
           }
         }
         (State::Ended, _) => return,
