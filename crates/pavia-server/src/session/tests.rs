@@ -20,7 +20,7 @@ use pavia_proto::session_id::SessionId;
 use pavia_proto::stream::{Shape, Side};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{Barrier, Semaphore, mpsc, oneshot};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::handshake::client::Request;
 use tokio_tungstenite::tungstenite::protocol::frame::Frame;
@@ -1313,22 +1313,30 @@ async fn answers_internal_when_the_handler_panics_and_keeps_the_session() {
   assert_eq!(next_answer(&mut socket).await.frame_type, 0x13);
 }
 
-#[tokio::test]
-async fn answers_a_fast_call_while_a_slow_one_runs() {
-  let (release, released) = watch::channel(false);
+fn slow() -> (MethodRegistry<Handler>, Arc<Semaphore>, Arc<AtomicUsize>) {
+  let gate = Arc::new(Semaphore::new(0));
+  let runs = Arc::new(AtomicUsize::new(0));
+  let (held, counted) = (Arc::clone(&gate), Arc::clone(&runs));
   let mut methods = MethodRegistry::new();
   methods
     .register_server_method(
       "chat/slow",
       MethodEntry::call(Handler::new(0, move |_| {
-        let mut released = released.clone();
+        let (gate, runs) = (Arc::clone(&held), Arc::clone(&counted));
         async move {
-          let _ = released.wait_for(|released| *released).await;
-          Arg::Text("slow".into())
+          runs.fetch_add(1, Ordering::SeqCst);
+          gate.acquire().await.unwrap().forget();
+          Arg::Null
         }
       })),
     )
     .unwrap();
+  (methods, gate, runs)
+}
+
+#[tokio::test]
+async fn answers_a_fast_call_while_a_slow_one_runs() {
+  let (mut methods, gate, _) = slow();
   methods
     .register_server_method(
       "chat/fast",
@@ -1345,7 +1353,7 @@ async fn answers_a_fast_call_while_a_slow_one_runs() {
     .await
     .unwrap();
   assert_eq!(next_answer(&mut socket).await.stream, 4);
-  release.send(true).unwrap();
+  gate.add_permits(1);
   assert_eq!(next_answer(&mut socket).await.stream, 2);
 }
 
@@ -1547,20 +1555,7 @@ fn bounds_the_idempotency_key_only_with_the_capability() {
 
 #[tokio::test]
 async fn refuses_a_call_beyond_max_calls_before_looking_at_it() {
-  let (release, released) = watch::channel(false);
-  let mut methods = MethodRegistry::new();
-  methods
-    .register_server_method(
-      "chat/slow",
-      MethodEntry::call(Handler::new(0, move |_| {
-        let mut released = released.clone();
-        async move {
-          let _ = released.wait_for(|released| *released).await;
-          Arg::Null
-        }
-      })),
-    )
-    .unwrap();
+  let (methods, gate, _) = slow();
   let mut config = SessionConfig::default();
   config.max_calls = 1;
   let mut socket = serving_with(Arc::new(methods), config).await;
@@ -1573,7 +1568,7 @@ async fn refuses_a_call_beyond_max_calls_before_looking_at_it() {
     .await
     .unwrap();
   assert_refused(&next_answer(&mut socket).await, 4, 8);
-  release.send(true).unwrap();
+  gate.add_permits(1);
   assert_eq!(next_answer(&mut socket).await.stream, 2);
 }
 
@@ -1963,4 +1958,69 @@ async fn sends_the_configured_generic_message_for_a_panic() {
     .unwrap();
   let answer = next_answer(&mut socket).await;
   assert_eq!(answer.header[&7], Value::Text("something went wrong".into()));
+}
+
+#[tokio::test]
+async fn runs_two_slow_calls_at_the_same_time() {
+  let barrier = Arc::new(Barrier::new(2));
+  let mut methods = MethodRegistry::new();
+  methods
+    .register_server_method(
+      "chat/meet",
+      MethodEntry::call(Handler::new(0, move |_| {
+        let barrier = Arc::clone(&barrier);
+        async move {
+          barrier.wait().await;
+          Arg::Null
+        }
+      })),
+    )
+    .unwrap();
+  let mut socket = serving(Arc::new(methods)).await;
+  for stream in [2, 4] {
+    socket
+      .send(Message::binary(call_frame(stream, "chat/meet", &[0x80])))
+      .await
+      .unwrap();
+  }
+  let mut answered = [next_answer(&mut socket).await, next_answer(&mut socket).await].map(|answer| {
+    assert_eq!(answer.frame_type, 0x13);
+    answer.stream
+  });
+  answered.sort_unstable();
+  assert_eq!(answered, [2, 4]);
+}
+
+#[tokio::test]
+async fn refuses_a_third_call_beyond_max_calls_two_and_admits_a_fourth_once_a_slot_frees() {
+  let (methods, gate, runs) = slow();
+  let mut config = SessionConfig::default();
+  config.max_calls = 2;
+  let mut socket = serving_with(Arc::new(methods), config).await;
+  for stream in [2, 4, 6] {
+    socket
+      .send(Message::binary(call_frame(stream, "chat/slow", &[0x80])))
+      .await
+      .unwrap();
+  }
+  assert_refused(&next_answer(&mut socket).await, 6, 8);
+  eventually(|| runs.load(Ordering::SeqCst) == 2, "both admitted calls to run").await;
+  gate.add_permits(1);
+  let first = next_answer(&mut socket).await;
+  assert_eq!(first.frame_type, 0x13);
+  socket
+    .send(Message::binary(call_frame(8, "chat/slow", &[0x80])))
+    .await
+    .unwrap();
+  eventually(|| runs.load(Ordering::SeqCst) == 3, "the call after the freed slot to run").await;
+  gate.add_permits(2);
+  let mut answered = vec![first.stream];
+  for _ in 0..2 {
+    let answer = next_answer(&mut socket).await;
+    assert_eq!(answer.frame_type, 0x13);
+    answered.push(answer.stream);
+  }
+  answered.sort_unstable();
+  assert_eq!(answered, [2, 4, 8]);
+  assert_eq!(runs.load(Ordering::SeqCst), 3);
 }

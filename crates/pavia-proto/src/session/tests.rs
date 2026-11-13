@@ -6,8 +6,8 @@ use super::{AuthFailure, Command, Config, ConfigError, Ending, Input, Output, Se
 use crate::data::Codec;
 use crate::frame::Reject;
 use crate::frame::{
-  AckMap, Auth, Call, CallError, CallResult, Cancel, Close, Frame, FrameType, Heartbeat, Hello, Item, Limits, Meta, MetaName,
-  MetaValue, Resume, ServerLimits, Token, Welcome,
+  AckMap, Auth, Call, CallError, CallResult, Cancel, Close, End, Frame, FrameType, Heartbeat, Hello, Item, Limits, Meta,
+  MetaName, MetaValue, Resume, ServerLimits, Token, Welcome,
 };
 use crate::registry::{CloseCode, StatusCode};
 use crate::session_id::SessionId;
@@ -1523,15 +1523,18 @@ fn ignores_a_call_frame_on_the_control_stream() {
   assert!(!session.is_ended());
 }
 
+fn item_frame() -> Frame {
+  Frame::Item(Item {
+    meta: None,
+    data: Bytes::from_static(&[0xf6]),
+  })
+}
+
 #[test]
 fn closes_on_an_item_from_the_caller_of_a_unary_call() {
   let (mut session, _) = welcomed(None);
   called(&mut session, 2);
-  let item = Frame::Item(Item {
-    meta: None,
-    data: Bytes::from_static(&[0xf6]),
-  });
-  session.feed(Input::Message(message(&[(2, item)])));
+  session.feed(Input::Message(message(&[(2, item_frame())])));
   assert!(ended_with(&mut session, CloseCode::ProtocolError));
 }
 
@@ -1592,18 +1595,22 @@ fn bounds_answers_by_one_mebibyte_when_the_client_advertises_no_max_frame() {
   assert!(matches!(sent.as_slice(), [(2, Frame::Error(error))] if error.code == 8));
 }
 
+fn error_command(stream: u64, code: StatusCode) -> Input {
+  Input::Command(Command::Error {
+    stream,
+    code,
+    msg: "refused".into(),
+    nx: false,
+    meta: None,
+    detail: Bytes::new(),
+  })
+}
+
 #[test]
 fn never_sends_an_error_with_the_ok_code() {
   let (mut session, _) = welcomed(None);
   called(&mut session, 2);
-  session.feed(Input::Command(Command::Error {
-    stream: 2,
-    code: StatusCode::Ok,
-    msg: "done".into(),
-    nx: false,
-    meta: None,
-    detail: Bytes::new(),
-  }));
+  session.feed(error_command(2, StatusCode::Ok));
   let sent = sent_frames(&mut session);
   assert!(matches!(sent.as_slice(), [(2, Frame::Error(error))] if error.code == u64::from(StatusCode::Internal)));
 }
@@ -1611,11 +1618,7 @@ fn never_sends_an_error_with_the_ok_code() {
 #[test]
 fn keeps_the_session_when_items_follow_a_call_with_an_unknown_shape() {
   let (mut session, _) = welcomed(None);
-  let item = Frame::Item(Item {
-    meta: None,
-    data: Bytes::from_static(&[0xf6]),
-  });
-  session.feed(Input::Message(message(&[(2, call(7)), (2, item)])));
+  session.feed(Input::Message(message(&[(2, call(7)), (2, item_frame())])));
   assert!(matches!(drain(&mut session).as_slice(), [Output::Call { stream: 2, .. }]));
   session.feed(Input::Command(Command::Error {
     stream: 2,
@@ -1745,4 +1748,73 @@ fn answers_resource_exhausted_for_an_error_header_above_the_limit() {
   assert_eq!((error.code, error.nx), (u64::from(StatusCode::ResourceExhausted), None));
   assert!(!session.is_ended());
   assert_eq!(session.open_calls(), 0);
+}
+
+#[test]
+fn frees_a_streaming_call_at_its_error_and_ignores_the_frames_behind_it() {
+  let config = Config {
+    max_calls: 1,
+    ..Config::default()
+  };
+  let (mut session, _) = welcomed_with(config, None);
+  session.feed(Input::Message(message(&[(2, call(7)), (2, item_frame())])));
+  assert!(matches!(drain(&mut session).as_slice(), [Output::Call { stream: 2, .. }]));
+  assert_eq!(session.open_calls(), 1);
+  session.feed(error_command(2, StatusCode::InvalidArgument));
+  assert!(matches!(sent_frames(&mut session).as_slice(), [(2, Frame::Error(_))]));
+  assert_eq!(session.open_calls(), 0);
+  session.feed(Input::Message(message(&[
+    (2, item_frame()),
+    (2, Frame::End(End { meta: None })),
+  ])));
+  assert!(drain(&mut session).is_empty());
+  assert!(!session.is_ended());
+  called(&mut session, 4);
+}
+
+#[test]
+fn never_counts_a_streaming_call_refused_beyond_max_calls() {
+  let config = Config {
+    max_calls: 1,
+    ..Config::default()
+  };
+  let (mut session, _) = welcomed_with(config, None);
+  called(&mut session, 2);
+  session.feed(Input::Message(message(&[(4, call(7)), (4, item_frame())])));
+  let sent = sent_frames(&mut session);
+  let [(4, Frame::Error(error))] = sent.as_slice() else {
+    panic!("{sent:?}");
+  };
+  assert_eq!((error.code, error.nx), (u64::from(StatusCode::ResourceExhausted), Some(true)));
+  assert_eq!(session.open_calls(), 1);
+  session.feed(Input::Message(message(&[
+    (4, item_frame()),
+    (4, Frame::End(End { meta: None })),
+  ])));
+  assert!(drain(&mut session).is_empty());
+  assert!(!session.is_ended());
+  assert_eq!(session.open_calls(), 1);
+}
+
+#[test]
+fn frees_every_slot_once_its_call_is_answered_with_result_or_error() {
+  let config = Config {
+    max_calls: 4,
+    ..Config::default()
+  };
+  let (mut session, _) = welcomed_with(config, None);
+  for stream in [2, 4, 6, 8] {
+    called(&mut session, stream);
+  }
+  assert_eq!(session.open_calls(), 4);
+  session.feed(answer(2, &[0xf6]));
+  session.feed(error_command(4, StatusCode::NotFound));
+  session.feed(answer(6, &[0xf6]));
+  session.feed(error_command(8, StatusCode::Internal));
+  assert_eq!(sent_frames(&mut session).len(), 4);
+  assert_eq!(session.open_calls(), 0);
+  for stream in [10, 12, 14, 16] {
+    called(&mut session, stream);
+  }
+  assert_eq!(session.open_calls(), 4);
 }
