@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -21,6 +21,7 @@ use pavia_proto::stream::{Shape, Side};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf};
 use tokio::net::TcpStream;
 use tokio::sync::{Barrier, Semaphore, mpsc, oneshot};
+use tokio::task::JoinSet;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::handshake::client::Request;
 use tokio_tungstenite::tungstenite::protocol::frame::Frame;
@@ -32,7 +33,7 @@ use tracing::Dispatch;
 use tracing::dispatcher::DefaultGuard;
 use tracing::subscriber::NoSubscriber;
 
-use super::{Refusal, authenticated, run, validate_call};
+use super::{Calls, Disclosure, Failed, Refusal, RunningCall, authenticated, run, validate_call};
 use crate::auth::{AllowAll, AuthFailure, Authenticator, Authorizer, Permissive, Principal, RequestContext};
 use crate::methods::{Handler, HandlerError, MethodEntry, MethodName, MethodRegistry, StatusError};
 use crate::sessions::Registry;
@@ -1776,6 +1777,12 @@ async fn shares_one_authorizer_between_the_calls_of_a_session() {
 #[derive(Clone, Default)]
 struct Captured(Arc<Mutex<Vec<u8>>>);
 
+impl Captured {
+  fn text(&self) -> String {
+    String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+  }
+}
+
 impl io::Write for Captured {
   fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
     self.0.lock().unwrap().extend_from_slice(bytes);
@@ -1868,7 +1875,7 @@ async fn logged_answer(method: &str) -> (Answer, String) {
   let mut socket = serving(failing()).await;
   socket.send(Message::binary(call_frame(2, method, &[0x80]))).await.unwrap();
   let answer = next_answer(&mut socket).await;
-  let logged = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+  let logged = log.text();
   (answer, logged)
 }
 
@@ -2052,7 +2059,7 @@ async fn answers_cancelled_once_the_handler_of_a_cancelled_call_is_dropped() {
     assert!(dropped.load(Ordering::SeqCst), "answered before the handler was dropped");
     assert_error(&answer, 2, 1);
     assert_eq!(answer.header[&7], Value::Text("cancelled".into()));
-    let logged = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+    let logged = log.text();
     assert!(!logged.contains("ERROR"), "{logged}");
   }
 }
@@ -2078,4 +2085,74 @@ async fn admits_a_call_after_a_cancelled_one_with_max_calls_one() {
   gate.add_permits(1);
   let answer = next_answer(&mut socket).await;
   assert_eq!((answer.stream, answer.frame_type), (4, 0x13));
+}
+
+#[tokio::test]
+async fn answers_a_refused_call_cancelled_in_the_same_message_once() {
+  let (methods, started, _) = forever();
+  let mut socket = serving(Arc::new(methods)).await;
+  let mut message = call_frame(2, "chat/missing", &[0x80]);
+  message.extend(cancel_frame(2, None));
+  socket.send(Message::binary(message)).await.unwrap();
+  assert_refused(&next_answer(&mut socket).await, 2, 12);
+  socket
+    .send(Message::binary(call_frame(4, "chat/forever", &[0x80])))
+    .await
+    .unwrap();
+  eventually(|| started.load(Ordering::SeqCst), "the next call to run").await;
+  socket.send(Message::binary(cancel_frame(4, None))).await.unwrap();
+  assert_error(&next_answer(&mut socket).await, 4, 1);
+}
+
+async fn cancelled_after_it_finished(outcome: Result<Arg, Failed>) -> Command {
+  let methods = MethodRegistry::new();
+  let mut calls = Calls {
+    methods: &methods,
+    authorizer: Arc::new(AllowAll),
+    principal: Arc::new(Principal::anonymous()),
+    disclosure: Disclosure {
+      generic: "internal error".to_owned(),
+      disclose: false,
+    },
+    running: JoinSet::new(),
+    streams: HashMap::new(),
+    tasks: HashMap::new(),
+  };
+  let task = calls.running.spawn(async move { outcome });
+  let running = RunningCall {
+    stream: 2,
+    method: MethodName::parse("chat/done").unwrap(),
+    cancelled: false,
+  };
+  calls.streams.insert(task.id(), running);
+  calls.tasks.insert(2, task.clone());
+  eventually(|| task.is_finished(), "the handler to finish").await;
+  calls.cancel(2);
+  let joined = calls.running.join_next_with_id().await.unwrap();
+  let Input::Command(command) = calls.answered(joined, Codec::Cbor) else {
+    panic!("expected a command");
+  };
+  assert!(calls.streams.is_empty() && calls.tasks.is_empty());
+  command
+}
+
+#[tokio::test]
+async fn answers_cancelled_for_a_handler_that_finished_before_the_cancel() {
+  let (log, _logging) = capture_log();
+  let cancelled = |command: &Command| {
+    matches!(
+      command,
+      Command::Error {
+        stream: 2,
+        code: StatusCode::Cancelled,
+        nx: false,
+        ..
+      }
+    )
+  };
+  assert!(cancelled(&cancelled_after_it_finished(Ok(Arg::Null)).await));
+  assert!(!log.text().contains("ERROR"));
+  let failed = Failed::Handler(HandlerError::unexpected("disk full"));
+  assert!(cancelled(&cancelled_after_it_finished(Err(failed)).await));
+  assert!(log.text().contains("call failed unexpectedly"), "{}", log.text());
 }
