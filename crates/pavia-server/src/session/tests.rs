@@ -2233,7 +2233,8 @@ async fn drops_and_logs_once_a_notification_the_authorizer_denies() {
   send(&mut socket, notification_frame("chat/typing", GENERAL)).await;
   eventually(|| lines_naming(&log, "chat/typing") == 1, "the refusal to be logged").await;
   assert!(log.text().contains("not authorized"));
-  assert!(log.text().contains(session.as_str()), "{}", log.text());
+  assert!(log.text().contains("not allowed to call this method"), "{}", log.text());
+  assert_every_line_names(&log, &session);
   send(&mut socket, call_frame(2, "chat/ping", &[0x80])).await;
   assert_refused(&next_answer(&mut socket).await, 2, 16);
   assert!(record.lock().unwrap().is_empty());
