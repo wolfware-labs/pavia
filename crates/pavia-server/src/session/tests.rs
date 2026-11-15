@@ -2311,27 +2311,22 @@ async fn sends_the_notifications_of_a_notification_handler() {
   }
 }
 
-fn notifying_once(arguments: fn() -> Vec<Arg>) -> Arc<MethodRegistry<Handler>> {
+#[tokio::test]
+async fn logs_and_drops_a_handler_notification_above_the_client_max_frame() {
+  let (log, _logging) = capture_log();
   let progress = MethodName::parse("ui/progress").unwrap();
   let mut methods = MethodRegistry::new();
   let handler = Handler::with_context(0, move |context: HandlerContext, _| {
     let progress = progress.clone();
     async move {
-      assert!(context.notify(&progress, arguments()).await.unwrap());
+      assert!(context.notify(&progress, vec![Arg::Bytes(vec![0; 1 << 20])]).await.unwrap());
       Ok(Arg::Null)
     }
   });
   methods
     .register_server_method("doc/save", MethodEntry::call(handler))
     .unwrap();
-  Arc::new(methods)
-}
-
-#[tokio::test]
-async fn logs_and_drops_a_handler_notification_above_the_client_max_frame() {
-  let (log, _logging) = capture_log();
-  let methods = notifying_once(|| vec![Arg::Bytes(vec![0; 1 << 20])]);
-  let (mut socket, session) = serving_as(methods, SessionConfig::default(), Arc::new(AllowAll)).await;
+  let (mut socket, session) = serving_notified(Arc::new(methods)).await;
   send(&mut socket, call_frame(2, "doc/save", &[0x80])).await;
   let answer = next_answer(&mut socket).await;
   assert_eq!((answer.stream, answer.frame_type), (2, 0x13));
@@ -2362,11 +2357,10 @@ async fn returns_false_to_a_notification_sent_after_the_session_ended() {
   methods
     .register_server_method("doc/save", MethodEntry::call(handler))
     .unwrap();
-  let config = SessionConfig::default();
   let (address, ending) = listen_serving(
     Registry::new(),
     Arc::new(methods),
-    config,
+    SessionConfig::default(),
     Arc::new(Permissive),
     Arc::new(AllowAll),
   )
