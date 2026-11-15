@@ -15,7 +15,7 @@ use pavia_proto::data::{Codec, Value as Arg};
 use pavia_proto::error::ErrorStatus;
 use pavia_proto::frame::{Auth, Call, Meta, MetaName, MetaValue};
 use pavia_proto::registry::{CloseCode, StatusCode};
-use pavia_proto::session::{Command, Config as SessionConfig, Ending, Input};
+use pavia_proto::session::{Command, Config as SessionConfig, Ending, Input, Session};
 use pavia_proto::session_id::SessionId;
 use pavia_proto::stream::{Shape, Side};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf};
@@ -37,7 +37,7 @@ use super::{Calls, Disclosure, Failed, Lane, Outgoing, Refusal, RunningCall, aut
 use crate::auth::{AllowAll, AuthFailure, Authenticator, Authorizer, Permissive, Principal, RequestContext};
 use crate::methods::{Handler, HandlerContext, HandlerError, MethodEntry, MethodName, MethodRegistry, StatusError};
 use crate::sessions::{CallError, CallOptions, Calling, Handle, Registry};
-use crate::test_support::{EXPECT_WITHIN, floor_frame, has_ws_close, send, serve_on_loopback};
+use crate::test_support::{EXPECT_WITHIN, confirm, floor_frame, has_ws_close, send, serve_on_loopback};
 use crate::websocket::{Config, Endpoint, SUBPROTOCOL, Transport};
 
 type Socket = WebSocketStream<TcpStream>;
@@ -2472,10 +2472,6 @@ fn hello_for_server_calls(max_calls: u8) -> Vec<u8> {
   raw_frame(0x01, &header)
 }
 
-fn confirm() -> MethodName {
-  MethodName::parse("ui/confirm").unwrap()
-}
-
 async fn calling(registry: &Registry, hello: Vec<u8>) -> (Socket, SessionId) {
   calling_from(registry.clone(), Arc::new(MethodRegistry::new()), hello).await
 }
@@ -2715,9 +2711,8 @@ async fn reports_a_client_error_with_code_zero_as_unknown() {
 
 #[test]
 fn never_sends_a_call_whose_caller_has_already_gone() {
-  let mut session =
-    pavia_proto::session::Session::server(&SessionConfig::default().validate().unwrap(), std::time::Instant::now());
   let now = std::time::Instant::now();
+  let mut session = Session::server(&SessionConfig::default().validate().unwrap(), now);
   session.handle_input(Input::Message(Bytes::from(hello_for_server_calls(4))), now);
   session.handle_input(
     Input::Authenticated {

@@ -11,7 +11,7 @@ use pavia_proto::session::CallRefused;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct CallOptions {
-  /// How long the call may take, from when it is made; sent to the client in the CALL (§8.6).
+  /// How long the call may take, from when it is made; the CALL carries the time left (§8.6).
   pub deadline: Option<Duration>,
 }
 

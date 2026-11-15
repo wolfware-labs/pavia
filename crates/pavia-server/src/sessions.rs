@@ -110,8 +110,9 @@ impl Handle {
   /// the session codec, and returns its RESULT decoded (§8.8). The client must have been granted
   /// `server-calls`, and at most its HELLO `max_calls` server calls are open at once (§6.5).
   ///
-  /// With a [`deadline`](CallOptions::deadline) the CALL carries it, and once it passes the call
-  /// is cancelled with CANCEL and fails with DEADLINE_EXCEEDED (§8.6). Dropping the returned
+  /// A [`deadline`](CallOptions::deadline) covers the wait for queue space and for the answer.
+  /// The CALL carries the time left, and once the deadline passes the call is cancelled with
+  /// CANCEL and fails with DEADLINE_EXCEEDED (§8.6). Dropping the returned
   /// future before the answer cancels the call the same way, so it never holds one of the
   /// client's `max_calls` slots for nothing.
   ///
@@ -122,7 +123,8 @@ impl Handle {
   /// RESOURCE_EXHAUSTED at the client's `max_calls` or for a CALL above its `max_frame`, and
   /// INVALID_ARGUMENT for arguments the session codec cannot encode. Without `nx`: UNAVAILABLE
   /// when the session ends before the answer, DEADLINE_EXCEEDED, and INTERNAL for a RESULT or an
-  /// ERROR detail that does not decode (§8.10).
+  /// ERROR detail that does not decode (§8.10). DEADLINE_EXCEEDED sets `nx` when the deadline
+  /// passed before the call was queued.
   pub async fn call(&self, method: &MethodName, arguments: Vec<Value>, options: CallOptions) -> Result<Value, CallError> {
     let deadline = options.deadline.and_then(|deadline| Instant::now().checked_add(deadline));
     let (reply, answer) = oneshot::channel();
@@ -134,13 +136,7 @@ impl Handle {
       deadline,
       reply,
     };
-    let queued = match deadline {
-      Some(deadline) => timeout_at(deadline, self.calls.send(calling))
-        .await
-        .map_err(|_| CallError::deadline_exceeded(true))?,
-      None => self.calls.send(calling).await,
-    };
-    if queued.is_err() {
+    if before(deadline, self.calls.send(calling), true).await?.is_err() {
       return Err(CallError::ended());
     }
     let mut pending = Pending {
@@ -148,14 +144,19 @@ impl Handle {
       token: Some(token),
       answer,
     };
-    let answered = match deadline {
-      Some(deadline) => timeout_at(deadline, &mut pending.answer)
-        .await
-        .map_err(|_| CallError::deadline_exceeded(false))?,
-      None => (&mut pending.answer).await,
-    };
+    let answered = before(deadline, &mut pending.answer, false).await?;
     pending.token = None;
     answered.unwrap_or_else(|_| Err(CallError::unavailable()))
+  }
+}
+
+/// Waits for `future`, or fails with DEADLINE_EXCEEDED once `deadline` passes.
+async fn before<F: Future>(deadline: Option<Instant>, future: F, unsent: bool) -> Result<F::Output, CallError> {
+  match deadline {
+    Some(deadline) => timeout_at(deadline, future)
+      .await
+      .map_err(|_| CallError::deadline_exceeded(unsent)),
+    None => Ok(future.await),
   }
 }
 
