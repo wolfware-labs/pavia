@@ -7,6 +7,8 @@
 //! when a peer first calls it. A [`Handler`] is the code behind a method: the session runs it
 //! with the CALL arguments as dynamic values. A handler that fails returns a [`HandlerError`]: a
 //! deliberate [`StatusError`], answered as given, or an unexpected error, answered INTERNAL (§8.4).
+//! A handler made with [`Handler::with_context`] also gets a [`HandlerContext`], through which it
+//! can notify the client of the session that ran it (§9.1).
 //!
 //! ```text
 //!  register_server_method("chat/send") ─▶ name rule ─▶ not on the server side yet ─▶ stored
@@ -186,13 +188,13 @@ impl<H> MethodEntry<H> {
 
 type Running = Pin<Box<dyn Future<Output = Result<Value, HandlerError>> + Send>>;
 
-type Run = dyn Fn(Context, Vec<Value>) -> Running + Send + Sync;
+type Run = dyn Fn(HandlerContext, Vec<Value>) -> Running + Send + Sync;
 
 /// The code behind a method: it takes the CALL arguments as dynamic values (§8.2, §12.3) and
 /// returns the RESULT value, or with [`fallible`](Self::fallible) a [`HandlerError`]. A method
 /// with no return value returns [`Value::Null`], the codec's unit value. A handler made with
-/// [`with_context`](Self::with_context) also gets the [`Context`] of the session that called it.
-/// Typed handlers arrive with the typed codec mapping (#66).
+/// [`with_context`](Self::with_context) also gets the [`HandlerContext`] of the session that
+/// called it. Typed handlers arrive with the typed codec mapping (#66).
 #[derive(Clone)]
 pub struct Handler {
   params: usize,
@@ -226,11 +228,11 @@ impl Handler {
   }
 
   /// A handler for a method with `params` parameters that can fail and reaches the session that
-  /// called it through its [`Context`], to notify the client for one.
+  /// called it through its [`HandlerContext`], to notify the client for one.
   #[must_use]
   pub fn with_context<F, Fut>(params: usize, run: F) -> Self
   where
-    F: Fn(Context, Vec<Value>) -> Fut + Send + Sync + 'static,
+    F: Fn(HandlerContext, Vec<Value>) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<Value, HandlerError>> + Send + 'static,
   {
     Self {
@@ -245,7 +247,7 @@ impl Handler {
     self.params
   }
 
-  pub(crate) fn run(&self, context: Context, arguments: Vec<Value>) -> Running {
+  pub(crate) fn run(&self, context: HandlerContext, arguments: Vec<Value>) -> Running {
     (self.run)(context, arguments)
   }
 }
@@ -261,12 +263,12 @@ impl fmt::Debug for Handler {
 
 /// What a running handler knows of the session that called it. Cloning it is cheap.
 #[derive(Debug, Clone)]
-pub struct Context {
+pub struct HandlerContext {
   session: Handle,
   codec: Codec,
 }
 
-impl Context {
+impl HandlerContext {
   pub(crate) const fn new(session: Handle, codec: Codec) -> Self {
     Self { session, codec }
   }

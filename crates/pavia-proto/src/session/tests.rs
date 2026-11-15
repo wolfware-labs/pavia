@@ -1936,18 +1936,18 @@ fn drops_a_notification_that_arrives_before_welcome() {
   assert!(!session.is_ended());
 }
 
-fn notify_command(method: &str, data: &'static [u8]) -> Input {
+fn notify_command(method: impl Into<String>, data: impl Into<Bytes>) -> Input {
   Input::Command(Command::Notify {
-    method: method.to_owned(),
-    data: Bytes::from_static(data),
+    method: method.into(),
+    data: data.into(),
   })
 }
 
 #[test]
 fn sends_each_notify_command_on_the_control_stream_in_order() {
   let (mut session, _) = welcomed(None);
-  session.feed(notify_command("ui/progress", &[0x81, 0x18, 50]));
-  session.feed(notify_command("ui/progress", &[0x81, 0x18, 100]));
+  session.feed(notify_command("ui/progress", vec![0x81, 0x18, 50]));
+  session.feed(notify_command("ui/progress", vec![0x81, 0x18, 100]));
   let sent = sent_frames(&mut session);
   let notified: Vec<_> = sent
     .iter()
@@ -1969,12 +1969,12 @@ fn sends_each_notify_command_on_the_control_stream_in_order() {
 #[test]
 fn ignores_a_notify_command_before_welcome_and_after_the_end() {
   let mut session = greeted();
-  session.feed(notify_command("ui/progress", &[0x80]));
+  session.feed(notify_command("ui/progress", vec![0x80]));
   assert_eq!(drain(&mut session), []);
   let (mut session, _) = welcomed(None);
   session.feed(Input::TransportLost);
   drain(&mut session);
-  session.feed(notify_command("ui/progress", &[0x80]));
+  session.feed(notify_command("ui/progress", vec![0x80]));
   assert_eq!(drain(&mut session), []);
 }
 
@@ -1983,17 +1983,11 @@ fn drops_a_notify_command_above_the_client_max_frame_or_the_header_limit() {
   let mut session = welcomed_by_a_client_with(MAX_FRAME_FLOOR);
   let room = usize::try_from(MAX_FRAME_FLOOR).unwrap() - 16;
   for length in [room, room + 16] {
-    session.feed(Input::Command(Command::Notify {
-      method: "ui/progress".to_owned(),
-      data: Bytes::from(vec![0; length]),
-    }));
+    session.feed(notify_command("ui/progress", vec![0; length]));
   }
   let sent = sent_frames(&mut session);
   assert!(matches!(sent.as_slice(), [(0, Frame::Notify(notify))] if notify.data.len() == room));
-  session.feed(Input::Command(Command::Notify {
-    method: "a".repeat(16 * 1024),
-    data: Bytes::from_static(&[0x80]),
-  }));
+  session.feed(notify_command("a".repeat(16 * 1024), vec![0x80]));
   assert_eq!(drain(&mut session), []);
   assert!(!session.is_ended());
 }

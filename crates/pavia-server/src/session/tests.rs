@@ -35,7 +35,7 @@ use tracing::subscriber::NoSubscriber;
 
 use super::{Calls, Disclosure, Failed, Lane, Refusal, RunningCall, authenticated, run, validate_call};
 use crate::auth::{AllowAll, AuthFailure, Authenticator, Authorizer, Permissive, Principal, RequestContext};
-use crate::methods::{Context as HandlerContext, Handler, HandlerError, MethodEntry, MethodName, MethodRegistry, StatusError};
+use crate::methods::{Handler, HandlerContext, HandlerError, MethodEntry, MethodName, MethodRegistry, StatusError};
 use crate::sessions::{Handle, Registry};
 use crate::test_support::{EXPECT_WITHIN, floor_frame, has_ws_close, send, serve_on_loopback};
 use crate::websocket::{Config, Endpoint, SUBPROTOCOL, Transport};
@@ -1223,6 +1223,16 @@ async fn serving_as<Z: Authorizer + 'static>(
   (socket, session)
 }
 
+async fn serving_in_json(methods: Arc<MethodRegistry<Handler>>) -> Socket {
+  let mut config = SessionConfig::default();
+  config.codecs = vec![Codec::Json];
+  let (address, _) = listen_serving(Registry::new(), methods, config, Arc::new(Permissive), Arc::new(AllowAll)).await;
+  let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
+  send(&mut socket, hello_frame_with(b"json")).await;
+  next_welcome(&mut socket).await;
+  socket
+}
+
 const GENERAL_HELLO: &[u8] = &[
   0x82, 0x67, b'g', b'e', b'n', b'e', b'r', b'a', b'l', 0x65, b'h', b'e', b'l', b'l', b'o',
 ];
@@ -1376,13 +1386,7 @@ async fn answers_internal_when_a_handler_panics_before_its_future_runs() {
 
 #[tokio::test]
 async fn answers_calls_in_json_when_the_session_negotiated_it() {
-  let (methods, _) = chat();
-  let mut config = SessionConfig::default();
-  config.codecs = vec![Codec::Json];
-  let (address, _) = listen_serving(Registry::new(), methods, config, Arc::new(Permissive), Arc::new(AllowAll)).await;
-  let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
-  send(&mut socket, hello_frame_with(b"json")).await;
-  next_welcome(&mut socket).await;
+  let mut socket = serving_in_json(chat().0).await;
   send(&mut socket, call_frame(2, "chat/send", br#"["general","hello"]"#)).await;
   let answer = next_answer(&mut socket).await;
   assert_eq!((answer.frame_type, answer.data), (0x13, br#""general:hello""#.to_vec()));
@@ -2014,7 +2018,7 @@ async fn cancelled_after_it_finished(outcome: Result<Arg, Failed>) -> Command {
     streams: HashMap::new(),
     tasks: HashMap::new(),
     lane: Lane::default(),
-    session: Handle::new(mpsc::channel(1).0),
+    handle: Handle::new(mpsc::channel(1).0),
   };
   let task = calls.running.spawn(async move { outcome });
   let running = RunningCall {
@@ -2242,21 +2246,22 @@ async fn drops_and_logs_once_a_notification_the_authorizer_denies() {
 }
 
 fn saving() -> Arc<MethodRegistry<Handler>> {
-  let mut methods = MethodRegistry::new();
   let progress = MethodName::parse("ui/progress").unwrap();
+  let save = Handler::with_context(0, move |context: HandlerContext, _| {
+    let progress = progress.clone();
+    async move {
+      for percent in [50, 100] {
+        assert!(context.notify(&progress, vec![Arg::Unsigned(percent)]).await.unwrap());
+      }
+      Ok(Arg::Null)
+    }
+  });
+  let mut methods = MethodRegistry::new();
   methods
-    .register_server_method(
-      "doc/save",
-      MethodEntry::call(Handler::with_context(0, move |context: HandlerContext, _| {
-        let progress = progress.clone();
-        async move {
-          for percent in [50, 100] {
-            assert!(context.notify(&progress, vec![Arg::Unsigned(percent)]).await.unwrap());
-          }
-          Ok(Arg::Null)
-        }
-      })),
-    )
+    .register_server_method("doc/save", MethodEntry::call(save.clone()))
+    .unwrap();
+  methods
+    .register_server_method("doc/autosave", MethodEntry::notify(save))
     .unwrap();
   Arc::new(methods)
 }
@@ -2287,13 +2292,21 @@ async fn sends_a_handler_notifications_in_order_and_its_result() {
 
 #[tokio::test]
 async fn sends_a_handler_notifications_in_json_when_the_session_negotiated_it() {
-  let mut config = SessionConfig::default();
-  config.codecs = vec![Codec::Json];
-  let (address, _) = listen_serving(Registry::new(), saving(), config, Arc::new(Permissive), Arc::new(AllowAll)).await;
-  let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
-  send(&mut socket, hello_frame_with(b"json")).await;
-  next_welcome(&mut socket).await;
+  let mut socket = serving_in_json(saving()).await;
   let (notified, answers) = saved(&mut socket, call_frame(2, "doc/save", b"[]")).await;
   assert_eq!(notified, [b"[50]".to_vec(), b"[100]".to_vec()]);
   assert!(matches!(answers.as_slice(), [answer] if answer.data == b"null"));
+}
+
+#[tokio::test]
+async fn sends_the_notifications_of_a_notification_handler() {
+  let mut socket = serving(saving()).await;
+  send(&mut socket, notification_frame("doc/autosave", &[0x80])).await;
+  for percent in [50, 100] {
+    let answer = next_answer(&mut socket).await;
+    assert_eq!(
+      (answer.stream, answer.frame_type, answer.data),
+      (0, 0x20, vec![0x81, 0x18, percent])
+    );
+  }
 }

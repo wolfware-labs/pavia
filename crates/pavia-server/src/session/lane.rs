@@ -18,7 +18,7 @@ use tokio::task::{JoinError, JoinSet};
 
 use super::{Failed, Refusal, arguments};
 use crate::auth::{Authorizer, Principal};
-use crate::methods::{Context, Handler, HandlerError, Kind, MethodName, MethodRegistry};
+use crate::methods::{Handler, HandlerContext, HandlerError, Kind, MethodName, MethodRegistry};
 
 type Notifying = Pin<Box<dyn Future<Output = Result<(), Failed>> + Send>>;
 
@@ -39,7 +39,7 @@ impl Lane {
     &mut self,
     notify: &Notify,
     methods: &MethodRegistry<Handler>,
-    context: Context,
+    context: HandlerContext,
     authorizer: &Arc<Z>,
     principal: &Arc<Principal>,
   ) {

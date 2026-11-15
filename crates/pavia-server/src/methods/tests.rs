@@ -8,7 +8,8 @@ use pavia_proto::session::Command;
 use tokio::sync::mpsc;
 
 use super::{
-  Context, Handler, HandlerError, InvalidMethodName, Kind, MethodEntry, MethodName, MethodRegistry, RegisterError, StatusError,
+  Handler, HandlerContext, HandlerError, InvalidMethodName, Kind, MethodEntry, MethodName, MethodRegistry, RegisterError,
+  StatusError,
 };
 use crate::sessions::Handle;
 
@@ -211,9 +212,9 @@ fn takes_an_anyhow_error_as_unexpected_with_its_chain() {
   assert_eq!(boxed.source().map(ToString::to_string).as_deref(), Some("connection reset"));
 }
 
-fn context(codec: Codec) -> (Context, mpsc::Receiver<Command>) {
+fn context(codec: Codec) -> (HandlerContext, mpsc::Receiver<Command>) {
   let (sender, commands) = mpsc::channel(4);
-  (Context::new(Handle::new(sender), codec), commands)
+  (HandlerContext::new(Handle::new(sender), codec), commands)
 }
 
 fn progress() -> MethodName {
@@ -239,7 +240,7 @@ async fn queues_a_notification_with_its_arguments_in_the_session_codec() {
 async fn returns_false_and_sends_nothing_once_the_session_has_ended() {
   let (context, commands) = context(Codec::Cbor);
   drop(commands);
-  let handler = Handler::with_context(0, |context: Context, _| async move {
+  let handler = Handler::with_context(0, |context: HandlerContext, _| async move {
     let delivered = context.notify(&progress(), vec![Value::Unsigned(100)]).await;
     Ok(Value::Bool(delivered.unwrap()))
   });
