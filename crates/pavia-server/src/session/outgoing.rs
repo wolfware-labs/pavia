@@ -28,16 +28,9 @@ impl Outgoing {
       method,
       arguments,
       deadline,
+      claim,
       reply,
     } = calling;
-    if reply.is_closed() {
-      return;
-    }
-    let left = deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
-    if left.is_some_and(|left| left < Duration::from_millis(1)) {
-      let _ = reply.send(Err(CallError::deadline_exceeded(true)));
-      return;
-    }
     let Ok(data) = encode(&Value::Array(arguments), codec) else {
       let refusal = CallError::new(
         StatusCode::InvalidArgument,
@@ -48,6 +41,14 @@ impl Outgoing {
       let _ = reply.send(Err(refusal));
       return;
     };
+    let left = deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
+    if left.is_some_and(|left| left < Duration::from_millis(1)) {
+      let _ = reply.send(Err(CallError::deadline_exceeded(true)));
+      return;
+    }
+    if !claim.open() {
+      return;
+    }
     match session.call(method.as_str().to_owned(), data, left) {
       Ok(stream) => {
         self.waiting.insert(stream, (token, reply));

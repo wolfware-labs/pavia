@@ -36,7 +36,7 @@ use tracing::subscriber::NoSubscriber;
 use super::{Calls, Disclosure, Failed, Lane, Outgoing, Refusal, RunningCall, authenticated, run, validate_call};
 use crate::auth::{AllowAll, AuthFailure, Authenticator, Authorizer, Permissive, Principal, RequestContext};
 use crate::methods::{Handler, HandlerContext, HandlerError, MethodEntry, MethodName, MethodRegistry, StatusError};
-use crate::sessions::{CallError, CallOptions, Calling, Handle, Registry};
+use crate::sessions::{CallError, CallOptions, Calling, Claim, Handle, Registry};
 use crate::test_support::{EXPECT_WITHIN, confirm, floor_frame, has_ws_close, send, serve_on_loopback};
 use crate::websocket::{Config, Endpoint, SUBPROTOCOL, Transport};
 
@@ -2739,6 +2739,7 @@ fn queued_call(token: u64, deadline: Option<tokio::time::Instant>) -> (Calling, 
     method: confirm(),
     arguments: Vec::new(),
     deadline,
+    claim: Claim::default(),
     reply,
   };
   (calling, answer)
@@ -2747,8 +2748,8 @@ fn queued_call(token: u64, deadline: Option<tokio::time::Instant>) -> (Calling, 
 #[test]
 fn never_sends_a_call_whose_caller_has_already_gone() {
   let mut session = established_for_calls();
-  let (calling, answer) = queued_call(0, None);
-  drop(answer);
+  let (calling, _answer) = queued_call(0, None);
+  assert!(calling.claim.abandon());
   let mut outgoing = Outgoing::default();
   outgoing.open(&mut session, calling, Codec::Cbor);
   assert_eq!(session.poll_output(), None);

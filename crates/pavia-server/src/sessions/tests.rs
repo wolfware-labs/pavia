@@ -93,8 +93,8 @@ fn removes_an_entry_even_after_a_panic_poisoned_the_lock() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn closes_the_answer_of_a_dropped_call_before_abandoning_it() {
-  for _ in 0..2_000 {
+async fn sends_no_call_given_up_first_and_cancels_one_opened_first() {
+  for round in 0..2_000 {
     let (handle, mut inbox) = Handle::channel();
     let call = tokio::spawn(async move { handle.call(&confirm(), Vec::new(), CallOptions::default()).await });
     let calling = loop {
@@ -103,10 +103,27 @@ async fn closes_the_answer_of_a_dropped_call_before_abandoning_it() {
         Err(_) => tokio::task::yield_now().await,
       }
     };
+    let opened = round % 2 == 0 && calling.claim.open();
     call.abort();
-    assert_eq!(inbox.abandoned.recv().await, Some(calling.token));
-    assert!(calling.reply.is_closed(), "the abandon was seen before the answer was closed");
+    let _ = call.await;
+    if opened {
+      assert_eq!(inbox.abandoned.try_recv().ok(), Some(calling.token));
+    } else {
+      assert!(!calling.claim.open(), "a call given up was opened");
+      assert!(inbox.abandoned.try_recv().is_err(), "a call never sent was cancelled");
+    }
   }
+}
+
+#[tokio::test(start_paused = true)]
+async fn reports_nx_for_a_deadline_that_passes_before_the_call_is_taken_up() {
+  let (handle, mut inbox) = Handle::channel();
+  let options = CallOptions::default().with_deadline(Duration::from_millis(50));
+  let error = handle.call(&confirm(), Vec::new(), options).await.unwrap_err();
+  assert_eq!((error.code(), error.nx()), (StatusCode::DeadlineExceeded, true));
+  let calling = inbox.calls.try_recv().unwrap();
+  assert!(!calling.claim.open());
+  assert!(inbox.abandoned.try_recv().is_err());
 }
 
 #[tokio::test]

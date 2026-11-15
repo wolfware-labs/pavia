@@ -15,7 +15,7 @@
 //! (§13.4, #100, #104), so no observer sees one without the other.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use pavia_proto::data::Value;
@@ -78,7 +78,36 @@ pub(crate) struct Calling {
   pub(crate) method: MethodName,
   pub(crate) arguments: Vec<Value>,
   pub(crate) deadline: Option<Instant>,
+  pub(crate) claim: Claim,
   pub(crate) reply: oneshot::Sender<Result<Value, CallError>>,
+}
+
+/// Who reached a queued server call first: the session task opening it, or its caller giving it up.
+/// Exactly one of them wins, so a caller that gives up first knows the CALL never went out.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Claim(Arc<AtomicU8>);
+
+const QUEUED: u8 = 0;
+const OPENED: u8 = 1;
+const ABANDONED: u8 = 2;
+
+impl Claim {
+  /// Claims the call for sending; false once its caller has given it up.
+  pub(crate) fn open(&self) -> bool {
+    self.settle(OPENED)
+  }
+
+  /// Gives the call up before it is sent; false once the session task has opened it.
+  pub(crate) fn abandon(&self) -> bool {
+    self.settle(ABANDONED)
+  }
+
+  fn settle(&self, to: u8) -> bool {
+    self
+      .0
+      .compare_exchange(QUEUED, to, Ordering::AcqRel, Ordering::Acquire)
+      .is_ok()
+  }
 }
 
 impl Handle {
@@ -128,55 +157,71 @@ impl Handle {
   /// INVALID_ARGUMENT for arguments the session codec cannot encode. Without `nx`: UNAVAILABLE
   /// when the session ends before the answer, DEADLINE_EXCEEDED, and INTERNAL for a RESULT or an
   /// ERROR detail that does not decode (§8.10). DEADLINE_EXCEEDED sets `nx` when the deadline
-  /// passed before the call was queued.
+  /// passed before the session task took the call up, so no CALL was sent.
   pub async fn call(&self, method: &MethodName, arguments: Vec<Value>, options: CallOptions) -> Result<Value, CallError> {
     let deadline = options.deadline.and_then(|deadline| Instant::now().checked_add(deadline));
     let (reply, answer) = oneshot::channel();
     let token = self.tokens.fetch_add(1, Ordering::Relaxed);
+    let claim = Claim::default();
     let calling = Calling {
       token,
       method: method.clone(),
       arguments,
       deadline,
+      claim: claim.clone(),
       reply,
     };
-    if before(deadline, self.calls.send(calling), true).await?.is_err() {
+    let queued = before(deadline, self.calls.send(calling))
+      .await
+      .ok_or_else(|| CallError::deadline_exceeded(true))?;
+    if queued.is_err() {
       return Err(CallError::ended());
     }
     let mut pending = Pending {
       abandoned: &self.abandoned,
       token: Some(token),
-      answer,
+      claim,
     };
-    let answered = before(deadline, &mut pending.answer, false).await?;
+    let Some(answered) = before(deadline, answer).await else {
+      return Err(CallError::deadline_exceeded(pending.abandon()));
+    };
     pending.token = None;
     answered.unwrap_or_else(|_| Err(CallError::unavailable()))
   }
 }
 
-/// Waits for `future`, or fails with DEADLINE_EXCEEDED once `deadline` passes.
-async fn before<F: Future>(deadline: Option<Instant>, future: F, unsent: bool) -> Result<F::Output, CallError> {
+/// Waits for `future`, or gives `None` once `deadline` passes.
+async fn before<F: Future>(deadline: Option<Instant>, future: F) -> Option<F::Output> {
   match deadline {
-    Some(deadline) => timeout_at(deadline, future)
-      .await
-      .map_err(|_| CallError::deadline_exceeded(unsent)),
-    None => Ok(future.await),
+    Some(deadline) => timeout_at(deadline, future).await.ok(),
+    None => Some(future.await),
   }
 }
 
-/// A queued call the caller still waits for. Dropped early, it closes the answer before it tells
-/// the session task to abandon the call, so a task that reads the abandon before the call itself
-/// finds the answer closed and never sends the CALL.
+/// A queued call the caller still waits for. Given up before the session task opened it, the
+/// call is never sent; given up after, the session task is told to cancel it with CANCEL.
 struct Pending<'a> {
   abandoned: &'a mpsc::UnboundedSender<u64>,
   token: Option<u64>,
-  answer: oneshot::Receiver<Result<Value, CallError>>,
+  claim: Claim,
+}
+
+impl Pending<'_> {
+  /// Gives the call up now; true when it was never sent.
+  fn abandon(&mut self) -> bool {
+    let unsent = self.claim.abandon();
+    if unsent {
+      self.token = None;
+    }
+    unsent
+  }
 }
 
 impl Drop for Pending<'_> {
   fn drop(&mut self) {
-    if let Some(token) = self.token {
-      self.answer.close();
+    if let Some(token) = self.token
+      && !self.claim.abandon()
+    {
       let _ = self.abandoned.send(token);
     }
   }
