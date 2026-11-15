@@ -35,8 +35,8 @@ use tracing::subscriber::NoSubscriber;
 
 use super::{Calls, Disclosure, Failed, Lane, Refusal, RunningCall, authenticated, run, validate_call};
 use crate::auth::{AllowAll, AuthFailure, Authenticator, Authorizer, Permissive, Principal, RequestContext};
-use crate::methods::{Handler, HandlerError, MethodEntry, MethodName, MethodRegistry, StatusError};
-use crate::sessions::Registry;
+use crate::methods::{Context as HandlerContext, Handler, HandlerError, MethodEntry, MethodName, MethodRegistry, StatusError};
+use crate::sessions::{Handle, Registry};
 use crate::test_support::{EXPECT_WITHIN, floor_frame, has_ws_close, send, serve_on_loopback};
 use crate::websocket::{Config, Endpoint, SUBPROTOCOL, Transport};
 
@@ -2014,6 +2014,7 @@ async fn cancelled_after_it_finished(outcome: Result<Arg, Failed>) -> Command {
     streams: HashMap::new(),
     tasks: HashMap::new(),
     lane: Lane::default(),
+    session: Handle::new(mpsc::channel(1).0),
   };
   let task = calls.running.spawn(async move { outcome });
   let running = RunningCall {
@@ -2238,4 +2239,61 @@ async fn drops_and_logs_once_a_notification_the_authorizer_denies() {
   send(&mut socket, call_frame(2, "chat/ping", &[0x80])).await;
   assert_refused(&next_answer(&mut socket).await, 2, 16);
   assert!(record.lock().unwrap().is_empty());
+}
+
+fn saving() -> Arc<MethodRegistry<Handler>> {
+  let mut methods = MethodRegistry::new();
+  let progress = MethodName::parse("ui/progress").unwrap();
+  methods
+    .register_server_method(
+      "doc/save",
+      MethodEntry::call(Handler::with_context(0, move |context: HandlerContext, _| {
+        let progress = progress.clone();
+        async move {
+          for percent in [50, 100] {
+            assert!(context.notify(&progress, vec![Arg::Unsigned(percent)]).await.unwrap());
+          }
+          Ok(Arg::Null)
+        }
+      })),
+    )
+    .unwrap();
+  Arc::new(methods)
+}
+
+async fn saved(socket: &mut Socket, saving: Vec<u8>) -> (Vec<Vec<u8>>, Vec<Answer>) {
+  send(socket, saving).await;
+  let (mut notified, mut answers) = (Vec::new(), Vec::new());
+  for _ in 0..3 {
+    let answer = next_answer(socket).await;
+    if answer.frame_type == 0x20 {
+      assert_eq!(answer.stream, 0);
+      assert_eq!(answer.header, BTreeMap::from([(2, Value::Text("ui/progress".to_owned()))]));
+      notified.push(answer.data);
+    } else {
+      answers.push(answer);
+    }
+  }
+  (notified, answers)
+}
+
+#[tokio::test]
+async fn sends_a_handler_notifications_in_order_and_its_result() {
+  let mut socket = serving(saving()).await;
+  let (notified, answers) = saved(&mut socket, call_frame(2, "doc/save", &[0x80])).await;
+  assert_eq!(notified, [vec![0x81, 0x18, 50], vec![0x81, 0x18, 100]]);
+  assert!(matches!(answers.as_slice(), [answer] if (answer.stream, answer.frame_type) == (2, 0x13)));
+}
+
+#[tokio::test]
+async fn sends_a_handler_notifications_in_json_when_the_session_negotiated_it() {
+  let mut config = SessionConfig::default();
+  config.codecs = vec![Codec::Json];
+  let (address, _) = listen_serving(Registry::new(), saving(), config, Arc::new(Permissive), Arc::new(AllowAll)).await;
+  let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
+  send(&mut socket, hello_frame_with(b"json")).await;
+  next_welcome(&mut socket).await;
+  let (notified, answers) = saved(&mut socket, call_frame(2, "doc/save", b"[]")).await;
+  assert_eq!(notified, [b"[50]".to_vec(), b"[100]".to_vec()]);
+  assert!(matches!(answers.as_slice(), [answer] if answer.data == b"null"));
 }

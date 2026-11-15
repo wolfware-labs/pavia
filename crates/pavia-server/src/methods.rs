@@ -24,11 +24,15 @@ use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use pavia_proto::data::Value;
+use bytes::{Bytes, BytesMut};
+use pavia_proto::data::{self, Codec, EncodeError, Value};
 use pavia_proto::error::ErrorStatus;
 use pavia_proto::frame::Meta;
+use pavia_proto::session::Command;
 use pavia_proto::stream::{Shape, Side};
 use thiserror::Error;
+
+use crate::sessions::Handle;
 
 /// A method name that follows the rule of §8.1: `"<service>/<method>"`, each segment
 /// `[A-Za-z_][A-Za-z0-9_]*`.
@@ -182,12 +186,13 @@ impl<H> MethodEntry<H> {
 
 type Running = Pin<Box<dyn Future<Output = Result<Value, HandlerError>> + Send>>;
 
-type Run = dyn Fn(Vec<Value>) -> Running + Send + Sync;
+type Run = dyn Fn(Context, Vec<Value>) -> Running + Send + Sync;
 
 /// The code behind a method: it takes the CALL arguments as dynamic values (§8.2, §12.3) and
 /// returns the RESULT value, or with [`fallible`](Self::fallible) a [`HandlerError`]. A method
-/// with no return value returns [`Value::Null`], the codec's unit value. Typed handlers arrive with
-/// the typed codec mapping (#66).
+/// with no return value returns [`Value::Null`], the codec's unit value. A handler made with
+/// [`with_context`](Self::with_context) also gets the [`Context`] of the session that called it.
+/// Typed handlers arrive with the typed codec mapping (#66).
 #[derive(Clone)]
 pub struct Handler {
   params: usize,
@@ -217,9 +222,20 @@ impl Handler {
     F: Fn(Vec<Value>) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<Value, HandlerError>> + Send + 'static,
   {
+    Self::with_context(params, move |_, arguments| run(arguments))
+  }
+
+  /// A handler for a method with `params` parameters that can fail and reaches the session that
+  /// called it through its [`Context`], to notify the client for one.
+  #[must_use]
+  pub fn with_context<F, Fut>(params: usize, run: F) -> Self
+  where
+    F: Fn(Context, Vec<Value>) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<Value, HandlerError>> + Send + 'static,
+  {
     Self {
       params,
-      run: Arc::new(move |arguments| Box::pin(run(arguments))),
+      run: Arc::new(move |context, arguments| Box::pin(run(context, arguments))),
     }
   }
 
@@ -229,8 +245,8 @@ impl Handler {
     self.params
   }
 
-  pub(crate) fn run(&self, arguments: Vec<Value>) -> Running {
-    (self.run)(arguments)
+  pub(crate) fn run(&self, context: Context, arguments: Vec<Value>) -> Running {
+    (self.run)(context, arguments)
   }
 }
 
@@ -241,6 +257,50 @@ impl fmt::Debug for Handler {
       .field("params", &self.params)
       .finish_non_exhaustive()
   }
+}
+
+/// What a running handler knows of the session that called it. Cloning it is cheap.
+#[derive(Debug, Clone)]
+pub struct Context {
+  session: Handle,
+  codec: Codec,
+}
+
+impl Context {
+  pub(crate) const fn new(session: Handle, codec: Codec) -> Self {
+    Self { session, codec }
+  }
+
+  pub(crate) const fn codec(&self) -> Codec {
+    self.codec
+  }
+
+  /// Sends NOTIFY to the session's client, calling its client method `method` with `arguments`
+  /// encoded as one array in the session codec (§9.1). Notifications from one handler reach the
+  /// client in the order they were sent, on the control stream; nothing orders them against the
+  /// call's answer (§8.9). It waits while the session's command queue is full. The client never
+  /// answers, so a notification it cannot take, one above its `max_frame` for one, is dropped.
+  ///
+  /// Returns `false`, and sends nothing, when the session has already ended: a send to an ended
+  /// session is a no-op (§13.1).
+  ///
+  /// # Errors
+  ///
+  /// [`EncodeError`] when the session codec cannot encode `arguments`; nothing is sent.
+  pub async fn notify(&self, method: &MethodName, arguments: Vec<Value>) -> Result<bool, EncodeError> {
+    let data = encode(&Value::Array(arguments), self.codec)?;
+    let notify = Command::Notify {
+      method: method.as_str().to_owned(),
+      data,
+    };
+    Ok(self.session.send(notify).await.is_ok())
+  }
+}
+
+pub(crate) fn encode(value: &Value, codec: Codec) -> Result<Bytes, EncodeError> {
+  let mut encoded = BytesMut::new();
+  data::encode(value, codec, &mut encoded)?;
+  Ok(encoded.freeze())
 }
 
 /// How a handler failed (§8.4).

@@ -1,12 +1,16 @@
 use pavia_proto::stream::Shape;
 
-use pavia_proto::data::Value;
+use bytes::Bytes;
+use pavia_proto::data::{Codec, Value};
 use pavia_proto::error::ErrorStatus;
 use pavia_proto::registry::StatusCode;
+use pavia_proto::session::Command;
+use tokio::sync::mpsc;
 
 use super::{
-  Handler, HandlerError, InvalidMethodName, Kind, MethodEntry, MethodName, MethodRegistry, RegisterError, StatusError,
+  Context, Handler, HandlerError, InvalidMethodName, Kind, MethodEntry, MethodName, MethodRegistry, RegisterError, StatusError,
 };
+use crate::sessions::Handle;
 
 #[test]
 fn accepts_names_that_follow_the_rule() {
@@ -205,4 +209,46 @@ fn takes_an_anyhow_error_as_unexpected_with_its_chain() {
   };
   assert_eq!(boxed.to_string(), "saving the user");
   assert_eq!(boxed.source().map(ToString::to_string).as_deref(), Some("connection reset"));
+}
+
+fn context(codec: Codec) -> (Context, mpsc::Receiver<Command>) {
+  let (sender, commands) = mpsc::channel(4);
+  (Context::new(Handle::new(sender), codec), commands)
+}
+
+fn progress() -> MethodName {
+  MethodName::parse("ui/progress").unwrap()
+}
+
+#[tokio::test]
+async fn queues_a_notification_with_its_arguments_in_the_session_codec() {
+  for (codec, data) in [(Codec::Cbor, &[0x81, 0x18, 50][..]), (Codec::Json, b"[50]")] {
+    let (context, mut commands) = context(codec);
+    assert!(context.notify(&progress(), vec![Value::Unsigned(50)]).await.unwrap());
+    assert_eq!(
+      commands.try_recv().unwrap(),
+      Command::Notify {
+        method: "ui/progress".to_owned(),
+        data: Bytes::copy_from_slice(data),
+      }
+    );
+  }
+}
+
+#[tokio::test]
+async fn returns_false_and_sends_nothing_once_the_session_has_ended() {
+  let (context, commands) = context(Codec::Cbor);
+  drop(commands);
+  let handler = Handler::with_context(0, |context: Context, _| async move {
+    let delivered = context.notify(&progress(), vec![Value::Unsigned(100)]).await;
+    Ok(Value::Bool(delivered.unwrap()))
+  });
+  assert!(matches!(handler.run(context, Vec::new()).await, Ok(Value::Bool(false))));
+}
+
+#[tokio::test]
+async fn refuses_arguments_the_session_codec_cannot_encode_and_sends_nothing() {
+  let (context, mut commands) = context(Codec::Cbor);
+  assert!(context.notify(&progress(), vec![Value::Simple(25)]).await.is_err());
+  assert!(commands.try_recv().is_err());
 }

@@ -14,7 +14,7 @@ use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use futures_util::FutureExt;
 use pavia_proto::caps::Capability;
 use pavia_proto::data::{self, Codec, DecodeLimits, Value};
@@ -28,7 +28,7 @@ use tokio::task::{self, AbortHandle, JoinError, JoinSet};
 use tokio::time::{Instant, sleep_until};
 
 use crate::auth::{AuthFailure, Authenticator, Authorizer, Principal};
-use crate::methods::{Handler, HandlerError, Kind, MethodName, MethodRegistry};
+use crate::methods::{Context, Handler, HandlerError, Kind, MethodName, MethodRegistry, encode};
 use crate::session_id;
 use crate::sessions::{Handle, Registration, Registry};
 use crate::websocket::{Received, Transport, TransportError};
@@ -62,6 +62,9 @@ type Authenticating<'a> = Pin<Box<dyn Future<Output = Result<Principal, AuthFail
 /// value the codec cannot encode) is answered INTERNAL with the configured generic message, or its
 /// own text cut to `MAX_INTERNAL_ERROR_MESSAGE` bytes in development mode, and logged in full with
 /// `tracing` either way (§8.4, §14).
+/// A handler made with [`Handler::with_context`] can notify the client through its [`Context`]
+/// while it runs: each NOTIFY goes out on the control stream in the order the handler sent it,
+/// with nothing ordering it against the call's answer (§8.9, §9.1).
 /// Handlers still running when the session ends are dropped with it. A CANCEL from the client on a
 /// call not answered yet drops that call's handler, and once it is dropped the call is answered
 /// ERROR CANCELLED in place of whatever the handler returned; a failure it had already hit is
@@ -95,9 +98,10 @@ pub async fn run<A: Authenticator, Z: Authorizer + 'static>(
   authorizer: &Arc<Z>,
 ) -> Ending {
   let (sender, mut commands) = mpsc::channel(COMMAND_QUEUE);
+  let handle = Handle::new(sender);
   let mut membership = Membership {
     registry,
-    handle: Handle::new(sender),
+    handle: handle.clone(),
     welcoming: None,
     registration: None,
   };
@@ -113,6 +117,7 @@ pub async fn run<A: Authenticator, Z: Authorizer + 'static>(
     streams: HashMap::new(),
     tasks: HashMap::new(),
     lane: Lane::default(),
+    session: handle,
   };
   let mut session = Session::server(transport.session(), transport.accepted().into_std());
   let context = transport.context().clone();
@@ -211,6 +216,7 @@ struct Calls<'a, Z> {
   streams: HashMap<task::Id, RunningCall>,
   tasks: HashMap<u64, AbortHandle>,
   lane: Lane,
+  session: Handle,
 }
 
 struct RunningCall {
@@ -346,9 +352,10 @@ impl<Z: Authorizer + 'static> Calls<'_, Z> {
     };
     let (method, handler) = (name.clone(), handler.clone());
     let (authorizer, principal) = (Arc::clone(&self.authorizer), Arc::clone(&self.principal));
+    let context = Context::new(self.session.clone(), codec(session));
     let task = self.running.spawn(async move {
       if authorizer.authorize(&principal, &method).await {
-        handler.run(arguments).await.map_err(Failed::Handler)
+        handler.run(context, arguments).await.map_err(Failed::Handler)
       } else {
         Err(Failed::Refused(Refusal::denied(&principal)))
       }
@@ -424,12 +431,6 @@ fn cancelled_answer(stream: u64) -> Command {
   }
 }
 
-fn encode(value: &Value, codec: Codec) -> Result<Bytes, data::EncodeError> {
-  let mut encoded = BytesMut::new();
-  data::encode(value, codec, &mut encoded)?;
-  Ok(encoded.freeze())
-}
-
 fn codec(session: &Session) -> Codec {
   session.negotiated().map_or(Codec::Cbor, |negotiated| negotiated.codec)
 }
@@ -468,10 +469,10 @@ async fn carry_out<Z: Authorizer + 'static>(
         membership.welcoming = Some(session);
       }
       Output::Notify { notify } => {
-        let codec = codec(session);
+        let context = Context::new(calls.session.clone(), codec(session));
         calls
           .lane
-          .receive(&notify, calls.methods, codec, &calls.authorizer, &calls.principal);
+          .receive(&notify, calls.methods, context, &calls.authorizer, &calls.principal);
       }
       Output::Call { stream, call } => {
         if let Some(refusal) = calls.dispatch(stream, &call, session) {

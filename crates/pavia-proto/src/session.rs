@@ -53,7 +53,8 @@
 //! §8.2; the driver makes the rest. CANCEL on a call still waiting for its answer yields
 //! [`Output::Cancelled`]; the driver answers ERROR CANCELLED once the handler has stopped, and
 //! that answer frees the call's slot (§8.5). A NOTIFY on the control stream becomes
-//! [`Output::Notify`], in arrival order, and is never answered (§9.1). Frames on the control
+//! [`Output::Notify`], in arrival order, and is never answered (§9.1); the driver's
+//! [`Command::Notify`] sends one to the client the same way. Frames on the control
 //! stream other than these are otherwise ignored until their feature lands.
 //! PING, PONG and CLOSE skip ahead of other queued outputs, in the order they were made (§6.6,
 //! §13.5), but never ahead of WELCOME, the server's first frame (§6.2). Sending CLOSE drops what is
@@ -69,7 +70,7 @@ use crate::caps::{self, Capability, Caps};
 use crate::data::Codec;
 use crate::error::{Outcome, ProtocolError};
 use crate::frame::{
-  Auth, Call, CallError, CallResult, Close, Frame, FrameType, Heartbeat, Hello, Meta, Notify, Reject, Welcome,
+  Auth, Call, CallError, CallResult, Close, Frame, FrameType, Heartbeat, Hello, Meta, Notify, Reject, Sequencing, Welcome,
 };
 use crate::negotiate;
 use crate::registry::{CloseCode, StatusCode};
@@ -150,6 +151,16 @@ pub enum Command {
     meta: Option<Meta>,
     /// The typed error detail, already encoded in the session codec, or empty (§8.4).
     detail: Bytes,
+  },
+  /// Send NOTIFY on the control stream, calling the client method `method` with `data`, the
+  /// arguments already encoded as one array in the session codec (§9.1). Ignored unless the
+  /// session is established, and dropped when the frame is above the client's `max_frame` or the
+  /// default header limit, since the client never answers a NOTIFY.
+  Notify {
+    /// The client method.
+    method: String,
+    /// The data section.
+    data: Bytes,
   },
 }
 
@@ -412,6 +423,7 @@ impl Session {
         };
         self.answer(stream, &Frame::Error(error));
       }
+      Input::Command(Command::Notify { method, data }) => self.notify(method, data),
       Input::Message(_) | Input::Timeout | Input::Authenticated { .. } | Input::AuthFailed(_) if expired => {
         self.close(CloseCode::HandshakeTimeout, None);
       }
@@ -675,11 +687,25 @@ impl Session {
     }
   }
 
+  fn notify(&mut self, method: String, data: Bytes) {
+    let notify = Frame::Notify(Notify {
+      method,
+      meta: None,
+      sequencing: Sequencing::default(),
+      data,
+    });
+    if matches!(self.state, State::Established { .. }) && self.fits(&notify) {
+      self.transmit(&notify);
+    }
+  }
+
+  fn fits(&self, frame: &Frame) -> bool {
+    frame.payload_length().is_ok_and(|length| length <= self.peer_max_frame()) && frame.header_length() <= peer_max_header()
+  }
+
   fn answer(&mut self, stream: u64, frame: &Frame) {
     let too_large;
-    let fits =
-      frame.payload_length().is_ok_and(|length| length <= self.peer_max_frame()) && frame.header_length() <= peer_max_header();
-    let frame = if fits {
+    let frame = if self.fits(frame) {
       frame
     } else {
       too_large = Frame::Error(call_error(
