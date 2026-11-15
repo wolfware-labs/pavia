@@ -118,7 +118,11 @@ async fn refuses_queued_calls_as_calls_to_an_ended_session() {
     tokio::task::yield_now().await;
   }
   inbox.refuse_queued_calls();
-  let error = call.await.unwrap().unwrap_err();
+  let error = tokio::time::timeout(EXPECT_WITHIN, call)
+    .await
+    .expect("the queued call to be refused")
+    .unwrap()
+    .unwrap_err();
   assert_eq!(
     (error.code(), error.nx(), error.msg()),
     (StatusCode::NotFound, true, "the session has ended")
