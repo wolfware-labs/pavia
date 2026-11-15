@@ -65,10 +65,11 @@ type Authenticating<'a> = Pin<Box<dyn Future<Output = Result<Principal, AuthFail
 /// A handler made with [`Handler::with_context`] can notify the client through its
 /// [`HandlerContext`] while it runs: each NOTIFY goes out on the control stream in the order the
 /// handler sent it, with nothing ordering it against the call's answer (§8.9, §9.1).
-/// Handlers still running when the session ends are dropped with it. A CANCEL from the client on a
-/// call not answered yet drops that call's handler, and once it is dropped the call is answered
-/// ERROR CANCELLED in place of whatever the handler returned; a failure it had already hit is
-/// still logged (§8.5).
+/// Handlers still running when the session ends are dropped with it, and from that moment the
+/// session's [`Handle`] refuses commands, even while its last frames are still being written. A
+/// CANCEL from the client on a call not answered yet drops that call's handler, and once it is
+/// dropped the call is answered ERROR CANCELLED in place of whatever the handler returned; a
+/// failure it had already hit is still logged (§8.5).
 /// A NOTIFY on the control stream runs its `notify` method and is never answered: an unknown
 /// method, a `call` method, arguments that do not fit, a refusal by the authorizer or a failing
 /// handler is logged with the session ID and the method and dropped. Notification handlers run one

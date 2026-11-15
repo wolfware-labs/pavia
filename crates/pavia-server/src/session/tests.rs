@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use ciborium::Value;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{FutureExt, SinkExt, StreamExt};
 use hyper::header::{self, HeaderValue};
 use pavia_proto::data::{Codec, Value as Arg};
 use pavia_proto::error::ErrorStatus;
@@ -1010,25 +1010,21 @@ async fn removes_a_session_once_when_its_close_meets_the_idle_timeout() {
   eventually(|| registry.is_empty(), "every session leaves the registry").await;
 }
 
-struct FailingWrites {
+struct ProbedWrites<P> {
   inner: DuplexStream,
-  failing: Arc<AtomicBool>,
-  registry: Registry,
-  registered_at_failure: Arc<Mutex<Option<usize>>>,
+  probe: P,
 }
 
-impl AsyncRead for FailingWrites {
+impl<P: Unpin> AsyncRead for ProbedWrites<P> {
   fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
     Pin::new(&mut self.inner).poll_read(cx, buf)
   }
 }
 
-impl AsyncWrite for FailingWrites {
+impl<P: FnMut() -> io::Result<()> + Unpin> AsyncWrite for ProbedWrites<P> {
   fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
-    if self.failing.load(Ordering::SeqCst) {
-      let registered = self.registry.len();
-      self.registered_at_failure.lock().unwrap().get_or_insert(registered);
-      return Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()));
+    if let Err(error) = (self.probe)() {
+      return Poll::Ready(Err(error));
     }
     Pin::new(&mut self.inner).poll_write(cx, buf)
   }
@@ -1084,11 +1080,17 @@ async fn never_registers_a_session_whose_welcome_cannot_be_written() {
     })
   });
   let (client, server) = tokio::io::duplex(4096);
-  let server = FailingWrites {
+  let probed = registry.clone();
+  let failure = Arc::clone(&registered_at_failure);
+  let server = ProbedWrites {
     inner: server,
-    failing,
-    registry: registry.clone(),
-    registered_at_failure: Arc::clone(&registered_at_failure),
+    probe: move || {
+      if failing.load(Ordering::SeqCst) {
+        failure.lock().unwrap().get_or_insert(probed.len());
+        return Err(io::ErrorKind::BrokenPipe.into());
+      }
+      Ok(())
+    },
   };
   tokio::spawn(async move { endpoint.serve_connection(server, None).await });
   let mut socket = open(client).await;
@@ -1097,6 +1099,42 @@ async fn never_registers_a_session_whose_welcome_cannot_be_written() {
   assert_eq!(ending, Ending::TransportLost);
   assert_eq!(*registered_at_failure.lock().unwrap(), Some(0));
   assert!(registry.is_empty());
+}
+
+#[tokio::test]
+async fn refuses_commands_while_the_closing_frame_is_written() {
+  let registry = Registry::new();
+  let (endpoint, mut endings) = recording(&registry, SessionConfig::default());
+  let armed: Arc<Mutex<Option<SessionId>>> = Arc::default();
+  let refused = Arc::new(Mutex::new(None));
+  let (probed, probe_armed, probe_refused) = (registry.clone(), Arc::clone(&armed), Arc::clone(&refused));
+  let (client, server) = tokio::io::duplex(4096);
+  let server = ProbedWrites {
+    inner: server,
+    probe: move || {
+      if let Some(id) = probe_armed.lock().unwrap().take() {
+        let late = Command::Notify {
+          method: "late".to_owned(),
+          data: Bytes::new(),
+        };
+        *probe_refused.lock().unwrap() = probed
+          .get(&id)
+          .map(|handle| handle.send(late).now_or_never().is_some_and(|sent| sent.is_err()));
+      }
+      Ok(())
+    },
+  };
+  tokio::spawn(async move { endpoint.serve_connection(server, None).await });
+  let mut socket = open(client).await;
+  let id = established(&mut socket).await;
+  *armed.lock().unwrap() = Some(id);
+  send(&mut socket, close_frame(0)).await;
+  collect(&mut endings, 1).await;
+  assert_eq!(
+    *refused.lock().unwrap(),
+    Some(true),
+    "the session is still registered while its CLOSE is written, and refuses commands"
+  );
 }
 
 fn call_frame(stream: u8, method: &str, data: &[u8]) -> Vec<u8> {
