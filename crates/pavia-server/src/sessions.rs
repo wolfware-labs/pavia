@@ -3,7 +3,8 @@
 //! [`session::run`](crate::session::run) registers a session once the WELCOME that establishes
 //! it is written, and the session leaves the registry when `run` returns, whatever ended it.
 //! Before WELCOME a session is not reachable from here (§14), so a command sent to it through the
-//! registry can never arrive ahead of WELCOME.
+//! registry can never arrive ahead of WELCOME. [`Registry::call`] and [`Handle::call`] call a
+//! method of a session's client (§8.8).
 //!
 //! ```text
 //!  HELLO ─▶ authenticator ─▶ WELCOME written: register ─▶ … ─▶ run returns: removed
@@ -14,21 +15,78 @@
 //! (§13.4, #100, #104), so no observer sees one without the other.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use pavia_proto::data::Value;
 use pavia_proto::session::Command;
 use pavia_proto::session_id::SessionId;
-use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
+use tokio::sync::{mpsc, oneshot};
 
-/// A handle to one running session: commands sent through it reach the session's task in order.
+use crate::methods::MethodName;
+
+mod call;
+
+pub use call::{CallError, CallOptions};
+
+const QUEUE: usize = 32;
+
+/// A handle to one running session: commands sent through it reach the session's task in order,
+/// and [`call`](Self::call) calls a method of its client.
 #[derive(Debug, Clone)]
-pub struct Handle(mpsc::Sender<Command>);
+pub struct Handle {
+  commands: mpsc::Sender<Command>,
+  calls: mpsc::Sender<Calling>,
+  abandoned: mpsc::UnboundedSender<u64>,
+  tokens: Arc<AtomicU64>,
+}
+
+/// The receiving side of a [`Handle`], read by the session's task.
+#[derive(Debug)]
+pub(crate) struct Inbox {
+  pub(crate) commands: mpsc::Receiver<Command>,
+  pub(crate) calls: mpsc::Receiver<Calling>,
+  pub(crate) abandoned: mpsc::UnboundedReceiver<u64>,
+}
+
+impl Inbox {
+  /// Refuses everything sent from now on; what is already queued can still be read.
+  pub(crate) fn close(&mut self) {
+    self.commands.close();
+    self.calls.close();
+    self.abandoned.close();
+  }
+}
+
+/// A server call on its way to the session's task.
+#[derive(Debug)]
+pub(crate) struct Calling {
+  pub(crate) token: u64,
+  pub(crate) method: MethodName,
+  pub(crate) arguments: Vec<Value>,
+  pub(crate) options: CallOptions,
+  pub(crate) reply: oneshot::Sender<Result<Value, CallError>>,
+}
 
 impl Handle {
-  #[must_use]
-  pub(crate) const fn new(commands: mpsc::Sender<Command>) -> Self {
-    Self(commands)
+  /// A handle and the inbox its session's task reads.
+  pub(crate) fn channel() -> (Self, Inbox) {
+    let (commands, command_inbox) = mpsc::channel(QUEUE);
+    let (calls, call_inbox) = mpsc::channel(QUEUE);
+    let (abandoned, abandoned_inbox) = mpsc::unbounded_channel();
+    let handle = Self {
+      commands,
+      calls,
+      abandoned,
+      tokens: Arc::default(),
+    };
+    let inbox = Inbox {
+      commands: command_inbox,
+      calls: call_inbox,
+      abandoned: abandoned_inbox,
+    };
+    (handle, inbox)
   }
 
   /// Sends `command` to the session, waiting while its command queue is full.
@@ -37,7 +95,64 @@ impl Handle {
   ///
   /// Gives the command back when the session has ended.
   pub async fn send(&self, command: Command) -> Result<(), SendError<Command>> {
-    self.0.send(command).await
+    self.commands.send(command).await
+  }
+
+  /// Calls the client method `method` of this session with `arguments`, encoded as one array in
+  /// the session codec, and returns its RESULT decoded (§8.8). The client must have been granted
+  /// `server-calls`, and at most its HELLO `max_calls` server calls are open at once (§6.5).
+  ///
+  /// With a [`deadline`](CallOptions::deadline) the CALL carries it, and once it passes the call
+  /// is cancelled with CANCEL and fails with DEADLINE_EXCEEDED (§8.6). Dropping the returned
+  /// future before the answer cancels the call the same way, so it never holds one of the
+  /// client's `max_calls` slots for nothing.
+  ///
+  /// # Errors
+  ///
+  /// The client's ERROR, as given. Locally, with [`nx`](CallError::nx) set since nothing was
+  /// sent: NOT_FOUND once the session has ended, FAILED_PRECONDITION without `server-calls`,
+  /// RESOURCE_EXHAUSTED at the client's `max_calls` or for a CALL above its `max_frame`, and
+  /// INVALID_ARGUMENT for arguments the session codec cannot encode. Without `nx`: UNAVAILABLE
+  /// when the session ends before the answer, DEADLINE_EXCEEDED, and INTERNAL for a RESULT that
+  /// does not decode.
+  pub async fn call(&self, method: &MethodName, arguments: Vec<Value>, options: CallOptions) -> Result<Value, CallError> {
+    let (reply, answer) = oneshot::channel();
+    let token = self.tokens.fetch_add(1, Ordering::Relaxed);
+    let calling = Calling {
+      token,
+      method: method.clone(),
+      arguments,
+      options,
+      reply,
+    };
+    if self.calls.send(calling).await.is_err() {
+      return Err(CallError::ended());
+    }
+    let mut pending = Pending {
+      abandoned: &self.abandoned,
+      token: Some(token),
+    };
+    let answered = match options.deadline {
+      Some(deadline) => tokio::time::timeout(deadline, answer)
+        .await
+        .map_err(|_| CallError::deadline_exceeded())?,
+      None => answer.await,
+    };
+    pending.token = None;
+    answered.unwrap_or_else(|_| Err(CallError::unavailable()))
+  }
+}
+
+struct Pending<'a> {
+  abandoned: &'a mpsc::UnboundedSender<u64>,
+  token: Option<u64>,
+}
+
+impl Drop for Pending<'_> {
+  fn drop(&mut self) {
+    if let Some(token) = self.token {
+      let _ = self.abandoned.send(token);
+    }
   }
 }
 
@@ -82,6 +197,24 @@ impl Registry {
   #[must_use]
   pub fn get(&self, id: &SessionId) -> Option<Handle> {
     self.lock().sessions.get(id).map(|entry| entry.handle.clone())
+  }
+
+  /// Calls the client method `method` of the established session `id`, as
+  /// [`Handle::call`] does.
+  ///
+  /// # Errors
+  ///
+  /// NOT_FOUND with [`nx`](CallError::nx) when no session `id` is running (§8.8), and the errors
+  /// of [`Handle::call`].
+  pub async fn call(
+    &self,
+    id: &SessionId,
+    method: &MethodName,
+    arguments: Vec<Value>,
+    options: CallOptions,
+  ) -> Result<Value, CallError> {
+    let handle = self.get(id).ok_or_else(CallError::ended)?;
+    handle.call(method, arguments, options).await
   }
 
   /// Registers the session `id`, reachable through `handle`, until the returned guard is dropped.

@@ -11,8 +11,8 @@ fn id(text: &str) -> SessionId {
 }
 
 fn handle() -> (Handle, mpsc::Receiver<Command>) {
-  let (sender, receiver) = mpsc::channel(1);
-  (Handle::new(sender), receiver)
+  let (handle, inbox) = Handle::channel();
+  (handle, inbox.commands)
 }
 
 const CLOSE: Command = Command::Close {

@@ -213,8 +213,8 @@ fn takes_an_anyhow_error_as_unexpected_with_its_chain() {
 }
 
 fn context(codec: Codec) -> (HandlerContext, mpsc::Receiver<Command>) {
-  let (sender, commands) = mpsc::channel(4);
-  (HandlerContext::new(Handle::new(sender), codec), commands)
+  let (handle, inbox) = Handle::channel();
+  (HandlerContext::new(handle, codec), inbox.commands)
 }
 
 fn progress() -> MethodName {

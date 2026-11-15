@@ -23,21 +23,20 @@ use pavia_proto::registry::{CloseCode, StatusCode};
 use pavia_proto::session::{Command, Config as SessionConfig, Ending, Input, Output, Session};
 use pavia_proto::session_id::SessionId;
 use pavia_proto::stream::Shape;
-use tokio::sync::mpsc;
 use tokio::task::{self, AbortHandle, JoinError, JoinSet};
 use tokio::time::{Instant, sleep_until};
 
 use crate::auth::{AuthFailure, Authenticator, Authorizer, Principal};
 use crate::methods::{Handler, HandlerContext, HandlerError, Kind, MethodName, MethodRegistry, encode};
 use crate::session_id;
-use crate::sessions::{Handle, Registration, Registry};
+use crate::sessions::{Handle, Inbox, Registration, Registry};
 use crate::websocket::{Received, Transport, TransportError};
 
 mod lane;
+mod outgoing;
 
 use lane::Lane;
-
-const COMMAND_QUEUE: usize = 32;
+use outgoing::Outgoing;
 
 type Authenticating<'a> = Pin<Box<dyn Future<Output = Result<Principal, AuthFailure>> + Send + 'a>>;
 
@@ -64,7 +63,10 @@ type Authenticating<'a> = Pin<Box<dyn Future<Output = Result<Principal, AuthFail
 /// `tracing` either way (§8.4, §14).
 /// A handler made with [`Handler::with_context`] can notify the client through its
 /// [`HandlerContext`] while it runs: each NOTIFY goes out on the control stream in the order the
-/// handler sent it, with nothing ordering it against the call's answer (§8.9, §9.1).
+/// handler sent it, with nothing ordering it against the call's answer (§8.9, §9.1). The
+/// application calls a method of the client through the session's [`Handle`], or a handler through
+/// its context: the call goes out on the next odd stream and waits for the client's answer, and a
+/// call still waiting when the session ends fails with UNAVAILABLE (§8.8).
 /// Handlers still running when the session ends are dropped with it, and from that moment the
 /// session's [`Handle`] refuses commands, even while its last frames are still being written. A
 /// CANCEL from the client on a call not answered yet drops that call's handler, and once it is
@@ -98,8 +100,7 @@ pub async fn run<A: Authenticator, Z: Authorizer + 'static>(
   authenticator: &A,
   authorizer: &Arc<Z>,
 ) -> Ending {
-  let (sender, mut commands) = mpsc::channel(COMMAND_QUEUE);
-  let handle = Handle::new(sender);
+  let (handle, mut inbox) = Handle::channel();
   let mut membership = Membership {
     registry,
     handle: handle.clone(),
@@ -118,6 +119,7 @@ pub async fn run<A: Authenticator, Z: Authorizer + 'static>(
     streams: HashMap::new(),
     tasks: HashMap::new(),
     lane: Lane::default(),
+    outgoing: Outgoing::default(),
     handle,
   };
   let mut session = Session::server(transport.session(), transport.accepted().into_std());
@@ -128,24 +130,32 @@ pub async fn run<A: Authenticator, Z: Authorizer + 'static>(
     let deadline = session.poll_timeout().map(Instant::from_std);
     let input = tokio::select! {
       () = sleep_until(deadline.unwrap_or_else(Instant::now)), if deadline.is_some() => {
-        transport.recv().now_or_never().map_or(Input::Timeout, received_input)
+        Some(transport.recv().now_or_never().map_or(Input::Timeout, received_input))
       }
       answer = async { authenticating.as_mut().expect("guarded by the branch condition").await },
         if authenticating.is_some() => {
         answered = true;
-        match answer {
+        Some(match answer {
           Ok(principal) => {
             let input = authenticated(&principal, session_id::generate());
             calls.principal = Arc::new(principal);
             input
           }
           Err(failure) => Input::AuthFailed(failure),
-        }
+        })
       },
-      received = transport.recv() => received_input(received),
-      Some(command) = commands.recv() => Input::Command(command),
+      received = transport.recv() => Some(received_input(received)),
+      Some(command) = inbox.commands.recv() => Some(Input::Command(command)),
+      Some(calling) = inbox.calls.recv() => {
+        let codec = codec(&session);
+        calls.outgoing.open(&mut session, calling, codec);
+        None
+      }
+      Some(token) = inbox.abandoned.recv() => {
+        calls.outgoing.abandon(token).map(|stream| Input::Command(Command::Cancel { stream }))
+      }
       Some(joined) = calls.running.join_next_with_id(), if !calls.running.is_empty() => {
-        calls.answered(joined, codec(&session))
+        Some(calls.answered(joined, codec(&session)))
       }
       Some(joined) = calls.lane.join() => {
         calls.lane.finished(joined);
@@ -155,8 +165,10 @@ pub async fn run<A: Authenticator, Z: Authorizer + 'static>(
     if answered {
       authenticating = None;
     }
-    session.handle_input(input, Instant::now().into_std());
-    match carry_out(&mut session, &mut transport, &mut membership, &mut calls, &mut commands).await {
+    if let Some(input) = input {
+      session.handle_input(input, Instant::now().into_std());
+    }
+    match carry_out(&mut session, &mut transport, &mut membership, &mut calls, &mut inbox).await {
       Step::Continue => {}
       Step::Authenticate(auth) => {
         let context = &context;
@@ -217,6 +229,7 @@ struct Calls<'a, Z> {
   streams: HashMap<task::Id, RunningCall>,
   tasks: HashMap<u64, AbortHandle>,
   lane: Lane,
+  outgoing: Outgoing,
   handle: Handle,
 }
 
@@ -451,12 +464,13 @@ async fn carry_out<Z: Authorizer + 'static>(
   transport: &mut Transport,
   membership: &mut Membership<'_>,
   calls: &mut Calls<'_, Z>,
-  commands: &mut mpsc::Receiver<Command>,
+  inbox: &mut Inbox,
 ) -> Step {
   let mut step = Step::Continue;
   while let Some(output) = session.poll_output() {
     if session.is_ended() {
-      commands.close();
+      inbox.close();
+      calls.outgoing.clear();
     }
     let welcoming = membership.welcoming.take();
     match output {
@@ -499,6 +513,7 @@ async fn carry_out<Z: Authorizer + 'static>(
         }
       }
       Output::Cancelled { stream } => calls.cancel(stream),
+      Output::Answered { stream, answer } => calls.outgoing.answered(stream, answer, codec(session)),
       Output::Ended(ending) => return Step::Ended(ending),
       _ => {}
     }

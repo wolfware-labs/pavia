@@ -353,7 +353,6 @@ impl Calls {
 
 /// The client's answer to a server call (§8.4).
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum Answer {
   /// RESULT: the call succeeded.
   Result(CallResult),
@@ -386,6 +385,17 @@ impl CallRefused {
       Self::NotEstablished => StatusCode::NotFound,
       Self::NotGranted => StatusCode::FailedPrecondition,
       Self::TooManyCalls | Self::TooLarge => StatusCode::ResourceExhausted,
+    }
+  }
+
+  /// A message for the caller's local error.
+  #[must_use]
+  pub const fn msg(self) -> &'static str {
+    match self {
+      Self::NotEstablished => "the session has ended",
+      Self::NotGranted => "the client was not granted server-calls",
+      Self::TooManyCalls => "as many server calls are open as the client's max_calls",
+      Self::TooLarge => "the CALL is above the client's max_frame or header limit",
     }
   }
 }
