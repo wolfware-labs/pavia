@@ -55,6 +55,15 @@ impl CallError {
     Self::new(StatusCode::Unavailable, "the session ended before the answer", false, None)
   }
 
+  pub(crate) fn deadline_too_far() -> Self {
+    Self::new(
+      StatusCode::InvalidArgument,
+      "the deadline is too far away to count down to",
+      true,
+      None,
+    )
+  }
+
   pub(crate) fn deadline_exceeded(unsent: bool) -> Self {
     Self::new(
       StatusCode::DeadlineExceeded,

@@ -153,3 +153,12 @@ async fn counts_the_wait_for_queue_space_against_the_deadline() {
     .unwrap_err();
   assert_eq!((error.code(), error.nx()), (StatusCode::DeadlineExceeded, true));
 }
+
+#[tokio::test]
+async fn refuses_a_deadline_too_far_away_to_count_down_to() {
+  let (handle, mut inbox) = Handle::channel();
+  let options = CallOptions::default().with_deadline(Duration::MAX);
+  let error = handle.call(&confirm(), Vec::new(), options).await.unwrap_err();
+  assert_eq!((error.code(), error.nx()), (StatusCode::InvalidArgument, true));
+  assert!(inbox.calls.try_recv().is_err());
+}

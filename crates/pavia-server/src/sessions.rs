@@ -154,12 +154,16 @@ impl Handle {
   /// The client's ERROR, as given. Locally, with [`nx`](CallError::nx) set since nothing was
   /// sent: NOT_FOUND once the session has ended, FAILED_PRECONDITION without `server-calls`,
   /// RESOURCE_EXHAUSTED at the client's `max_calls` or for a CALL above its `max_frame`, and
-  /// INVALID_ARGUMENT for arguments the session codec cannot encode. Without `nx`: UNAVAILABLE
+  /// INVALID_ARGUMENT for arguments the session codec cannot encode or a deadline too far away to
+  /// count down to. Without `nx`: UNAVAILABLE
   /// when the session ends before the answer, DEADLINE_EXCEEDED, and INTERNAL for a RESULT or an
   /// ERROR detail that does not decode (§8.10). DEADLINE_EXCEEDED sets `nx` when the deadline
   /// passed before the session task took the call up, so no CALL was sent.
   pub async fn call(&self, method: &MethodName, arguments: Vec<Value>, options: CallOptions) -> Result<Value, CallError> {
-    let deadline = options.deadline.and_then(|deadline| Instant::now().checked_add(deadline));
+    let deadline = match options.deadline {
+      Some(deadline) => Some(Instant::now().checked_add(deadline).ok_or_else(CallError::deadline_too_far)?),
+      None => None,
+    };
     let (reply, answer) = oneshot::channel();
     let token = self.tokens.fetch_add(1, Ordering::Relaxed);
     let claim = Claim::default();
