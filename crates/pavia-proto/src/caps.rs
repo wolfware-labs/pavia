@@ -77,7 +77,7 @@ impl Capability {
 }
 
 /// The capabilities this build implements. Only these can be granted.
-pub const IMPLEMENTED: &[Capability] = &[Capability::Calls];
+pub const IMPLEMENTED: &[Capability] = &[Capability::Calls, Capability::ServerCalls];
 
 /// A set of capabilities, kept in §7.10 order so it serializes the same way every time.
 #[derive(Debug, Clone, PartialEq, Eq)]

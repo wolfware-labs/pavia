@@ -122,7 +122,7 @@ const fn first_id(side: Side) -> u64 {
   }
 }
 
-const fn initiator(stream_id: u64) -> Side {
+pub(crate) const fn initiator(stream_id: u64) -> Side {
   if stream_id.is_multiple_of(2) {
     Side::Client
   } else {
