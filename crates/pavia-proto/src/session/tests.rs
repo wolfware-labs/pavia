@@ -7,7 +7,7 @@ use crate::data::Codec;
 use crate::frame::Reject;
 use crate::frame::{
   AckMap, Auth, Call, CallError, CallResult, Cancel, Close, End, Frame, FrameType, Heartbeat, Hello, Item, Limits, Meta,
-  MetaName, MetaValue, Resume, ServerLimits, Token, Welcome,
+  MetaName, MetaValue, Notify, Resume, Sequencing, ServerLimits, Token, Welcome,
 };
 use crate::registry::{CloseCode, StatusCode};
 use crate::session_id::SessionId;
@@ -1895,4 +1895,43 @@ fn frees_every_slot_once_its_call_is_answered_with_result_or_error() {
     called(&mut session, stream);
   }
   assert_eq!(session.open_calls(), 4);
+}
+
+fn notification(method: &str) -> Notify {
+  Notify {
+    method: method.to_owned(),
+    meta: None,
+    sequencing: Sequencing::default(),
+    data: Bytes::from_static(&[0x81, 0x67, b'g', b'e', b'n', b'e', b'r', b'a', b'l']),
+  }
+}
+
+#[test]
+fn hands_each_notification_on_the_control_stream_to_the_driver_in_order() {
+  let (mut session, _) = welcomed(None);
+  session.feed(Input::Message(message(&[
+    (0, Frame::Notify(notification("chat/typing"))),
+    (0, Frame::Notify(notification("nope/nope"))),
+  ])));
+  assert_eq!(
+    drain(&mut session),
+    [
+      Output::Notify {
+        notify: notification("chat/typing")
+      },
+      Output::Notify {
+        notify: notification("nope/nope")
+      },
+    ]
+  );
+  assert!(!session.is_ended());
+  assert_eq!(session.open_calls(), 0);
+}
+
+#[test]
+fn drops_a_notification_that_arrives_before_welcome() {
+  let mut session = greeted();
+  session.feed(Input::Message(message(&[(0, Frame::Notify(notification("chat/typing")))])));
+  assert_eq!(drain(&mut session), []);
+  assert!(!session.is_ended());
 }

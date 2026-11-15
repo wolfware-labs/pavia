@@ -1,9 +1,14 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use bytes::Bytes;
+use futures_util::SinkExt;
 use pavia_proto::frame::Limits;
 use pavia_proto::session::Config as SessionConfig;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
+use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::tungstenite::Message;
 
 use crate::websocket::{Endpoint, Transport};
 
@@ -29,4 +34,8 @@ pub(crate) fn floor_frame() -> SessionConfig {
 pub(crate) fn has_ws_close(bytes: &[u8], code: u16) -> bool {
   let [high, low] = code.to_be_bytes();
   bytes.windows(4).any(|window| window[0] == 0x88 && window[2..] == [high, low])
+}
+
+pub(crate) async fn send<S: AsyncRead + AsyncWrite + Unpin>(socket: &mut WebSocketStream<S>, message: impl Into<Bytes>) {
+  socket.send(Message::binary(message)).await.unwrap();
 }

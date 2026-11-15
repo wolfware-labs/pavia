@@ -18,7 +18,7 @@ use tokio_tungstenite::tungstenite::{self, Message};
 use tokio_tungstenite::{WebSocketStream, client_async};
 
 use super::{Config, Endpoint, Received, SUBPROTOCOL, Transport, is_key};
-use crate::test_support::{EXPECT_WITHIN, floor_frame, has_ws_close, serve_on_loopback};
+use crate::test_support::{EXPECT_WITHIN, floor_frame, has_ws_close, send, serve_on_loopback};
 
 const PATH: &str = "/rt";
 
@@ -198,7 +198,7 @@ async fn refuses_a_malformed_key() {
 #[tokio::test]
 async fn moves_binary_messages_both_ways() {
   let (mut socket, _) = upgrade_tcp(&[SUBPROTOCOL]).await.unwrap();
-  socket.send(Message::binary(&b"\x00\x04\x00\x00\x00"[..])).await.unwrap();
+  send(&mut socket, &b"\x00\x04\x00\x00\x00"[..]).await;
   socket.send(Message::Ping(Bytes::new())).await.unwrap();
   let mut received = vec![socket.next().await.unwrap().unwrap(), socket.next().await.unwrap().unwrap()];
   received.sort_by_key(Message::is_pong);
@@ -218,7 +218,7 @@ async fn reports_text_messages_to_the_session() {
 #[tokio::test]
 async fn closes_with_the_given_code() {
   let (mut socket, _) = upgrade_tcp(&[SUBPROTOCOL]).await.unwrap();
-  socket.send(Message::binary(&b"close"[..])).await.unwrap();
+  send(&mut socket, &b"close"[..]).await;
   let Message::Close(Some(frame)) = socket.next().await.unwrap().unwrap() else {
     panic!("expected a close frame");
   };
@@ -229,7 +229,7 @@ async fn closes_with_the_given_code() {
 #[tokio::test]
 async fn truncates_the_close_reason_on_a_character_boundary() {
   let (mut socket, _) = upgrade_tcp(&[SUBPROTOCOL]).await.unwrap();
-  socket.send(Message::binary(&b"long"[..])).await.unwrap();
+  send(&mut socket, &b"long"[..]).await;
   let Message::Close(Some(frame)) = socket.next().await.unwrap().unwrap() else {
     panic!("expected a close frame");
   };
@@ -275,7 +275,7 @@ async fn serves_an_in_memory_connection() {
   tokio::spawn(async move { endpoint().serve_connection(server, None).await });
   let (mut socket, response) = upgrade(client, PATH, &[SUBPROTOCOL]).await.unwrap();
   assert_eq!(selected(&response), [SUBPROTOCOL]);
-  socket.send(Message::binary(&b"\x00\x04\x00\x00\x00"[..])).await.unwrap();
+  send(&mut socket, &b"\x00\x04\x00\x00\x00"[..]).await;
   assert_eq!(
     socket.next().await.unwrap().unwrap(),
     Message::binary(&b"\x00\x04\x00\x00\x00"[..])
@@ -393,7 +393,7 @@ async fn send_binary(socket: &mut WebSocketStream<TcpStream>, length: usize, fra
     socket.send(Message::Frame(first)).await.unwrap();
     socket.send(Message::Frame(rest)).await.unwrap();
   } else {
-    socket.send(Message::binary(vec![1; length])).await.unwrap();
+    send(socket, vec![1; length]).await;
   }
 }
 
