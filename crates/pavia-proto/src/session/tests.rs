@@ -1618,22 +1618,22 @@ fn closes_on_an_item_from_the_caller_of_a_unary_call() {
   assert!(ended_with(&mut session, CloseCode::ProtocolError));
 }
 
-fn welcomed_by_a_client_with(max_frame: u64) -> Session {
+fn welcomed_by(hello: Hello) -> Session {
   let mut session = server();
-  let hello = Hello {
-    limits: Some(Limits {
-      max_calls: None,
-      max_frame: Some(max_frame),
-      max_subs: None,
-      max_dgram: None,
-      window: None,
-    }),
-    ..hello()
-  };
   session.feed(Input::Message(message(&[(0, Frame::Hello(hello))])));
   session.feed(authenticated(None));
   drain(&mut session);
   session
+}
+
+fn welcomed_by_a_client_with(max_frame: u64) -> Session {
+  welcomed_by(Hello {
+    limits: Some(Limits {
+      max_frame: Some(max_frame),
+      ..Limits::default()
+    }),
+    ..hello()
+  })
 }
 
 #[test]
@@ -2013,22 +2013,15 @@ fn drops_a_notify_command_above_the_client_max_frame_or_the_header_limit() {
 }
 
 fn welcomed_for_server_calls(max_calls: Option<u64>, max_frame: Option<u64>) -> Session {
-  let mut session = server();
-  let hello = Hello {
+  welcomed_by(Hello {
     caps: Some(vec!["server-calls".into()]),
     limits: Some(Limits {
       max_calls,
       max_frame,
-      max_subs: None,
-      max_dgram: None,
-      window: None,
+      ..Limits::default()
     }),
     ..hello()
-  };
-  session.feed(Input::Message(message(&[(0, Frame::Hello(hello))])));
-  session.feed(authenticated(None));
-  drain(&mut session);
-  session
+  })
 }
 
 fn confirm(session: &mut Session) -> Result<u64, CallRefused> {
@@ -2036,13 +2029,7 @@ fn confirm(session: &mut Session) -> Result<u64, CallRefused> {
 }
 
 fn client_result(stream: u64) -> Input {
-  Input::Message(message(&[(
-    stream,
-    Frame::Result(CallResult {
-      meta: None,
-      data: Bytes::from_static(&[0xf5]),
-    }),
-  )]))
+  Input::Message(message(&[(stream, result(&[0xf5]))]))
 }
 
 fn client_error(code: StatusCode) -> CallError {
@@ -2060,7 +2047,11 @@ fn opens_server_calls_on_odd_streams_in_order_with_their_deadline() {
   let mut session = welcomed_for_server_calls(None, None);
   assert_eq!(confirm(&mut session), Ok(1));
   assert_eq!(
-    session.call("ui/pick".to_owned(), Bytes::from_static(&[0x81, 0x01]), Some(200)),
+    session.call(
+      "ui/pick".to_owned(),
+      Bytes::from_static(&[0x81, 0x01]),
+      Some(Duration::from_micros(200_999))
+    ),
     Ok(3)
   );
   let sent = sent_frames(&mut session);
@@ -2176,7 +2167,7 @@ fn refuses_a_server_call_above_the_client_max_frame() {
 }
 
 #[test]
-fn cancels_only_a_server_call_still_waiting_for_its_answer() {
+fn cancels_a_server_call_once_and_only_while_it_waits_for_its_answer() {
   let mut session = welcomed_for_server_calls(None, None);
   confirm(&mut session).unwrap();
   drain(&mut session);
@@ -2184,6 +2175,7 @@ fn cancels_only_a_server_call_still_waiting_for_its_answer() {
   session.feed(Input::Command(Command::Cancel { stream: 2 }));
   session.feed(Input::Command(Command::Cancel { stream: 5 }));
   assert_eq!(drain(&mut session), []);
+  session.feed(Input::Command(Command::Cancel { stream: 1 }));
   session.feed(Input::Command(Command::Cancel { stream: 1 }));
   assert!(matches!(
     sent_frames(&mut session).as_slice(),

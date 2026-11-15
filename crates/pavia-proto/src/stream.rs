@@ -9,10 +9,6 @@
 use crate::error::ProtocolError;
 use crate::frame::FrameType;
 
-#[cfg_attr(
-  not(test),
-  expect(dead_code, reason = "streams the server opens wait for calls to the client (#57)")
-)]
 pub(crate) mod ids;
 
 #[cfg_attr(not(test), expect(dead_code, reason = "peer events wait for WebTransport (#250)"))]

@@ -138,6 +138,13 @@ impl CloseCode {
   pub fn from_u16_lossy(value: u16) -> Self {
     Self::try_from(value).unwrap_or(Self::Internal)
   }
+
+  /// [`from_u16_lossy`](Self::from_u16_lossy) for the `code` field of a frame, which holds any
+  /// varint: a number above `u16::MAX` is unknown too.
+  #[must_use]
+  pub fn from_u64_lossy(value: u64) -> Self {
+    u16::try_from(value).map_or(Self::Internal, Self::from_u16_lossy)
+  }
 }
 
 impl From<CloseCode> for u16 {
@@ -181,6 +188,13 @@ impl StatusCode {
   /// [`StatusCode::Unknown`], so codes added by later drafts do not break older receivers (§15).
   pub fn from_u16_lossy(value: u16) -> Self {
     Self::try_from(value).unwrap_or(Self::Unknown)
+  }
+
+  /// [`from_u16_lossy`](Self::from_u16_lossy) for the `code` field of a frame, which holds any
+  /// varint: a number above `u16::MAX` is unknown too.
+  #[must_use]
+  pub fn from_u64_lossy(value: u64) -> Self {
+    u16::try_from(value).map_or(Self::Unknown, Self::from_u16_lossy)
   }
 }
 
@@ -429,6 +443,21 @@ mod tests {
   #[test]
   fn maps_unknown_status_codes_to_unknown() {
     assert_parses_leniently(&STATUS_CODES, StatusCode::from_u16_lossy, StatusCode::Unknown);
+  }
+
+  #[test]
+  fn maps_frame_code_fields_above_u16_like_unknown_numbers() {
+    for value in [0, 13, 14, u64::from(u16::MAX), 1 << 16, u64::MAX] {
+      let narrow = u16::try_from(value).unwrap_or(u16::MAX);
+      assert_eq!(CloseCode::from_u64_lossy(value), CloseCode::from_u16_lossy(narrow), "{value}");
+      assert_eq!(
+        StatusCode::from_u64_lossy(value),
+        StatusCode::from_u16_lossy(narrow),
+        "{value}"
+      );
+    }
+    assert_eq!(CloseCode::from_u64_lossy(1 << 16), CloseCode::Internal);
+    assert_eq!(StatusCode::from_u64_lossy(1 << 16), StatusCode::Unknown);
   }
 
   #[test]

@@ -113,8 +113,8 @@ impl Handle {
   /// sent: NOT_FOUND once the session has ended, FAILED_PRECONDITION without `server-calls`,
   /// RESOURCE_EXHAUSTED at the client's `max_calls` or for a CALL above its `max_frame`, and
   /// INVALID_ARGUMENT for arguments the session codec cannot encode. Without `nx`: UNAVAILABLE
-  /// when the session ends before the answer, DEADLINE_EXCEEDED, and INTERNAL for a RESULT that
-  /// does not decode.
+  /// when the session ends before the answer, DEADLINE_EXCEEDED, and INTERNAL for a RESULT or an
+  /// ERROR detail that does not decode (§8.10).
   pub async fn call(&self, method: &MethodName, arguments: Vec<Value>, options: CallOptions) -> Result<Value, CallError> {
     let (reply, answer) = oneshot::channel();
     let token = self.tokens.fetch_add(1, Ordering::Relaxed);

@@ -12,6 +12,7 @@ use crate::wire::envelope;
 
 /// The `max_frame` a peer that advertises none accepts, and this server's default (§16).
 pub(super) const DEFAULT_MAX_FRAME: u64 = 1 << 20;
+/// The `max_calls` a peer that advertises none accepts, and this server's default (§16).
 pub(super) const DEFAULT_MAX_CALLS: u64 = 100;
 
 /// Session settings chosen by the application. [`Config::validate`] turns them into the
@@ -218,6 +219,6 @@ pub enum ConfigError {
   TooLarge(&'static str),
 }
 
-fn millis(duration: Duration) -> u64 {
+pub(super) fn millis(duration: Duration) -> u64 {
   u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }

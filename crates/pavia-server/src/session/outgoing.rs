@@ -38,16 +38,13 @@ impl Outgoing {
       let _ = reply.send(Err(refusal));
       return;
     };
-    let deadline = options
-      .deadline
-      .map(|deadline| u64::try_from(deadline.as_millis()).unwrap_or(u64::MAX));
-    match session.call(method.as_str().to_owned(), data, deadline) {
+    match session.call(method.as_str().to_owned(), data, options.deadline) {
       Ok(stream) => {
         self.waiting.insert(stream, (token, reply));
         self.streams.insert(token, stream);
       }
       Err(refused) => {
-        let _ = reply.send(Err(CallError::new(refused.code(), refused.msg(), true, None)));
+        let _ = reply.send(Err(CallError::refused(refused)));
       }
     }
   }
@@ -61,7 +58,7 @@ impl Outgoing {
   pub(super) fn answered(&mut self, stream: u64, answer: Answer, codec: Codec) {
     if let Some((token, reply)) = self.waiting.remove(&stream) {
       self.streams.remove(&token);
-      let _ = reply.send(outcome(answer, codec));
+      let _ = reply.send(decoded(answer, codec));
     }
   }
 
@@ -71,22 +68,26 @@ impl Outgoing {
   }
 }
 
-fn outcome(answer: Answer, codec: Codec) -> Result<Value, CallError> {
-  let decode = |data: &[u8]| data::decode(data, codec, &DecodeLimits::default());
+fn decoded(answer: Answer, codec: Codec) -> Result<Value, CallError> {
+  let decode = |data: &[u8], section: &str| {
+    data::decode(data, codec, &DecodeLimits::default()).map_err(|_| {
+      CallError::new(
+        StatusCode::Internal,
+        format!("the client's {section} does not decode"),
+        false,
+        None,
+      )
+    })
+  };
   match answer {
-    Answer::Result(result) => {
-      decode(&result.data).map_err(|_| CallError::new(StatusCode::Internal, "the client's RESULT does not decode", false, None))
-    }
+    Answer::Result(result) => decode(&result.data, "RESULT"),
     Answer::Error(error) => {
-      let code = u16::try_from(error.code)
-        .ok()
-        .and_then(|code| StatusCode::try_from(code).ok())
-        .unwrap_or(StatusCode::Unknown);
       let detail = if error.data.is_empty() {
         None
       } else {
-        decode(&error.data).ok()
+        Some(decode(&error.data, "ERROR detail")?)
       };
+      let code = StatusCode::from_u64_lossy(error.code);
       Err(CallError::new(code, error.msg, error.nx == Some(true), detail))
     }
   }

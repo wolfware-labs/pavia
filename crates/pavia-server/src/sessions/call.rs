@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use pavia_proto::data::Value;
 use pavia_proto::registry::StatusCode;
+use pavia_proto::session::CallRefused;
 
 /// How a server call is made. The default has no deadline.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -15,12 +16,11 @@ pub struct CallOptions {
 }
 
 impl CallOptions {
-  /// Options with `deadline`.
+  /// Sets [`deadline`](Self::deadline).
   #[must_use]
-  pub const fn deadline(deadline: Duration) -> Self {
-    Self {
-      deadline: Some(deadline),
-    }
+  pub const fn with_deadline(mut self, deadline: Duration) -> Self {
+    self.deadline = Some(deadline);
+    self
   }
 }
 
@@ -43,8 +43,12 @@ impl CallError {
     }
   }
 
+  pub(crate) fn refused(refused: CallRefused) -> Self {
+    Self::new(refused.code(), refused.msg(), true, None)
+  }
+
   pub(crate) fn ended() -> Self {
-    Self::new(StatusCode::NotFound, "the session has ended", true, None)
+    Self::refused(CallRefused::NotEstablished)
   }
 
   pub(crate) fn unavailable() -> Self {

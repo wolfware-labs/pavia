@@ -65,7 +65,7 @@
 //! Only the WebSocket binding exists so far: one [`Output::Transmit`] is one binary message.
 
 use std::collections::{HashMap, VecDeque};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
 
@@ -168,7 +168,7 @@ pub enum Command {
     data: Bytes,
   },
   /// Cancel the server call on `stream`, from [`Session::call`], with CANCEL (§8.5). Ignored
-  /// unless that call is still waiting for its answer.
+  /// unless that call is still waiting for its answer and not cancelled yet.
   Cancel {
     /// The call stream.
     stream: u64,
@@ -442,32 +442,27 @@ impl Session {
   }
 
   /// Calls the client method `method` with `data`, the arguments already encoded as one array in
-  /// the session codec, as a unary server call on the next server stream (§6.1, §8.8). `deadline`,
-  /// in ms, goes in the CALL for the client; enforcing it is the caller's, with
+  /// the session codec, as a unary server call on the next server stream (§6.1, §8.8). `deadline`
+  /// goes in the CALL for the client, in whole ms; enforcing it is the caller's, with
   /// [`Command::Cancel`] (§8.6). The answer comes as [`Output::Answered`] for the returned stream.
   ///
   /// # Errors
   ///
   /// [`CallRefused`] when the call cannot be made; nothing is sent then.
-  pub fn call(&mut self, method: String, data: Bytes, deadline: Option<u64>) -> Result<u64, CallRefused> {
-    let State::Established { hello, negotiated, .. } = &self.state else {
+  pub fn call(&mut self, method: String, data: Bytes, deadline: Option<Duration>) -> Result<u64, CallRefused> {
+    let State::Established { negotiated, .. } = &self.state else {
       return Err(CallRefused::NotEstablished);
     };
     if !negotiated.caps.contains(Capability::ServerCalls) {
       return Err(CallRefused::NotGranted);
     }
-    let max_calls = hello
-      .limits
-      .as_ref()
-      .and_then(|limits| limits.max_calls)
-      .unwrap_or(config::DEFAULT_MAX_CALLS);
-    if self.calls.opened_by(self.local) >= max_calls {
+    if self.calls.opened_by(self.local) >= self.peer_max_calls() {
       return Err(CallRefused::TooManyCalls);
     }
     let call = Frame::Call(Call {
       method,
       shape: 0,
-      deadline,
+      deadline: deadline.map(config::millis),
       meta: None,
       data,
     });
@@ -715,7 +710,7 @@ impl Session {
   }
 
   fn peer_closed(&mut self, close: Close) {
-    let code = CloseCode::from_u16_lossy(u16::try_from(close.code).unwrap_or(u16::MAX));
+    let code = CloseCode::from_u64_lossy(close.code);
     self.outputs.push_back(Output::CloseTransport {
       code,
       reason: close.msg.clone().unwrap_or_default(),
@@ -813,7 +808,7 @@ impl Session {
   fn cancel(&mut self, stream: u64) {
     if ids::initiator(stream) == self.local
       && let Some(call) = self.calls.open.get_mut(&stream)
-      && call.on_frame(Role::Caller, FrameType::Cancel).is_ok()
+      && matches!(call.on_frame(Role::Caller, FrameType::Cancel), Ok(Step::Accepted))
     {
       self.transmit_on(stream, &Frame::Cancel(Cancel { msg: None }));
     }
@@ -890,6 +885,14 @@ impl Session {
       .and_then(|hello| hello.limits.as_ref())
       .and_then(|limits| limits.max_frame)
       .unwrap_or(config::DEFAULT_MAX_FRAME)
+  }
+
+  fn peer_max_calls(&self) -> u64 {
+    self
+      .hello()
+      .and_then(|hello| hello.limits.as_ref())
+      .and_then(|limits| limits.max_calls)
+      .unwrap_or(config::DEFAULT_MAX_CALLS)
   }
 
   fn transmit(&mut self, frame: &Frame) {

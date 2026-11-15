@@ -199,6 +199,10 @@ async fn established<S: AsyncRead + AsyncWrite + Unpin>(socket: &mut WebSocketSt
   send(socket, hello_frame()).await;
   let welcome = next_welcome(socket).await;
   assert_eq!(welcome.len(), 7);
+  welcome_id(&welcome)
+}
+
+fn welcome_id(welcome: &BTreeMap<u64, Value>) -> SessionId {
   let Value::Text(id) = &welcome[&19] else {
     panic!("WELCOME without a session ID");
   };
@@ -2473,9 +2477,13 @@ fn confirm() -> MethodName {
 }
 
 async fn calling(registry: &Registry, hello: Vec<u8>) -> (Socket, SessionId) {
+  calling_from(registry.clone(), Arc::new(MethodRegistry::new()), hello).await
+}
+
+async fn calling_from(registry: Registry, methods: Arc<MethodRegistry<Handler>>, hello: Vec<u8>) -> (Socket, SessionId) {
   let (address, _) = listen_serving(
-    registry.clone(),
-    Arc::new(MethodRegistry::new()),
+    registry,
+    methods,
     SessionConfig::default(),
     Arc::new(Permissive),
     Arc::new(AllowAll),
@@ -2483,10 +2491,8 @@ async fn calling(registry: &Registry, hello: Vec<u8>) -> (Socket, SessionId) {
   .await;
   let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
   send(&mut socket, hello).await;
-  let Value::Text(id) = &next_welcome(&mut socket).await[&19] else {
-    panic!("WELCOME without a session ID");
-  };
-  (socket, SessionId::parse(id).unwrap())
+  let id = welcome_id(&next_welcome(&mut socket).await);
+  (socket, id)
 }
 
 fn call_in_background(
@@ -2508,8 +2514,8 @@ async fn next_server_call(socket: &mut Socket, stream: u64) -> Answer {
 }
 
 async fn nothing_sent(socket: &mut Socket) {
-  let next = tokio::time::timeout(Duration::from_millis(300), socket.next()).await;
-  assert!(next.is_err(), "{next:?}");
+  send(socket, heartbeat_frame(0x04, &[9])).await;
+  assert_eq!(next_answer(socket).await.frame_type, 0x05);
 }
 
 #[tokio::test]
@@ -2545,11 +2551,29 @@ async fn hands_back_the_client_error_detail_and_an_unknown_code() {
   let error = call.await.unwrap().unwrap_err();
   assert_eq!((error.code(), error.msg(), error.nx()), (StatusCode::Unknown, "no", false));
   assert_eq!(error.detail(), Some(&Arg::Text("why".to_owned())));
+}
+
+#[tokio::test]
+async fn fails_with_internal_a_result_or_error_detail_that_does_not_decode() {
+  let registry = Registry::new();
+  let (mut socket, id) = calling(&registry, hello_for_server_calls(4)).await;
+  let call = call_in_background(&registry, &id, CallOptions::default());
+  next_server_call(&mut socket, 1).await;
+  send(&mut socket, method_frame(1, 0x13, &[], &[0xff])).await;
+  let error = call.await.unwrap().unwrap_err();
+  assert_eq!(
+    (error.code(), error.msg(), error.nx()),
+    (StatusCode::Internal, "the client's RESULT does not decode", false)
+  );
   let call = call_in_background(&registry, &id, CallOptions::default());
   next_server_call(&mut socket, 3).await;
-  send(&mut socket, method_frame(3, 0x13, &[], &[0xff])).await;
+  let header = [0xa2, 0x06, 0x0c, 0x07, 0x62, b'n', b'o'];
+  send(&mut socket, method_frame(3, 0x14, &header, &[0xff])).await;
   let error = call.await.unwrap().unwrap_err();
-  assert_eq!((error.code(), error.nx()), (StatusCode::Internal, false));
+  assert_eq!(
+    (error.code(), error.msg(), error.nx(), error.detail()),
+    (StatusCode::Internal, "the client's ERROR detail does not decode", false, None)
+  );
 }
 
 #[tokio::test]
@@ -2587,7 +2611,11 @@ async fn refuses_a_server_call_beyond_the_client_max_calls_without_sending_it() 
 async fn cancels_a_server_call_past_its_deadline() {
   let registry = Registry::new();
   let (mut socket, id) = calling(&registry, hello_for_server_calls(4)).await;
-  let call = call_in_background(&registry, &id, CallOptions::deadline(Duration::from_millis(200)));
+  let call = call_in_background(
+    &registry,
+    &id,
+    CallOptions::default().with_deadline(Duration::from_millis(200)),
+  );
   let sent = next_server_call(&mut socket, 1).await;
   assert_eq!(sent.header[&4], Value::from(200));
   let error = call.await.unwrap().unwrap_err();
@@ -2606,8 +2634,7 @@ async fn cancels_a_server_call_whose_future_is_dropped() {
   let cancel = next_answer(&mut socket).await;
   assert_eq!((cancel.stream, cancel.frame_type), (1, 0x15));
   send(&mut socket, method_frame(1, 0x14, &[0xa2, 0x06, 0x01, 0x07, 0x60], &[])).await;
-  send(&mut socket, heartbeat_frame(0x04, &[9])).await;
-  assert_eq!(next_answer(&mut socket).await.frame_type, 0x05);
+  nothing_sent(&mut socket).await;
   let call = call_in_background(&registry, &id, CallOptions::default());
   next_server_call(&mut socket, 3).await;
   send(&mut socket, method_frame(3, 0x13, &[], &[0xf4])).await;
@@ -2652,17 +2679,7 @@ async fn lets_a_handler_call_back_the_client_that_called_it() {
       .map_err(HandlerError::unexpected)
   });
   methods.register_server_method("doc/save", MethodEntry::call(save)).unwrap();
-  let (address, _) = listen_serving(
-    Registry::new(),
-    Arc::new(methods),
-    SessionConfig::default(),
-    Arc::new(Permissive),
-    Arc::new(AllowAll),
-  )
-  .await;
-  let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
-  send(&mut socket, hello_for_server_calls(4)).await;
-  next_welcome(&mut socket).await;
+  let (mut socket, _) = calling_from(Registry::new(), Arc::new(methods), hello_for_server_calls(4)).await;
   send(&mut socket, call_frame(2, "doc/save", &[0x80])).await;
   next_server_call(&mut socket, 1).await;
   send(&mut socket, method_frame(1, 0x13, &[], &[0xf5])).await;

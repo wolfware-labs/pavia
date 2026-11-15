@@ -8,7 +8,7 @@
 //! with the CALL arguments as dynamic values. A handler that fails returns a [`HandlerError`]: a
 //! deliberate [`StatusError`], answered as given, or an unexpected error, answered INTERNAL (§8.4).
 //! A handler made with [`Handler::with_context`] also gets a [`HandlerContext`], through which it
-//! can notify the client of the session that ran it (§9.1).
+//! can notify the client of the session that ran it (§9.1) or call one of its methods (§8.8).
 //!
 //! ```text
 //!  register_server_method("chat/send") ─▶ name rule ─▶ not on the server side yet ─▶ stored
