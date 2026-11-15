@@ -291,7 +291,9 @@ impl HandlerContext {
   ///
   /// # Errors
   ///
-  /// [`EncodeError`] when the session codec cannot encode `arguments`; nothing is sent.
+  /// [`EncodeError`] when the session codec cannot encode `arguments`, whether or not the session
+  /// has ended: the arguments are the handler's mistake, so they are checked first. Nothing is
+  /// sent.
   pub async fn notify(&self, method: &MethodName, arguments: Vec<Value>) -> Result<bool, EncodeError> {
     let data = encode(&Value::Array(arguments), self.codec)?;
     let notify = Command::Notify {
