@@ -155,6 +155,9 @@ pub async fn run<A: Authenticator, Z: Authorizer + 'static>(
       authenticating = None;
     }
     session.handle_input(input, Instant::now().into_std());
+    if session.is_ended() {
+      commands.close();
+    }
     match carry_out(&mut session, &mut transport, &mut membership, &mut calls).await {
       Step::Continue => {}
       Step::Authenticate(auth) => {

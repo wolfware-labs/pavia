@@ -285,8 +285,9 @@ impl HandlerContext {
   /// logged.
   ///
   /// Returns `true` once the notification is queued for the session, and `false`, sending
-  /// nothing, once the session has ended: a send to an ended session is a no-op (§13.1). A
-  /// notification queued just before the session ends is dropped with it.
+  /// nothing, once the session has ended, while its last frames are still being written too: a
+  /// send to an ended session is a no-op (§13.1). A notification queued just before the session
+  /// ends is dropped with it.
   ///
   /// # Errors
   ///
