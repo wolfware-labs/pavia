@@ -87,25 +87,25 @@ pub(crate) struct Calling {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Claim(Arc<AtomicU8>);
 
-const QUEUED: u8 = 0;
-const OPENED: u8 = 1;
-const ABANDONED: u8 = 2;
-
 impl Claim {
+  const QUEUED: u8 = 0;
+  const OPENED: u8 = 1;
+  const ABANDONED: u8 = 2;
+
   /// Claims the call for sending; false once its caller has given it up.
   pub(crate) fn open(&self) -> bool {
-    self.settle(OPENED)
+    self.settle(Self::OPENED)
   }
 
   /// Gives the call up before it is sent; false once the session task has opened it.
   pub(crate) fn abandon(&self) -> bool {
-    self.settle(ABANDONED)
+    self.settle(Self::ABANDONED)
   }
 
   fn settle(&self, to: u8) -> bool {
     self
       .0
-      .compare_exchange(QUEUED, to, Ordering::AcqRel, Ordering::Acquire)
+      .compare_exchange(Self::QUEUED, to, Ordering::AcqRel, Ordering::Acquire)
       .is_ok()
   }
 }
@@ -220,7 +220,7 @@ impl Pending<'_> {
 impl Drop for Pending<'_> {
   fn drop(&mut self) {
     if let Some(token) = self.token
-      && !self.claim.abandon()
+      && !self.abandon()
     {
       let _ = self.abandoned.send(token);
     }

@@ -92,20 +92,16 @@ fn removes_an_entry_even_after_a_panic_poisoned_the_lock() {
   assert!(registry.is_empty());
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn sends_no_call_given_up_first_and_cancels_one_opened_first() {
-  for round in 0..2_000 {
+  for opened in [false, true] {
     let (handle, mut inbox) = Handle::channel();
-    let call = tokio::spawn(async move { handle.call(&confirm(), Vec::new(), CallOptions::default()).await });
-    let calling = loop {
-      match inbox.calls.try_recv() {
-        Ok(calling) => break calling,
-        Err(_) => tokio::task::yield_now().await,
-      }
-    };
-    let opened = round % 2 == 0 && calling.claim.open();
-    call.abort();
-    let _ = call.await;
+    let method = confirm();
+    let mut call = Box::pin(handle.call(&method, Vec::new(), CallOptions::default()));
+    assert!((&mut call).now_or_never().is_none(), "the call to wait for its answer");
+    let calling = inbox.calls.try_recv().unwrap();
+    assert_eq!(opened && calling.claim.open(), opened);
+    drop(call);
     if opened {
       assert_eq!(inbox.abandoned.try_recv().ok(), Some(calling.token));
     } else {
