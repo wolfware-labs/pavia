@@ -154,8 +154,9 @@ pub enum Command {
   },
   /// Send NOTIFY on the control stream, calling the client method `method` with `data`, the
   /// arguments already encoded as one array in the session codec (§9.1). Ignored unless the
-  /// session is established, and dropped when the frame is above the client's `max_frame` or the
-  /// default header limit, since the client never answers a NOTIFY.
+  /// session is established. A frame above the client's `max_frame` or the default header limit
+  /// is not sent and yields [`Output::NotifyTooLarge`] instead, since the client never answers a
+  /// NOTIFY.
   Notify {
     /// The client method.
     method: String,
@@ -221,6 +222,17 @@ pub enum Output {
   Notify {
     /// The NOTIFY frame: method, meta and the encoded arguments.
     notify: Notify,
+  },
+  /// A [`Command::Notify`] was not sent: its NOTIFY is `length` bytes, above the client's
+  /// `max_frame` or the default header limit, `limit` (§5.2, §5.4.1). Nothing tells the client;
+  /// the driver logs it.
+  NotifyTooLarge {
+    /// The client method.
+    method: String,
+    /// The frame's Length, or its header's length when only the header is too large.
+    length: u64,
+    /// The limit it is above.
+    limit: u64,
   },
   /// The session is over. Emitted once, as the last output.
   Ended(Ending),
@@ -688,19 +700,34 @@ impl Session {
   }
 
   fn notify(&mut self, method: String, data: Bytes) {
+    if !matches!(self.state, State::Established { .. }) {
+      return;
+    }
     let notify = Frame::Notify(Notify {
-      method,
+      method: method.clone(),
       meta: None,
       sequencing: Sequencing::default(),
       data,
     });
-    if matches!(self.state, State::Established { .. }) && self.fits(&notify) {
-      self.transmit(&notify);
+    match self.excess(&notify) {
+      None => self.transmit(&notify),
+      Some((length, limit)) => self.outputs.push_back(Output::NotifyTooLarge { method, length, limit }),
     }
   }
 
   fn fits(&self, frame: &Frame) -> bool {
-    frame.payload_length().is_ok_and(|length| length <= self.peer_max_frame()) && frame.header_length() <= peer_max_header()
+    self.excess(frame).is_none()
+  }
+
+  fn excess(&self, frame: &Frame) -> Option<(u64, u64)> {
+    let (length, max_frame) = (frame.payload_length().unwrap_or(u64::MAX), self.peer_max_frame());
+    let header = u64::try_from(frame.header_length()).unwrap_or(u64::MAX);
+    let max_header = u64::try_from(peer_max_header()).unwrap_or(u64::MAX);
+    if length > max_frame {
+      Some((length, max_frame))
+    } else {
+      (header > max_header).then_some((header, max_header))
+    }
   }
 
   fn answer(&mut self, stream: u64, frame: &Frame) {

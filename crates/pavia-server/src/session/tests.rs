@@ -2310,3 +2310,73 @@ async fn sends_the_notifications_of_a_notification_handler() {
     );
   }
 }
+
+fn notifying_once(arguments: fn() -> Vec<Arg>) -> Arc<MethodRegistry<Handler>> {
+  let progress = MethodName::parse("ui/progress").unwrap();
+  let mut methods = MethodRegistry::new();
+  let handler = Handler::with_context(0, move |context: HandlerContext, _| {
+    let progress = progress.clone();
+    async move {
+      assert!(context.notify(&progress, arguments()).await.unwrap());
+      Ok(Arg::Null)
+    }
+  });
+  methods
+    .register_server_method("doc/save", MethodEntry::call(handler))
+    .unwrap();
+  Arc::new(methods)
+}
+
+#[tokio::test]
+async fn logs_and_drops_a_handler_notification_above_the_client_max_frame() {
+  let (log, _logging) = capture_log();
+  let methods = notifying_once(|| vec![Arg::Bytes(vec![0; 1 << 20])]);
+  let (mut socket, session) = serving_as(methods, SessionConfig::default(), Arc::new(AllowAll)).await;
+  send(&mut socket, call_frame(2, "doc/save", &[0x80])).await;
+  let answer = next_answer(&mut socket).await;
+  assert_eq!((answer.stream, answer.frame_type), (2, 0x13));
+  eventually(|| lines_naming(&log, "ui/progress") == 1, "the drop to be logged").await;
+  let text = log.text();
+  assert!(text.contains("above its limit"), "{text}");
+  assert!(text.contains(&format!("length={}", (1 << 20) + 21)), "{text}");
+  assert!(text.contains(&format!("limit={}", 1 << 20)), "{text}");
+  assert_every_line_names(&log, &session);
+}
+
+#[tokio::test]
+async fn returns_false_to_a_notification_sent_after_the_session_ended() {
+  let (go, waiting) = oneshot::channel::<()>();
+  let (sent, delivered) = oneshot::channel();
+  let detached = Arc::new(Mutex::new(Some((waiting, sent))));
+  let progress = MethodName::parse("ui/progress").unwrap();
+  let mut methods = MethodRegistry::new();
+  let handler = Handler::with_context(0, move |context: HandlerContext, _| {
+    let (waiting, sent) = detached.lock().unwrap().take().unwrap();
+    let progress = progress.clone();
+    tokio::spawn(async move {
+      waiting.await.unwrap();
+      let _ = sent.send(context.notify(&progress, Vec::new()).await);
+    });
+    async { Ok(Arg::Null) }
+  });
+  methods
+    .register_server_method("doc/save", MethodEntry::call(handler))
+    .unwrap();
+  let config = SessionConfig::default();
+  let (address, ending) = listen_serving(
+    Registry::new(),
+    Arc::new(methods),
+    config,
+    Arc::new(Permissive),
+    Arc::new(AllowAll),
+  )
+  .await;
+  let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
+  established(&mut socket).await;
+  send(&mut socket, call_frame(2, "doc/save", &[0x80])).await;
+  assert_eq!(next_answer(&mut socket).await.frame_type, 0x13);
+  send(&mut socket, close_frame(0)).await;
+  ending.await.unwrap();
+  go.send(()).unwrap();
+  assert!(!delivered.await.unwrap().unwrap());
+}

@@ -281,10 +281,12 @@ impl HandlerContext {
   /// encoded as one array in the session codec (§9.1). Notifications from one handler reach the
   /// client in the order they were sent, on the control stream; nothing orders them against the
   /// call's answer (§8.9). It waits while the session's command queue is full. The client never
-  /// answers, so a notification it cannot take, one above its `max_frame` for one, is dropped.
+  /// answers, so a notification it cannot take, one above its `max_frame` for one, is dropped and
+  /// logged.
   ///
-  /// Returns `false`, and sends nothing, when the session has already ended: a send to an ended
-  /// session is a no-op (§13.1).
+  /// Returns `true` once the notification is queued for the session, and `false`, sending
+  /// nothing, once the session has ended: a send to an ended session is a no-op (§13.1). A
+  /// notification queued just before the session ends is dropped with it.
   ///
   /// # Errors
   ///

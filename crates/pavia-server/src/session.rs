@@ -478,6 +478,16 @@ async fn carry_out<Z: Authorizer + 'static>(
           .lane
           .receive(&notify, calls.methods, context, &calls.authorizer, &calls.principal);
       }
+      Output::NotifyTooLarge { method, length, limit } => {
+        let session = calls.lane.session();
+        tracing::warn!(
+          session,
+          method,
+          length,
+          limit,
+          "notification to the client above its limit dropped"
+        );
+      }
       Output::Call { stream, call } => {
         if let Some(refusal) = calls.dispatch(stream, &call, session) {
           session.handle_input(Input::Command(refusal), Instant::now().into_std());

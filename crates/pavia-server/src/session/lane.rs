@@ -35,6 +35,10 @@ impl Lane {
     self.session = Some(session);
   }
 
+  pub(super) fn session(&self) -> Option<&str> {
+    self.session.as_ref().map(SessionId::as_str)
+  }
+
   pub(super) fn receive<Z: Authorizer + 'static>(
     &mut self,
     notify: &Notify,
@@ -43,7 +47,7 @@ impl Lane {
     authorizer: &Arc<Z>,
     principal: &Arc<Principal>,
   ) {
-    let session = self.session.as_ref().map(SessionId::as_str);
+    let session = self.session();
     let Some((name, method)) = methods
       .server_entry(&notify.method)
       .filter(|(_, method)| matches!(method.kind, Kind::Notify))
@@ -81,7 +85,7 @@ impl Lane {
 
   pub(super) fn finished(&mut self, joined: Result<Result<(), Failed>, JoinError>) {
     let method = self.current.take().expect("a joined notification was started");
-    let (session, method) = (self.session.as_ref().map(SessionId::as_str), method.as_str());
+    let (session, method) = (self.session(), method.as_str());
     match joined {
       Ok(Ok(())) => {}
       Ok(Err(Failed::Refused(refusal))) => {
