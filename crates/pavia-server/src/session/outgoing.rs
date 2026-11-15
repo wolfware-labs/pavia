@@ -2,6 +2,7 @@
 //! the caller abandons it, or the session ends.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use pavia_proto::data::{self, Codec, DecodeLimits, Value};
 use pavia_proto::registry::StatusCode;
@@ -32,6 +33,11 @@ impl Outgoing {
     if reply.is_closed() {
       return;
     }
+    let left = deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
+    if left.is_some_and(|left| left < Duration::from_millis(1)) {
+      let _ = reply.send(Err(CallError::deadline_exceeded(true)));
+      return;
+    }
     let Ok(data) = encode(&Value::Array(arguments), codec) else {
       let refusal = CallError::new(
         StatusCode::InvalidArgument,
@@ -42,7 +48,6 @@ impl Outgoing {
       let _ = reply.send(Err(refusal));
       return;
     };
-    let left = deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
     match session.call(method.as_str().to_owned(), data, left) {
       Ok(stream) => {
         self.waiting.insert(stream, (token, reply));
@@ -65,6 +70,11 @@ impl Outgoing {
       self.streams.remove(&token);
       let _ = reply.send(decoded(answer, codec));
     }
+  }
+
+  #[cfg(test)]
+  pub(super) fn sizes(&self) -> (usize, usize) {
+    (self.waiting.len(), self.streams.len())
   }
 }
 

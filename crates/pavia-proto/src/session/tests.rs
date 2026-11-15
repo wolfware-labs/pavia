@@ -2198,3 +2198,24 @@ fn cancels_a_server_call_once_and_only_while_it_waits_for_its_answer() {
   session.feed(Input::Command(Command::Cancel { stream: 1 }));
   assert_eq!(drain(&mut session), []);
 }
+
+#[test]
+fn bounds_client_calls_by_the_server_max_calls_apart_from_server_calls() {
+  let config = Config {
+    max_calls: 1,
+    ..Config::default()
+  };
+  let mut session = Session::server(&config.validate().unwrap(), Instant::now());
+  let hello = Hello {
+    caps: Some(vec!["server-calls".into()]),
+    ..hello()
+  };
+  session.feed(Input::Message(message(&[(0, Frame::Hello(hello))])));
+  session.feed(authenticated(None));
+  drain(&mut session);
+  assert_eq!(confirm(&mut session), Ok(1));
+  drain(&mut session);
+  called(&mut session, 2);
+  session.feed(Input::Message(message(&[(4, call(0))])));
+  assert!(matches!(sent_frames(&mut session).as_slice(), [(4, Frame::Error(error))] if error.code == 8));
+}

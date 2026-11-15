@@ -92,15 +92,21 @@ fn removes_an_entry_even_after_a_panic_poisoned_the_lock() {
   assert!(registry.is_empty());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn closes_the_answer_of_a_dropped_call_before_abandoning_it() {
-  let (handle, mut inbox) = Handle::channel();
-  let method = confirm();
-  let dropped = handle.call(&method, Vec::new(), CallOptions::default()).now_or_never();
-  assert!(dropped.is_none());
-  let calling = inbox.calls.try_recv().unwrap();
-  assert!(calling.reply.is_closed());
-  assert_eq!(inbox.abandoned.try_recv().unwrap(), calling.token);
+  for _ in 0..2_000 {
+    let (handle, mut inbox) = Handle::channel();
+    let call = tokio::spawn(async move { handle.call(&confirm(), Vec::new(), CallOptions::default()).await });
+    let calling = loop {
+      match inbox.calls.try_recv() {
+        Ok(calling) => break calling,
+        Err(_) => tokio::task::yield_now().await,
+      }
+    };
+    call.abort();
+    assert_eq!(inbox.abandoned.recv().await, Some(calling.token));
+    assert!(calling.reply.is_closed(), "the abandon was seen before the answer was closed");
+  }
 }
 
 #[tokio::test]

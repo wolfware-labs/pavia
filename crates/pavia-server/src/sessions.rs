@@ -60,6 +60,10 @@ impl Inbox {
   }
 
   /// Fails the calls still queued, which were never sent, as calls to an ended session.
+  ///
+  /// The inbox is closed first, so nothing new is queued after this, except by a caller that had
+  /// already been given room in the queue on another thread: its call is dropped with the inbox and
+  /// fails with UNAVAILABLE, which claims less than NOT_FOUND with `nx`.
   pub(crate) fn refuse_queued_calls(&mut self) {
     while let Ok(calling) = self.calls.try_recv() {
       let _ = calling.reply.send(Err(CallError::ended()));

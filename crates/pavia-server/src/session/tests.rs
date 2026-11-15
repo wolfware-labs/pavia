@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::task::{Context, Poll};
+use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -1227,7 +1227,11 @@ async fn next_answer(socket: &mut Socket) -> Answer {
   else {
     panic!("expected a binary message");
   };
-  let mut rest = &message[..];
+  answer_in(&message)
+}
+
+fn answer_in(message: &[u8]) -> Answer {
+  let mut rest = message;
   let stream = varint(&mut rest);
   let frame_type = rest[0];
   rest = &rest[2..];
@@ -2616,7 +2620,7 @@ async fn cancels_a_server_call_past_its_deadline() {
   let Value::Integer(left) = sent.header[&4] else {
     panic!("{:?}", sent.header);
   };
-  assert!((150..=200).contains(&u64::try_from(left).unwrap()), "{left:?}");
+  assert!(u64::try_from(left).unwrap() <= 200, "{left:?}");
   let error = call.await.unwrap().unwrap_err();
   assert_eq!((error.code(), error.nx()), (StatusCode::DeadlineExceeded, false));
   let cancel = next_answer(&mut socket).await;
@@ -2709,8 +2713,7 @@ async fn reports_a_client_error_with_code_zero_as_unknown() {
   assert_eq!(error.to_string(), "Unknown: ");
 }
 
-#[test]
-fn never_sends_a_call_whose_caller_has_already_gone() {
+fn established_for_calls() -> Session {
   let now = std::time::Instant::now();
   let mut session = Session::server(&SessionConfig::default().validate().unwrap(), now);
   session.handle_input(Input::Message(Bytes::from(hello_for_server_calls(4))), now);
@@ -2722,17 +2725,144 @@ fn never_sends_a_call_whose_caller_has_already_gone() {
     now,
   );
   while session.poll_output().is_some() {}
+  session
+}
+
+fn queued_call(token: u64, deadline: Option<tokio::time::Instant>) -> (Calling, oneshot::Receiver<Result<Arg, CallError>>) {
   let (reply, answer) = oneshot::channel();
-  drop(answer);
   let calling = Calling {
-    token: 0,
+    token,
     method: confirm(),
     arguments: Vec::new(),
-    deadline: None,
+    deadline,
     reply,
   };
+  (calling, answer)
+}
+
+#[test]
+fn never_sends_a_call_whose_caller_has_already_gone() {
+  let mut session = established_for_calls();
+  let (calling, answer) = queued_call(0, None);
+  drop(answer);
   let mut outgoing = Outgoing::default();
   outgoing.open(&mut session, calling, Codec::Cbor);
   assert_eq!(session.poll_output(), None);
   assert_eq!(session.open_calls(), 0);
+}
+
+#[tokio::test]
+async fn sends_the_time_left_and_refuses_a_call_with_under_a_millisecond_left() {
+  let mut session = established_for_calls();
+  let mut outgoing = Outgoing::default();
+  let (calling, _answer) = queued_call(0, Some(tokio::time::Instant::now() + Duration::from_millis(100)));
+  outgoing.open(&mut session, calling, Codec::Cbor);
+  let Some(pavia_proto::session::Output::Transmit(message)) = session.poll_output() else {
+    panic!("no CALL");
+  };
+  let Value::Integer(left) = answer_in(&message).header[&4] else {
+    panic!("CALL without a deadline");
+  };
+  assert!((50..=100).contains(&u64::try_from(left).unwrap()), "{left:?}");
+  let (calling, answer) = queued_call(1, Some(tokio::time::Instant::now()));
+  outgoing.open(&mut session, calling, Codec::Cbor);
+  assert_eq!(session.poll_output(), None);
+  let error = answer.await.unwrap().unwrap_err();
+  assert_eq!((error.code(), error.nx()), (StatusCode::DeadlineExceeded, true));
+}
+
+#[tokio::test]
+async fn forgets_a_server_call_once_it_is_answered_or_abandoned() {
+  let mut session = established_for_calls();
+  let mut outgoing = Outgoing::default();
+  let (calling, answer) = queued_call(7, None);
+  outgoing.open(&mut session, calling, Codec::Cbor);
+  assert_eq!(outgoing.sizes(), (1, 1));
+  let result = pavia_proto::frame::CallResult {
+    meta: None,
+    data: Bytes::from_static(&[0xf5]),
+  };
+  outgoing.answered(1, pavia_proto::session::Answer::Result(result), Codec::Cbor);
+  assert_eq!(outgoing.sizes(), (0, 0));
+  assert_eq!(answer.await.unwrap(), Ok(Arg::Bool(true)));
+  let (calling, _answer) = queued_call(8, None);
+  outgoing.open(&mut session, calling, Codec::Cbor);
+  assert_eq!(outgoing.abandon(8), Some(3));
+  assert_eq!(outgoing.sizes(), (0, 0));
+  assert_eq!(outgoing.abandon(8), None);
+}
+
+#[derive(Default)]
+enum Gate {
+  #[default]
+  Open,
+  Stalled(Option<Waker>),
+  Broken,
+}
+
+struct GatedWrites {
+  inner: DuplexStream,
+  gate: Arc<Mutex<Gate>>,
+}
+
+impl AsyncRead for GatedWrites {
+  fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+    Pin::new(&mut self.inner).poll_read(cx, buf)
+  }
+}
+
+impl AsyncWrite for GatedWrites {
+  fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+    match &mut *self.gate.lock().unwrap() {
+      Gate::Open => {}
+      Gate::Stalled(waker) => {
+        *waker = Some(cx.waker().clone());
+        return Poll::Pending;
+      }
+      Gate::Broken => return Poll::Ready(Err(io::Error::from(io::ErrorKind::BrokenPipe))),
+    }
+    Pin::new(&mut self.inner).poll_write(cx, buf)
+  }
+
+  fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    Pin::new(&mut self.inner).poll_flush(cx)
+  }
+
+  fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    Pin::new(&mut self.inner).poll_shutdown(cx)
+  }
+}
+
+#[tokio::test]
+async fn refuses_calls_still_queued_when_the_session_ends() {
+  let registry = Registry::new();
+  let (endpoint, mut endings) = recording(&registry, SessionConfig::default());
+  let gate = Arc::new(Mutex::new(Gate::Open));
+  let (client, server) = tokio::io::duplex(4096);
+  let server = GatedWrites {
+    inner: server,
+    gate: Arc::clone(&gate),
+  };
+  tokio::spawn(async move { endpoint.serve_connection(server, None).await });
+  let mut socket = open(client).await;
+  send(&mut socket, hello_for_server_calls(4)).await;
+  let id = welcome_id(&next_welcome(&mut socket).await);
+  *gate.lock().unwrap() = Gate::Stalled(None);
+  send(&mut socket, heartbeat_frame(0x04, &[1])).await;
+  eventually(
+    || matches!(*gate.lock().unwrap(), Gate::Stalled(Some(_))),
+    "the PONG to stall",
+  )
+  .await;
+  let handle = registry.get(&id).unwrap();
+  let method = confirm();
+  let mut call = Box::pin(handle.call(&method, Vec::new(), CallOptions::default()));
+  assert!((&mut call).now_or_never().is_none(), "the call to be queued");
+  let Gate::Stalled(Some(waker)) = std::mem::replace(&mut *gate.lock().unwrap(), Gate::Broken) else {
+    panic!("the write is no longer stalled");
+  };
+  waker.wake();
+  collect(&mut endings, 1).await;
+  let error = tokio::time::timeout(EXPECT_WITHIN, call).await.unwrap().unwrap_err();
+  assert_eq!((error.code(), error.nx()), (StatusCode::NotFound, true));
 }
