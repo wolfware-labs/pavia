@@ -177,6 +177,7 @@ pub async fn run<A: Authenticator, Z: Authorizer + 'static>(
         ));
       }
       Step::Ended(ending) => {
+        inbox.refuse_queued_calls();
         drop(membership);
         tokio::spawn(transport.linger());
         return ending;
@@ -470,7 +471,6 @@ async fn carry_out<Z: Authorizer + 'static>(
   while let Some(output) = session.poll_output() {
     if session.is_ended() {
       inbox.close();
-      calls.outgoing.clear();
     }
     let welcoming = membership.welcoming.take();
     match output {

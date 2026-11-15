@@ -7,6 +7,7 @@ use pavia_proto::data::{self, Codec, DecodeLimits, Value};
 use pavia_proto::registry::StatusCode;
 use pavia_proto::session::{Answer, Session};
 use tokio::sync::oneshot;
+use tokio::time::Instant;
 
 use crate::methods::encode;
 use crate::sessions::{CallError, Calling};
@@ -25,9 +26,12 @@ impl Outgoing {
       token,
       method,
       arguments,
-      options,
+      deadline,
       reply,
     } = calling;
+    if reply.is_closed() {
+      return;
+    }
     let Ok(data) = encode(&Value::Array(arguments), codec) else {
       let refusal = CallError::new(
         StatusCode::InvalidArgument,
@@ -38,7 +42,8 @@ impl Outgoing {
       let _ = reply.send(Err(refusal));
       return;
     };
-    match session.call(method.as_str().to_owned(), data, options.deadline) {
+    let left = deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
+    match session.call(method.as_str().to_owned(), data, left) {
       Ok(stream) => {
         self.waiting.insert(stream, (token, reply));
         self.streams.insert(token, stream);
@@ -61,11 +66,6 @@ impl Outgoing {
       let _ = reply.send(decoded(answer, codec));
     }
   }
-
-  pub(super) fn clear(&mut self) {
-    self.waiting.clear();
-    self.streams.clear();
-  }
 }
 
 fn decoded(answer: Answer, codec: Codec) -> Result<Value, CallError> {
@@ -87,7 +87,10 @@ fn decoded(answer: Answer, codec: Codec) -> Result<Value, CallError> {
       } else {
         Some(decode(&error.data, "ERROR detail")?)
       };
-      let code = StatusCode::from_u64_lossy(error.code);
+      let code = match StatusCode::from_u64_lossy(error.code) {
+        StatusCode::Ok => StatusCode::Unknown,
+        code => code,
+      };
       Err(CallError::new(code, error.msg, error.nx == Some(true), detail))
     }
   }

@@ -55,11 +55,11 @@ impl CallError {
     Self::new(StatusCode::Unavailable, "the session ended before the answer", false, None)
   }
 
-  pub(crate) fn deadline_exceeded() -> Self {
+  pub(crate) fn deadline_exceeded(unsent: bool) -> Self {
     Self::new(
       StatusCode::DeadlineExceeded,
       "the deadline passed before the answer",
-      false,
+      unsent,
       None,
     )
   }

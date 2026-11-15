@@ -23,6 +23,7 @@ use pavia_proto::session::Command;
 use pavia_proto::session_id::SessionId;
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{mpsc, oneshot};
+use tokio::time::{Instant, timeout_at};
 
 use crate::methods::MethodName;
 
@@ -57,6 +58,13 @@ impl Inbox {
     self.calls.close();
     self.abandoned.close();
   }
+
+  /// Fails the calls still queued, which were never sent, as calls to an ended session.
+  pub(crate) fn refuse_queued_calls(&mut self) {
+    while let Ok(calling) = self.calls.try_recv() {
+      let _ = calling.reply.send(Err(CallError::ended()));
+    }
+  }
 }
 
 /// A server call on its way to the session's task.
@@ -65,7 +73,7 @@ pub(crate) struct Calling {
   pub(crate) token: u64,
   pub(crate) method: MethodName,
   pub(crate) arguments: Vec<Value>,
-  pub(crate) options: CallOptions,
+  pub(crate) deadline: Option<Instant>,
   pub(crate) reply: oneshot::Sender<Result<Value, CallError>>,
 }
 
@@ -116,41 +124,54 @@ impl Handle {
   /// when the session ends before the answer, DEADLINE_EXCEEDED, and INTERNAL for a RESULT or an
   /// ERROR detail that does not decode (§8.10).
   pub async fn call(&self, method: &MethodName, arguments: Vec<Value>, options: CallOptions) -> Result<Value, CallError> {
+    let deadline = options.deadline.and_then(|deadline| Instant::now().checked_add(deadline));
     let (reply, answer) = oneshot::channel();
     let token = self.tokens.fetch_add(1, Ordering::Relaxed);
     let calling = Calling {
       token,
       method: method.clone(),
       arguments,
-      options,
+      deadline,
       reply,
     };
-    if self.calls.send(calling).await.is_err() {
+    let queued = match deadline {
+      Some(deadline) => timeout_at(deadline, self.calls.send(calling))
+        .await
+        .map_err(|_| CallError::deadline_exceeded(true))?,
+      None => self.calls.send(calling).await,
+    };
+    if queued.is_err() {
       return Err(CallError::ended());
     }
     let mut pending = Pending {
       abandoned: &self.abandoned,
       token: Some(token),
+      answer,
     };
-    let answered = match options.deadline {
-      Some(deadline) => tokio::time::timeout(deadline, answer)
+    let answered = match deadline {
+      Some(deadline) => timeout_at(deadline, &mut pending.answer)
         .await
-        .map_err(|_| CallError::deadline_exceeded())?,
-      None => answer.await,
+        .map_err(|_| CallError::deadline_exceeded(false))?,
+      None => (&mut pending.answer).await,
     };
     pending.token = None;
     answered.unwrap_or_else(|_| Err(CallError::unavailable()))
   }
 }
 
+/// A queued call the caller still waits for. Dropped early, it closes the answer before it tells
+/// the session task to abandon the call, so a task that reads the abandon before the call itself
+/// finds the answer closed and never sends the CALL.
 struct Pending<'a> {
   abandoned: &'a mpsc::UnboundedSender<u64>,
   token: Option<u64>,
+  answer: oneshot::Receiver<Result<Value, CallError>>,
 }
 
 impl Drop for Pending<'_> {
   fn drop(&mut self) {
     if let Some(token) = self.token {
+      self.answer.close();
       let _ = self.abandoned.send(token);
     }
   }

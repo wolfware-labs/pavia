@@ -36,7 +36,7 @@ use tracing::subscriber::NoSubscriber;
 use super::{Calls, Disclosure, Failed, Lane, Outgoing, Refusal, RunningCall, authenticated, run, validate_call};
 use crate::auth::{AllowAll, AuthFailure, Authenticator, Authorizer, Permissive, Principal, RequestContext};
 use crate::methods::{Handler, HandlerContext, HandlerError, MethodEntry, MethodName, MethodRegistry, StatusError};
-use crate::sessions::{CallError, CallOptions, Handle, Registry};
+use crate::sessions::{CallError, CallOptions, Calling, Handle, Registry};
 use crate::test_support::{EXPECT_WITHIN, floor_frame, has_ws_close, send, serve_on_loopback};
 use crate::websocket::{Config, Endpoint, SUBPROTOCOL, Transport};
 
@@ -2617,7 +2617,10 @@ async fn cancels_a_server_call_past_its_deadline() {
     CallOptions::default().with_deadline(Duration::from_millis(200)),
   );
   let sent = next_server_call(&mut socket, 1).await;
-  assert_eq!(sent.header[&4], Value::from(200));
+  let Value::Integer(left) = sent.header[&4] else {
+    panic!("{:?}", sent.header);
+  };
+  assert!((150..=200).contains(&u64::try_from(left).unwrap()), "{left:?}");
   let error = call.await.unwrap().unwrap_err();
   assert_eq!((error.code(), error.nx()), (StatusCode::DeadlineExceeded, false));
   let cancel = next_answer(&mut socket).await;
@@ -2637,8 +2640,9 @@ async fn cancels_a_server_call_whose_future_is_dropped() {
   nothing_sent(&mut socket).await;
   let call = call_in_background(&registry, &id, CallOptions::default());
   next_server_call(&mut socket, 3).await;
-  send(&mut socket, method_frame(3, 0x13, &[], &[0xf4])).await;
-  assert_eq!(call.await.unwrap(), Ok(Arg::Bool(false)));
+  call.abort();
+  let cancel = next_answer(&mut socket).await;
+  assert_eq!((cancel.stream, cancel.frame_type), (3, 0x15));
 }
 
 #[tokio::test]
@@ -2685,4 +2689,55 @@ async fn lets_a_handler_call_back_the_client_that_called_it() {
   send(&mut socket, method_frame(1, 0x13, &[], &[0xf5])).await;
   let answer = next_answer(&mut socket).await;
   assert_eq!((answer.stream, answer.frame_type, answer.data), (2, 0x13, vec![0xf5]));
+}
+
+#[tokio::test]
+async fn delivers_an_answer_that_arrives_with_the_end_of_the_session() {
+  let registry = Registry::new();
+  let (mut socket, id) = calling(&registry, hello_for_server_calls(4)).await;
+  let call = call_in_background(&registry, &id, CallOptions::default());
+  next_server_call(&mut socket, 1).await;
+  send(&mut socket, [method_frame(1, 0x13, &[], &[0xf5]), close_frame(0)].concat()).await;
+  assert_eq!(call.await.unwrap(), Ok(Arg::Bool(true)));
+}
+
+#[tokio::test]
+async fn reports_a_client_error_with_code_zero_as_unknown() {
+  let registry = Registry::new();
+  let (mut socket, id) = calling(&registry, hello_for_server_calls(4)).await;
+  let call = call_in_background(&registry, &id, CallOptions::default());
+  next_server_call(&mut socket, 1).await;
+  send(&mut socket, method_frame(1, 0x14, &[0xa2, 0x06, 0x00, 0x07, 0x60], &[])).await;
+  let error = call.await.unwrap().unwrap_err();
+  assert_eq!(error.code(), StatusCode::Unknown);
+  assert_eq!(error.to_string(), "Unknown: ");
+}
+
+#[test]
+fn never_sends_a_call_whose_caller_has_already_gone() {
+  let mut session =
+    pavia_proto::session::Session::server(&SessionConfig::default().validate().unwrap(), std::time::Instant::now());
+  let now = std::time::Instant::now();
+  session.handle_input(Input::Message(Bytes::from(hello_for_server_calls(4))), now);
+  session.handle_input(
+    Input::Authenticated {
+      session: SessionId::parse("AAAAAAAAAAAAAAAAAAAAAA").unwrap(),
+      user: None,
+    },
+    now,
+  );
+  while session.poll_output().is_some() {}
+  let (reply, answer) = oneshot::channel();
+  drop(answer);
+  let calling = Calling {
+    token: 0,
+    method: confirm(),
+    arguments: Vec::new(),
+    deadline: None,
+    reply,
+  };
+  let mut outgoing = Outgoing::default();
+  outgoing.open(&mut session, calling, Codec::Cbor);
+  assert_eq!(session.poll_output(), None);
+  assert_eq!(session.open_calls(), 0);
 }

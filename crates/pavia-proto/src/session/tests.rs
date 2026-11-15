@@ -2117,20 +2117,25 @@ fn refuses_a_server_call_outside_an_established_session_or_without_server_calls(
   drain(&mut session);
   assert_eq!(confirm(&mut session), Err(CallRefused::NotEstablished));
   assert_eq!(drain(&mut session), []);
-  let codes = [
+  let refusals = [
     CallRefused::NotEstablished,
     CallRefused::NotGranted,
     CallRefused::TooManyCalls,
     CallRefused::TooLarge,
-  ]
-  .map(CallRefused::code);
+  ];
   assert_eq!(
-    codes,
+    refusals.map(|refused| (refused.code(), refused.msg())),
     [
-      StatusCode::NotFound,
-      StatusCode::FailedPrecondition,
-      StatusCode::ResourceExhausted,
-      StatusCode::ResourceExhausted,
+      (StatusCode::NotFound, "the session has ended"),
+      (StatusCode::FailedPrecondition, "the client was not granted server-calls"),
+      (
+        StatusCode::ResourceExhausted,
+        "as many server calls are open as the client's max_calls"
+      ),
+      (
+        StatusCode::ResourceExhausted,
+        "the CALL is above the client's max_frame or header limit"
+      ),
     ]
   );
 }
