@@ -2751,20 +2751,20 @@ fn never_sends_a_call_whose_caller_has_already_gone() {
   assert_eq!(session.open_calls(), 0);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn sends_the_time_left_and_refuses_a_call_with_under_a_millisecond_left() {
   let mut session = established_for_calls();
   let mut outgoing = Outgoing::default();
-  let (calling, _answer) = queued_call(0, Some(tokio::time::Instant::now() + Duration::from_millis(100)));
-  outgoing.open(&mut session, calling, Codec::Cbor);
-  let Some(pavia_proto::session::Output::Transmit(message)) = session.poll_output() else {
-    panic!("no CALL");
-  };
-  let Value::Integer(left) = answer_in(&message).header[&4] else {
-    panic!("CALL without a deadline");
-  };
-  assert!((50..=100).contains(&u64::try_from(left).unwrap()), "{left:?}");
-  let (calling, answer) = queued_call(1, Some(tokio::time::Instant::now()));
+  let now = tokio::time::Instant::now();
+  for (token, left) in [(0, 100), (1, 1)] {
+    let (calling, _answer) = queued_call(token, Some(now + Duration::from_millis(left)));
+    outgoing.open(&mut session, calling, Codec::Cbor);
+    let Some(pavia_proto::session::Output::Transmit(message)) = session.poll_output() else {
+      panic!("no CALL with {left} ms left");
+    };
+    assert_eq!(answer_in(&message).header[&4], Value::from(left));
+  }
+  let (calling, answer) = queued_call(2, Some(now + Duration::from_micros(999)));
   outgoing.open(&mut session, calling, Codec::Cbor);
   assert_eq!(session.poll_output(), None);
   let error = answer.await.unwrap().unwrap_err();
