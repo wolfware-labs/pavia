@@ -126,15 +126,12 @@ async fn reports_nx_for_a_deadline_that_passes_before_the_call_is_taken_up() {
 async fn refuses_queued_calls_as_calls_to_an_ended_session() {
   let (handle, mut inbox) = Handle::channel();
   let method = confirm();
-  let call = tokio::spawn(async move { handle.call(&method, Vec::new(), CallOptions::default()).await });
-  while inbox.calls.is_empty() {
-    tokio::task::yield_now().await;
-  }
+  let mut call = Box::pin(handle.call(&method, Vec::new(), CallOptions::default()));
+  assert!((&mut call).now_or_never().is_none(), "the call to wait in the queue");
   inbox.refuse_queued_calls();
   let error = tokio::time::timeout(EXPECT_WITHIN, call)
     .await
     .expect("the queued call to be refused")
-    .unwrap()
     .unwrap_err();
   assert_eq!(
     (error.code(), error.nx(), error.msg()),
