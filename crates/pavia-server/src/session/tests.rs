@@ -2468,8 +2468,12 @@ async fn returns_false_to_a_notification_sent_after_the_session_ended() {
 }
 
 fn hello_for_server_calls(max_calls: u8) -> Vec<u8> {
+  hello_for_server_calls_in(b"cbor", max_calls)
+}
+
+fn hello_for_server_calls_in(codec: &[u8; 4], max_calls: u8) -> Vec<u8> {
   let mut header = vec![0xa4, 0x0e, 0x81, 0x01, 0x10, 0x81, 0x64];
-  header.extend(b"cbor");
+  header.extend(codec);
   header.extend([0x12, 0x81, 0x6c]);
   header.extend(b"server-calls");
   header.extend([0x15, 0xa1, 0x18, 0x30, max_calls]);
@@ -2865,4 +2869,33 @@ async fn refuses_calls_still_queued_when_the_session_ends() {
   collect(&mut endings, 1).await;
   let error = tokio::time::timeout(EXPECT_WITHIN, call).await.unwrap().unwrap_err();
   assert_eq!((error.code(), error.nx()), (StatusCode::NotFound, true));
+}
+
+#[tokio::test]
+async fn makes_server_calls_in_json_when_the_session_negotiated_it() {
+  let registry = Registry::new();
+  let mut config = SessionConfig::default();
+  config.codecs = vec![Codec::Json];
+  let methods = Arc::new(MethodRegistry::new());
+  let (address, _) = listen_serving(registry.clone(), methods, config, Arc::new(Permissive), Arc::new(AllowAll)).await;
+  let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
+  send(&mut socket, hello_for_server_calls_in(b"json", 4)).await;
+  let id = welcome_id(&next_welcome(&mut socket).await);
+  let (calls, id_again) = (registry.clone(), id.clone());
+  let arguments = vec![Arg::Text("save?".to_owned()), Arg::Unsigned(2)];
+  let call = tokio::spawn(async move { calls.call(&id_again, &confirm(), arguments, CallOptions::default()).await });
+  let sent = next_answer(&mut socket).await;
+  assert_eq!(
+    (sent.stream, sent.frame_type, sent.data),
+    (1, 0x10, br#"["save?",2]"#.to_vec())
+  );
+  send(&mut socket, method_frame(1, 0x13, &[], b"true")).await;
+  assert_eq!(call.await.unwrap(), Ok(Arg::Bool(true)));
+  let call = call_in_background(&registry, &id, CallOptions::default());
+  next_answer(&mut socket).await;
+  let header = [0xa2, 0x06, 0x0c, 0x07, 0x62, b'n', b'o'];
+  send(&mut socket, method_frame(3, 0x14, &header, br#"{"reason":"none"}"#)).await;
+  let error = call.await.unwrap().unwrap_err();
+  let detail = Arg::Map(vec![(Arg::Text("reason".to_owned()), Arg::Text("none".to_owned()))]);
+  assert_eq!((error.code(), error.detail()), (StatusCode::Unimplemented, Some(&detail)));
 }
