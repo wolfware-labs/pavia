@@ -1137,6 +1137,51 @@ async fn refuses_commands_while_the_closing_frame_is_written() {
   );
 }
 
+#[tokio::test]
+async fn refuses_commands_once_a_failed_write_ends_the_session() {
+  let registry = Registry::new();
+  let (endpoint, mut endings) = recording(&registry, SessionConfig::default());
+  let armed: Arc<Mutex<Option<(SessionId, bool)>>> = Arc::default();
+  let refused = Arc::new(Mutex::new(None));
+  let (probed, probe_armed, probe_refused) = (registry.clone(), Arc::clone(&armed), Arc::clone(&refused));
+  let (client, server) = tokio::io::duplex(4096);
+  let server = ProbedWrites {
+    inner: server,
+    probe: move || {
+      let mut armed = probe_armed.lock().unwrap();
+      match armed.take() {
+        Some((id, false)) => {
+          *armed = Some((id, true));
+          Err(io::Error::from(io::ErrorKind::BrokenPipe))
+        }
+        Some((id, true)) => {
+          let late = Command::Notify {
+            method: "late".to_owned(),
+            data: Bytes::new(),
+          };
+          *probe_refused.lock().unwrap() = probed
+            .get(&id)
+            .map(|handle| handle.send(late).now_or_never().is_some_and(|sent| sent.is_err()));
+          Ok(())
+        }
+        None => Ok(()),
+      }
+    },
+  };
+  tokio::spawn(async move { endpoint.serve_connection(server, None).await });
+  let mut socket = open(client).await;
+  let id = established(&mut socket).await;
+  *armed.lock().unwrap() = Some((id, false));
+  let pings = [heartbeat_frame(0x04, &[1]), heartbeat_frame(0x04, &[2])].concat();
+  send(&mut socket, pings).await;
+  collect(&mut endings, 1).await;
+  assert_eq!(
+    *refused.lock().unwrap(),
+    Some(true),
+    "the session is still registered while it writes what was queued behind the failed write"
+  );
+}
+
 fn call_frame(stream: u8, method: &str, data: &[u8]) -> Vec<u8> {
   call_frame_shaped(stream, method, 0, data)
 }

@@ -156,10 +156,7 @@ pub async fn run<A: Authenticator, Z: Authorizer + 'static>(
       authenticating = None;
     }
     session.handle_input(input, Instant::now().into_std());
-    if session.is_ended() {
-      commands.close();
-    }
-    match carry_out(&mut session, &mut transport, &mut membership, &mut calls).await {
+    match carry_out(&mut session, &mut transport, &mut membership, &mut calls, &mut commands).await {
       Step::Continue => {}
       Step::Authenticate(auth) => {
         let context = &context;
@@ -454,9 +451,13 @@ async fn carry_out<Z: Authorizer + 'static>(
   transport: &mut Transport,
   membership: &mut Membership<'_>,
   calls: &mut Calls<'_, Z>,
+  commands: &mut mpsc::Receiver<Command>,
 ) -> Step {
   let mut step = Step::Continue;
   while let Some(output) = session.poll_output() {
+    if session.is_ended() {
+      commands.close();
+    }
     let welcoming = membership.welcoming.take();
     match output {
       Output::Transmit(message) => {
