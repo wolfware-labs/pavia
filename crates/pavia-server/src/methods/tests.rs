@@ -223,9 +223,14 @@ fn progress() -> MethodName {
 
 #[tokio::test]
 async fn queues_a_notification_with_its_arguments_in_the_session_codec() {
-  for (codec, data) in [(Codec::Cbor, &[0x81, 0x18, 50][..]), (Codec::Json, b"[50]")] {
+  for (codec, data) in [(Codec::Cbor, &[0x82, 0x18, 50, 0x01][..]), (Codec::Json, b"[50,1]")] {
     let (context, mut commands) = context(codec);
-    assert!(context.notify(&progress(), vec![Value::Unsigned(50)]).await.unwrap());
+    assert!(
+      context
+        .notify(&progress(), vec![Value::Unsigned(50), Value::Unsigned(1)])
+        .await
+        .unwrap()
+    );
     assert_eq!(
       commands.try_recv().unwrap(),
       Command::Notify {
