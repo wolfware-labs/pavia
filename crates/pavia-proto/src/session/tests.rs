@@ -1935,3 +1935,77 @@ fn drops_a_notification_that_arrives_before_welcome() {
   assert_eq!(drain(&mut session), []);
   assert!(!session.is_ended());
 }
+
+fn notify_command(method: impl Into<String>, data: impl Into<Bytes>) -> Input {
+  Input::Command(Command::Notify {
+    method: method.into(),
+    data: data.into(),
+  })
+}
+
+#[test]
+fn sends_each_notify_command_on_the_control_stream_in_order() {
+  let (mut session, _) = welcomed(None);
+  session.feed(notify_command("ui/progress", vec![0x81, 0x18, 50]));
+  session.feed(notify_command("ui/progress", vec![0x81, 0x18, 100]));
+  let sent = sent_frames(&mut session);
+  let notified: Vec<_> = sent
+    .iter()
+    .map(|(stream, frame)| match frame {
+      Frame::Notify(notify) => (*stream, notify.method.as_str(), notify.meta.clone(), notify.data.to_vec()),
+      other => panic!("{other:?}"),
+    })
+    .collect();
+  assert_eq!(
+    notified,
+    [
+      (0, "ui/progress", None, vec![0x81, 0x18, 50]),
+      (0, "ui/progress", None, vec![0x81, 0x18, 100]),
+    ]
+  );
+  assert!(!session.is_ended());
+}
+
+#[test]
+fn ignores_a_notify_command_before_welcome_and_after_the_end() {
+  let mut session = greeted();
+  session.feed(notify_command("ui/progress", vec![0x80]));
+  assert_eq!(drain(&mut session), []);
+  let (mut session, _) = welcomed(None);
+  session.feed(Input::TransportLost);
+  drain(&mut session);
+  session.feed(notify_command("ui/progress", vec![0x80]));
+  assert_eq!(drain(&mut session), []);
+}
+
+#[test]
+fn drops_a_notify_command_above_the_client_max_frame_or_the_header_limit() {
+  let mut session = welcomed_by_a_client_with(MAX_FRAME_FLOOR);
+  let room = usize::try_from(MAX_FRAME_FLOOR).unwrap() - 15;
+  for length in [room, room + 1] {
+    session.feed(notify_command("ui/progress", vec![0; length]));
+  }
+  let outputs = drain(&mut session);
+  let [Output::Transmit(sent), too_large] = outputs.as_slice() else {
+    panic!("{outputs:?}");
+  };
+  assert!(matches!(frames(sent).as_slice(), [(0, Frame::Notify(notify))] if notify.data.len() == room));
+  let limit = MAX_FRAME_FLOOR;
+  assert_eq!(
+    *too_large,
+    Output::NotifyTooLarge {
+      method: "ui/progress".to_owned(),
+      length: limit + 1,
+      limit,
+    }
+  );
+  for method in ["a".repeat(16_379), "a".repeat(16_380)] {
+    session.feed(notify_command(method, vec![0x80]));
+  }
+  let outputs = drain(&mut session);
+  let [Output::Transmit(_), Output::NotifyTooLarge { length, limit, .. }] = outputs.as_slice() else {
+    panic!("{outputs:?}");
+  };
+  assert_eq!((*length, *limit), (16_385, 16_384));
+  assert!(!session.is_ended());
+}

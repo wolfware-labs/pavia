@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use ciborium::Value;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{FutureExt, SinkExt, StreamExt};
 use hyper::header::{self, HeaderValue};
 use pavia_proto::data::{Codec, Value as Arg};
 use pavia_proto::error::ErrorStatus;
@@ -35,8 +35,8 @@ use tracing::subscriber::NoSubscriber;
 
 use super::{Calls, Disclosure, Failed, Lane, Refusal, RunningCall, authenticated, run, validate_call};
 use crate::auth::{AllowAll, AuthFailure, Authenticator, Authorizer, Permissive, Principal, RequestContext};
-use crate::methods::{Handler, HandlerError, MethodEntry, MethodName, MethodRegistry, StatusError};
-use crate::sessions::Registry;
+use crate::methods::{Handler, HandlerContext, HandlerError, MethodEntry, MethodName, MethodRegistry, StatusError};
+use crate::sessions::{Handle, Registry};
 use crate::test_support::{EXPECT_WITHIN, floor_frame, has_ws_close, send, serve_on_loopback};
 use crate::websocket::{Config, Endpoint, SUBPROTOCOL, Transport};
 
@@ -1010,25 +1010,21 @@ async fn removes_a_session_once_when_its_close_meets_the_idle_timeout() {
   eventually(|| registry.is_empty(), "every session leaves the registry").await;
 }
 
-struct FailingWrites {
+struct ProbedWrites<P> {
   inner: DuplexStream,
-  failing: Arc<AtomicBool>,
-  registry: Registry,
-  registered_at_failure: Arc<Mutex<Option<usize>>>,
+  probe: P,
 }
 
-impl AsyncRead for FailingWrites {
+impl<P: Unpin> AsyncRead for ProbedWrites<P> {
   fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
     Pin::new(&mut self.inner).poll_read(cx, buf)
   }
 }
 
-impl AsyncWrite for FailingWrites {
+impl<P: FnMut() -> io::Result<()> + Unpin> AsyncWrite for ProbedWrites<P> {
   fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
-    if self.failing.load(Ordering::SeqCst) {
-      let registered = self.registry.len();
-      self.registered_at_failure.lock().unwrap().get_or_insert(registered);
-      return Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()));
+    if let Err(error) = (self.probe)() {
+      return Poll::Ready(Err(error));
     }
     Pin::new(&mut self.inner).poll_write(cx, buf)
   }
@@ -1084,11 +1080,17 @@ async fn never_registers_a_session_whose_welcome_cannot_be_written() {
     })
   });
   let (client, server) = tokio::io::duplex(4096);
-  let server = FailingWrites {
+  let probed = registry.clone();
+  let failure = Arc::clone(&registered_at_failure);
+  let server = ProbedWrites {
     inner: server,
-    failing,
-    registry: registry.clone(),
-    registered_at_failure: Arc::clone(&registered_at_failure),
+    probe: move || {
+      if failing.load(Ordering::SeqCst) {
+        failure.lock().unwrap().get_or_insert(probed.len());
+        return Err(io::ErrorKind::BrokenPipe.into());
+      }
+      Ok(())
+    },
   };
   tokio::spawn(async move { endpoint.serve_connection(server, None).await });
   let mut socket = open(client).await;
@@ -1097,6 +1099,87 @@ async fn never_registers_a_session_whose_welcome_cannot_be_written() {
   assert_eq!(ending, Ending::TransportLost);
   assert_eq!(*registered_at_failure.lock().unwrap(), Some(0));
   assert!(registry.is_empty());
+}
+
+#[tokio::test]
+async fn refuses_commands_while_the_closing_frame_is_written() {
+  let registry = Registry::new();
+  let (endpoint, mut endings) = recording(&registry, SessionConfig::default());
+  let armed: Arc<Mutex<Option<SessionId>>> = Arc::default();
+  let refused = Arc::new(Mutex::new(None));
+  let (probed, probe_armed, probe_refused) = (registry.clone(), Arc::clone(&armed), Arc::clone(&refused));
+  let (client, server) = tokio::io::duplex(4096);
+  let server = ProbedWrites {
+    inner: server,
+    probe: move || {
+      if let Some(id) = probe_armed.lock().unwrap().take() {
+        let late = Command::Notify {
+          method: "late".to_owned(),
+          data: Bytes::new(),
+        };
+        *probe_refused.lock().unwrap() = probed
+          .get(&id)
+          .map(|handle| handle.send(late).now_or_never().is_some_and(|sent| sent.is_err()));
+      }
+      Ok(())
+    },
+  };
+  tokio::spawn(async move { endpoint.serve_connection(server, None).await });
+  let mut socket = open(client).await;
+  let id = established(&mut socket).await;
+  *armed.lock().unwrap() = Some(id);
+  send(&mut socket, close_frame(0)).await;
+  collect(&mut endings, 1).await;
+  assert_eq!(
+    *refused.lock().unwrap(),
+    Some(true),
+    "the session is still registered while its CLOSE is written, and refuses commands"
+  );
+}
+
+#[tokio::test]
+async fn refuses_commands_once_a_failed_write_ends_the_session() {
+  let registry = Registry::new();
+  let (endpoint, mut endings) = recording(&registry, SessionConfig::default());
+  let armed: Arc<Mutex<Option<(SessionId, bool)>>> = Arc::default();
+  let refused = Arc::new(Mutex::new(None));
+  let (probed, probe_armed, probe_refused) = (registry.clone(), Arc::clone(&armed), Arc::clone(&refused));
+  let (client, server) = tokio::io::duplex(4096);
+  let server = ProbedWrites {
+    inner: server,
+    probe: move || {
+      let mut armed = probe_armed.lock().unwrap();
+      match armed.take() {
+        Some((id, false)) => {
+          *armed = Some((id, true));
+          Err(io::Error::from(io::ErrorKind::BrokenPipe))
+        }
+        Some((id, true)) => {
+          let late = Command::Notify {
+            method: "late".to_owned(),
+            data: Bytes::new(),
+          };
+          *probe_refused.lock().unwrap() = probed
+            .get(&id)
+            .map(|handle| handle.send(late).now_or_never().is_some_and(|sent| sent.is_err()));
+          Ok(())
+        }
+        None => Ok(()),
+      }
+    },
+  };
+  tokio::spawn(async move { endpoint.serve_connection(server, None).await });
+  let mut socket = open(client).await;
+  let id = established(&mut socket).await;
+  *armed.lock().unwrap() = Some((id, false));
+  let pings = [heartbeat_frame(0x04, &[1]), heartbeat_frame(0x04, &[2])].concat();
+  send(&mut socket, pings).await;
+  collect(&mut endings, 1).await;
+  assert_eq!(
+    *refused.lock().unwrap(),
+    Some(true),
+    "the session is still registered while it writes what was queued behind the failed write"
+  );
 }
 
 fn call_frame(stream: u8, method: &str, data: &[u8]) -> Vec<u8> {
@@ -1221,6 +1304,16 @@ async fn serving_as<Z: Authorizer + 'static>(
   let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
   let session = established(&mut socket).await;
   (socket, session)
+}
+
+async fn serving_in_json(methods: Arc<MethodRegistry<Handler>>) -> Socket {
+  let mut config = SessionConfig::default();
+  config.codecs = vec![Codec::Json];
+  let (address, _) = listen_serving(Registry::new(), methods, config, Arc::new(Permissive), Arc::new(AllowAll)).await;
+  let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
+  send(&mut socket, hello_frame_with(b"json")).await;
+  next_welcome(&mut socket).await;
+  socket
 }
 
 const GENERAL_HELLO: &[u8] = &[
@@ -1376,13 +1469,7 @@ async fn answers_internal_when_a_handler_panics_before_its_future_runs() {
 
 #[tokio::test]
 async fn answers_calls_in_json_when_the_session_negotiated_it() {
-  let (methods, _) = chat();
-  let mut config = SessionConfig::default();
-  config.codecs = vec![Codec::Json];
-  let (address, _) = listen_serving(Registry::new(), methods, config, Arc::new(Permissive), Arc::new(AllowAll)).await;
-  let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
-  send(&mut socket, hello_frame_with(b"json")).await;
-  next_welcome(&mut socket).await;
+  let mut socket = serving_in_json(chat().0).await;
   send(&mut socket, call_frame(2, "chat/send", br#"["general","hello"]"#)).await;
   let answer = next_answer(&mut socket).await;
   assert_eq!((answer.frame_type, answer.data), (0x13, br#""general:hello""#.to_vec()));
@@ -2014,6 +2101,7 @@ async fn cancelled_after_it_finished(outcome: Result<Arg, Failed>) -> Command {
     streams: HashMap::new(),
     tasks: HashMap::new(),
     lane: Lane::default(),
+    handle: Handle::new(mpsc::channel(1).0),
   };
   let task = calls.running.spawn(async move { outcome });
   let running = RunningCall {
@@ -2238,4 +2326,134 @@ async fn drops_and_logs_once_a_notification_the_authorizer_denies() {
   send(&mut socket, call_frame(2, "chat/ping", &[0x80])).await;
   assert_refused(&next_answer(&mut socket).await, 2, 16);
   assert!(record.lock().unwrap().is_empty());
+}
+
+fn saving() -> Arc<MethodRegistry<Handler>> {
+  let progress = MethodName::parse("ui/progress").unwrap();
+  let save = Handler::with_context(0, move |context: HandlerContext, _| {
+    let progress = progress.clone();
+    async move {
+      for percent in [50, 100] {
+        assert!(context.notify(&progress, vec![Arg::Unsigned(percent)]).await.unwrap());
+      }
+      Ok(Arg::Null)
+    }
+  });
+  let mut methods = MethodRegistry::new();
+  methods
+    .register_server_method("doc/save", MethodEntry::call(save.clone()))
+    .unwrap();
+  methods
+    .register_server_method("doc/autosave", MethodEntry::notify(save))
+    .unwrap();
+  Arc::new(methods)
+}
+
+async fn saved(socket: &mut Socket, saving: Vec<u8>) -> (Vec<Vec<u8>>, Vec<Answer>) {
+  send(socket, saving).await;
+  let (mut notified, mut answers) = (Vec::new(), Vec::new());
+  for _ in 0..3 {
+    let answer = next_answer(socket).await;
+    if answer.frame_type == 0x20 {
+      assert_eq!(answer.stream, 0);
+      assert_eq!(answer.header, BTreeMap::from([(2, Value::Text("ui/progress".to_owned()))]));
+      notified.push(answer.data);
+    } else {
+      answers.push(answer);
+    }
+  }
+  (notified, answers)
+}
+
+#[tokio::test]
+async fn sends_a_handler_notifications_in_order_and_its_result() {
+  let mut socket = serving(saving()).await;
+  let (notified, answers) = saved(&mut socket, call_frame(2, "doc/save", &[0x80])).await;
+  assert_eq!(notified, [vec![0x81, 0x18, 50], vec![0x81, 0x18, 100]]);
+  assert!(matches!(answers.as_slice(), [answer] if (answer.stream, answer.frame_type) == (2, 0x13)));
+}
+
+#[tokio::test]
+async fn sends_a_handler_notifications_in_json_when_the_session_negotiated_it() {
+  let mut socket = serving_in_json(saving()).await;
+  let (notified, answers) = saved(&mut socket, call_frame(2, "doc/save", b"[]")).await;
+  assert_eq!(notified, [b"[50]".to_vec(), b"[100]".to_vec()]);
+  assert!(matches!(answers.as_slice(), [answer] if answer.data == b"null"));
+}
+
+#[tokio::test]
+async fn sends_the_notifications_of_a_notification_handler() {
+  let mut socket = serving(saving()).await;
+  send(&mut socket, notification_frame("doc/autosave", &[0x80])).await;
+  for percent in [50, 100] {
+    let answer = next_answer(&mut socket).await;
+    assert_eq!(
+      (answer.stream, answer.frame_type, answer.data),
+      (0, 0x20, vec![0x81, 0x18, percent])
+    );
+  }
+}
+
+#[tokio::test]
+async fn logs_and_drops_a_handler_notification_above_the_client_max_frame() {
+  let (log, _logging) = capture_log();
+  let progress = MethodName::parse("ui/progress").unwrap();
+  let mut methods = MethodRegistry::new();
+  let handler = Handler::with_context(0, move |context: HandlerContext, _| {
+    let progress = progress.clone();
+    async move {
+      assert!(context.notify(&progress, vec![Arg::Bytes(vec![0; 1 << 20])]).await.unwrap());
+      Ok(Arg::Null)
+    }
+  });
+  methods
+    .register_server_method("doc/save", MethodEntry::call(handler))
+    .unwrap();
+  let (mut socket, session) = serving_notified(Arc::new(methods)).await;
+  send(&mut socket, call_frame(2, "doc/save", &[0x80])).await;
+  let answer = next_answer(&mut socket).await;
+  assert_eq!((answer.stream, answer.frame_type), (2, 0x13));
+  eventually(|| lines_naming(&log, "ui/progress") == 1, "the drop to be logged").await;
+  let text = log.text();
+  assert!(text.contains("above its limit"), "{text}");
+  assert!(text.contains(&format!("length={}", (1 << 20) + 21)), "{text}");
+  assert!(text.contains(&format!("limit={}", 1 << 20)), "{text}");
+  assert_every_line_names(&log, &session);
+}
+
+#[tokio::test]
+async fn returns_false_to_a_notification_sent_after_the_session_ended() {
+  let (go, waiting) = oneshot::channel::<()>();
+  let (sent, delivered) = oneshot::channel();
+  let detached = Arc::new(Mutex::new(Some((waiting, sent))));
+  let progress = MethodName::parse("ui/progress").unwrap();
+  let mut methods = MethodRegistry::new();
+  let handler = Handler::with_context(0, move |context: HandlerContext, _| {
+    let (waiting, sent) = detached.lock().unwrap().take().unwrap();
+    let progress = progress.clone();
+    tokio::spawn(async move {
+      waiting.await.unwrap();
+      let _ = sent.send(context.notify(&progress, Vec::new()).await);
+    });
+    async { Ok(Arg::Null) }
+  });
+  methods
+    .register_server_method("doc/save", MethodEntry::call(handler))
+    .unwrap();
+  let (address, ending) = listen_serving(
+    Registry::new(),
+    Arc::new(methods),
+    SessionConfig::default(),
+    Arc::new(Permissive),
+    Arc::new(AllowAll),
+  )
+  .await;
+  let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
+  established(&mut socket).await;
+  send(&mut socket, call_frame(2, "doc/save", &[0x80])).await;
+  assert_eq!(next_answer(&mut socket).await.frame_type, 0x13);
+  send(&mut socket, close_frame(0)).await;
+  ending.await.unwrap();
+  go.send(()).unwrap();
+  assert!(!delivered.await.unwrap().unwrap());
 }

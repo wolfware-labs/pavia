@@ -53,7 +53,8 @@
 //! §8.2; the driver makes the rest. CANCEL on a call still waiting for its answer yields
 //! [`Output::Cancelled`]; the driver answers ERROR CANCELLED once the handler has stopped, and
 //! that answer frees the call's slot (§8.5). A NOTIFY on the control stream becomes
-//! [`Output::Notify`], in arrival order, and is never answered (§9.1). Frames on the control
+//! [`Output::Notify`], in arrival order, and is never answered (§9.1); the driver's
+//! [`Command::Notify`] sends one to the client the same way. Frames on the control
 //! stream other than these are otherwise ignored until their feature lands.
 //! PING, PONG and CLOSE skip ahead of other queued outputs, in the order they were made (§6.6,
 //! §13.5), but never ahead of WELCOME, the server's first frame (§6.2). Sending CLOSE drops what is
@@ -69,7 +70,7 @@ use crate::caps::{self, Capability, Caps};
 use crate::data::Codec;
 use crate::error::{Outcome, ProtocolError};
 use crate::frame::{
-  Auth, Call, CallError, CallResult, Close, Frame, FrameType, Heartbeat, Hello, Meta, Notify, Reject, Welcome,
+  Auth, Call, CallError, CallResult, Close, Frame, FrameType, Heartbeat, Hello, Meta, Notify, Reject, Sequencing, Welcome,
 };
 use crate::negotiate;
 use crate::registry::{CloseCode, StatusCode};
@@ -151,6 +152,17 @@ pub enum Command {
     /// The typed error detail, already encoded in the session codec, or empty (§8.4).
     detail: Bytes,
   },
+  /// Send NOTIFY on the control stream, calling the client method `method` with `data`, the
+  /// arguments already encoded as one array in the session codec (§9.1). Ignored unless the
+  /// session is established. A frame above the client's `max_frame` or the default header limit
+  /// is not sent and yields [`Output::NotifyTooLarge`] instead, since the client never answers a
+  /// NOTIFY.
+  Notify {
+    /// The client method.
+    method: String,
+    /// The data section.
+    data: Bytes,
+  },
 }
 
 /// What the session asks the driver to do, in order.
@@ -210,6 +222,17 @@ pub enum Output {
   Notify {
     /// The NOTIFY frame: method, meta and the encoded arguments.
     notify: Notify,
+  },
+  /// A [`Command::Notify`] was not sent: its NOTIFY is `length` bytes, above the client's
+  /// `max_frame` or the default header limit, `limit` (§5.2, §5.4.1). Nothing tells the client;
+  /// the driver logs it.
+  NotifyTooLarge {
+    /// The client method.
+    method: String,
+    /// The frame's Length, or its header's length when only the header is too large.
+    length: u64,
+    /// The limit it is above.
+    limit: u64,
   },
   /// The session is over. Emitted once, as the last output.
   Ended(Ending),
@@ -412,6 +435,7 @@ impl Session {
         };
         self.answer(stream, &Frame::Error(error));
       }
+      Input::Command(Command::Notify { method, data }) => self.notify(method, data),
       Input::Message(_) | Input::Timeout | Input::Authenticated { .. } | Input::AuthFailed(_) if expired => {
         self.close(CloseCode::HandshakeTimeout, None);
       }
@@ -675,11 +699,40 @@ impl Session {
     }
   }
 
+  fn notify(&mut self, method: String, data: Bytes) {
+    if !matches!(self.state, State::Established { .. }) {
+      return;
+    }
+    let notify = Frame::Notify(Notify {
+      method: method.clone(),
+      meta: None,
+      sequencing: Sequencing::default(),
+      data,
+    });
+    match self.excess(&notify) {
+      None => self.transmit(&notify),
+      Some((length, limit)) => self.outputs.push_back(Output::NotifyTooLarge { method, length, limit }),
+    }
+  }
+
+  fn fits(&self, frame: &Frame) -> bool {
+    self.excess(frame).is_none()
+  }
+
+  fn excess(&self, frame: &Frame) -> Option<(u64, u64)> {
+    let (length, max_frame) = (frame.payload_length().unwrap_or(u64::MAX), self.peer_max_frame());
+    let header = u64::try_from(frame.header_length()).unwrap_or(u64::MAX);
+    let max_header = u64::try_from(peer_max_header()).unwrap_or(u64::MAX);
+    if length > max_frame {
+      Some((length, max_frame))
+    } else {
+      (header > max_header).then_some((header, max_header))
+    }
+  }
+
   fn answer(&mut self, stream: u64, frame: &Frame) {
     let too_large;
-    let fits =
-      frame.payload_length().is_ok_and(|length| length <= self.peer_max_frame()) && frame.header_length() <= peer_max_header();
-    let frame = if fits {
+    let frame = if self.fits(frame) {
       frame
     } else {
       too_large = Frame::Error(call_error(

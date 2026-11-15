@@ -11,7 +11,6 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use pavia_proto::data::Codec;
 use pavia_proto::frame::Notify;
 use pavia_proto::registry::StatusCode;
 use pavia_proto::session_id::SessionId;
@@ -19,7 +18,7 @@ use tokio::task::{JoinError, JoinSet};
 
 use super::{Failed, Refusal, arguments};
 use crate::auth::{Authorizer, Principal};
-use crate::methods::{Handler, HandlerError, Kind, MethodName, MethodRegistry};
+use crate::methods::{Handler, HandlerContext, HandlerError, Kind, MethodName, MethodRegistry};
 
 type Notifying = Pin<Box<dyn Future<Output = Result<(), Failed>> + Send>>;
 
@@ -36,15 +35,19 @@ impl Lane {
     self.session = Some(session);
   }
 
+  pub(super) fn session(&self) -> Option<&str> {
+    self.session.as_ref().map(SessionId::as_str)
+  }
+
   pub(super) fn receive<Z: Authorizer + 'static>(
     &mut self,
     notify: &Notify,
     methods: &MethodRegistry<Handler>,
-    codec: Codec,
+    context: HandlerContext,
     authorizer: &Arc<Z>,
     principal: &Arc<Principal>,
   ) {
-    let session = self.session.as_ref().map(SessionId::as_str);
+    let session = self.session();
     let Some((name, method)) = methods
       .server_entry(&notify.method)
       .filter(|(_, method)| matches!(method.kind, Kind::Notify))
@@ -52,7 +55,7 @@ impl Lane {
       tracing::warn!(session, method = notify.method, "notification to an unknown method dropped");
       return;
     };
-    let arguments = match arguments(&notify.data, codec, &method.handler) {
+    let arguments = match arguments(&notify.data, context.codec(), &method.handler) {
       Ok(arguments) => arguments,
       Err(refusal) => {
         tracing::warn!(
@@ -70,7 +73,7 @@ impl Lane {
       if !authorizer.authorize(&principal, &method_name).await {
         return Err(Failed::Refused(Refusal::denied(&principal)));
       }
-      handler.run(arguments).await.map(drop).map_err(Failed::Handler)
+      handler.run(context, arguments).await.map(drop).map_err(Failed::Handler)
     });
     self.waiting.push_back((name.clone(), notifying));
     self.start_next();
@@ -82,7 +85,7 @@ impl Lane {
 
   pub(super) fn finished(&mut self, joined: Result<Result<(), Failed>, JoinError>) {
     let method = self.current.take().expect("a joined notification was started");
-    let (session, method) = (self.session.as_ref().map(SessionId::as_str), method.as_str());
+    let (session, method) = (self.session(), method.as_str());
     match joined {
       Ok(Ok(())) => {}
       Ok(Err(Failed::Refused(refusal))) => {
