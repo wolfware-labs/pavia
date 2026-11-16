@@ -96,8 +96,9 @@ impl Config {
 
   /// Checks every setting: every duration from 1 ms to [`Self::MAX_DURATION`], `idle_timeout`
   /// longer than `heartbeat` in whole milliseconds, no zero limit, no empty version or codec list,
-  /// an `internal_error_message` of 1 to [`Self::MAX_INTERNAL_ERROR_MESSAGE`] bytes (§8.4), and
-  /// `max_frame` and `window` at or above the 64 KiB floor (§4.1, §16).
+  /// an `internal_error_message` of 1 to [`Self::MAX_INTERNAL_ERROR_MESSAGE`] bytes (§8.4),
+  /// `max_frame` and `window` at or above the 64 KiB floor (§4.1, §16), and no
+  /// [`ContractPolicy::Strict`], which is not supported yet (#68).
   ///
   /// ```
   /// use pavia_proto::session::{Config, ConfigError};
@@ -203,7 +204,7 @@ impl ValidConfig {
   }
 }
 
-/// A [`Config`] setting the spec does not allow.
+/// A [`Config`] setting the spec does not allow, or one this version does not support yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 #[non_exhaustive]
 pub enum ConfigError {
@@ -229,7 +230,7 @@ pub enum ConfigError {
   /// An `internal_error_message` above [`Config::MAX_INTERNAL_ERROR_MESSAGE`] bytes.
   #[error("{0} must be at most {max} bytes", max = Config::MAX_INTERNAL_ERROR_MESSAGE)]
   TooLarge(&'static str),
-  /// A setting this version does not support yet, such as [`ContractPolicy::Strict`].
+  /// A setting this version does not support yet: [`ContractPolicy::Strict`] (#68).
   #[error("{0} is not supported yet")]
   Unsupported(&'static str),
 }

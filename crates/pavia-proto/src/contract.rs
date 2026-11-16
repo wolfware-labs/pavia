@@ -51,8 +51,8 @@ pub enum ContractPolicy {
   /// Report the mismatch and go on with the session. The default.
   #[default]
   Warn,
-  /// Refuse the session with REJECT CONTRACT_MISMATCH. Not supported yet: a configuration that
-  /// asks for it does not validate.
+  /// Refuse the session with REJECT CONTRACT_MISMATCH. Not supported yet (#68): a configuration
+  /// that asks for it does not validate.
   Strict,
 }
 

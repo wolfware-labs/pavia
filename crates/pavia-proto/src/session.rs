@@ -703,6 +703,7 @@ impl Session {
       lost: None,
       transports: None,
     });
+    let mismatch = self.contract_mismatch(&hello);
     self.state = State::Established {
       hello,
       negotiated,
@@ -712,16 +713,14 @@ impl Session {
     self.outputs.push_back(Output::Established {
       session: session.clone(),
     });
-    if let Some(mismatch) = self.contract_mismatch() {
-      self.outputs.push_back(mismatch);
-    }
+    self.outputs.extend(mismatch);
     self.transmit(&welcome);
     self.urgent = self.outputs.len();
   }
 
-  fn contract_mismatch(&self) -> Option<Output> {
+  fn contract_mismatch(&self, hello: &Hello) -> Option<Output> {
     let server = self.config.0.contract?;
-    let client = self.hello()?.contract.map(Fingerprint::new);
+    let client = hello.contract.map(Fingerprint::new);
     (client != Some(server)).then_some(Output::ContractMismatch { client, server })
   }
 

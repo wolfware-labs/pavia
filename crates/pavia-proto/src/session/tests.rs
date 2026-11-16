@@ -671,12 +671,17 @@ fn welcomed(user: Option<&str>) -> (Session, Welcome) {
   welcomed_with(Config::default(), user)
 }
 
-fn welcomed_with(config: Config, user: Option<&str>) -> (Session, Welcome) {
+fn welcomed_under(config: Config, hello: Hello, user: Option<&str>) -> (Session, Vec<Output>) {
   let mut session = Session::server(&config.validate().unwrap(), Instant::now());
-  session.feed(Input::Message(message(&[(0, Frame::Hello(hello()))])));
+  session.feed(Input::Message(message(&[(0, Frame::Hello(hello))])));
   assert_eq!(drain(&mut session), ANONYMOUS);
   session.feed(authenticated(user));
   let outputs = drain(&mut session);
+  (session, outputs)
+}
+
+fn welcomed_with(config: Config, user: Option<&str>) -> (Session, Welcome) {
+  let (session, outputs) = welcomed_under(config, hello(), user);
   let [Output::Established { session: id }, Output::Transmit(sent)] = outputs.as_slice() else {
     panic!("{outputs:?}");
   };
@@ -1620,11 +1625,7 @@ fn closes_on_an_item_from_the_caller_of_a_unary_call() {
 }
 
 fn welcomed_by(hello: Hello) -> Session {
-  let mut session = server();
-  session.feed(Input::Message(message(&[(0, Frame::Hello(hello))])));
-  session.feed(authenticated(None));
-  drain(&mut session);
-  session
+  welcomed_under(Config::default(), hello, None).0
 }
 
 fn welcomed_by_a_client_with(max_frame: u64) -> Session {
@@ -2206,14 +2207,11 @@ fn bounds_client_calls_by_the_server_max_calls_apart_from_server_calls() {
     max_calls: 1,
     ..Config::default()
   };
-  let mut session = Session::server(&config.validate().unwrap(), Instant::now());
   let hello = Hello {
     caps: Some(vec!["server-calls".into()]),
     ..hello()
   };
-  session.feed(Input::Message(message(&[(0, Frame::Hello(hello))])));
-  session.feed(authenticated(None));
-  drain(&mut session);
+  let (mut session, _) = welcomed_under(config, hello, None);
   assert_eq!(confirm(&mut session), Ok(1));
   drain(&mut session);
   called(&mut session, 2);
@@ -2226,15 +2224,11 @@ fn handshake(contract: Option<[u8; 32]>, client: Option<[u8; 32]>) -> Vec<Output
     contract: contract.map(Fingerprint::new),
     ..Config::default()
   };
-  let mut session = Session::server(&config.validate().unwrap(), Instant::now());
   let hello = Hello {
     contract: client,
     ..hello()
   };
-  session.feed(Input::Message(message(&[(0, Frame::Hello(hello))])));
-  drain(&mut session);
-  session.feed(authenticated(None));
-  drain(&mut session)
+  welcomed_under(config, hello, None).1
 }
 
 fn welcome_contract(outputs: &[Output]) -> Option<[u8; 32]> {
