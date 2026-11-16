@@ -77,6 +77,10 @@ type Authenticating<'a> = Pin<Box<dyn Future<Output = Result<Principal, AuthFail
 /// handler is logged with the session ID and the method and dropped. Notification handlers run one
 /// at a time, in delivery order, each after the previous one has completed (§9.1, §9.2).
 ///
+/// When the session's configuration names a contract fingerprint and the client's HELLO carries
+/// another one, or none, the session goes on and the mismatch is logged as a warning with the
+/// session ID and both fingerprints in hex (§7.2).
+///
 /// `authenticator` runs once, after HELLO (§7.5). The transport keeps being read while it runs,
 /// so a CLOSE, a transport loss or the handshake deadline still ends the session. When it
 /// accepts, the session gets a new ID and sends WELCOME; if the operating system cannot supply
@@ -496,6 +500,15 @@ async fn carry_out<Z: Authorizer + 'static>(
         calls
           .lane
           .receive(&notify, calls.methods, context, &calls.authorizer, &calls.principal);
+      }
+      Output::ContractMismatch { client, server } => {
+        let session = calls.lane.session();
+        match client {
+          Some(client) => {
+            tracing::warn!(session, %client, %server, "contract fingerprint differs from the server's");
+          }
+          None => tracing::warn!(session, %server, "HELLO carries no contract fingerprint"),
+        }
       }
       Output::NotifyTooLarge { method, length, limit } => {
         let session = calls.lane.session();

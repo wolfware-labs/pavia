@@ -11,6 +11,7 @@ use bytes::Bytes;
 use ciborium::Value;
 use futures_util::{FutureExt, SinkExt, StreamExt};
 use hyper::header::{self, HeaderValue};
+use pavia_proto::contract::Fingerprint;
 use pavia_proto::data::{Codec, Value as Arg};
 use pavia_proto::error::ErrorStatus;
 use pavia_proto::frame::{Auth, Call, Meta, MetaName, MetaValue};
@@ -2899,4 +2900,60 @@ async fn makes_server_calls_in_json_when_the_session_negotiated_it() {
   let error = call.await.unwrap().unwrap_err();
   let detail = Arg::Map(vec![(Arg::Text("reason".to_owned()), Arg::Text("none".to_owned()))]);
   assert_eq!((error.code(), error.detail()), (StatusCode::Unimplemented, Some(&detail)));
+}
+
+fn hello_with_contract(fingerprint: u8) -> Vec<u8> {
+  let mut header = vec![0xa3, 0x0e, 0x81, 0x01, 0x10, 0x81, 0x64];
+  header.extend(b"cbor");
+  header.extend([0x18, 0x18, 0x58, 0x20]);
+  header.extend([fingerprint; 32]);
+  raw_frame(0x01, &header)
+}
+
+async fn welcomed_under_contract(contract: Option<[u8; 32]>, hello: Vec<u8>) -> (BTreeMap<u64, Value>, SessionId) {
+  let mut config = SessionConfig::default();
+  config.contract = contract.map(Fingerprint::new);
+  let methods = Arc::new(MethodRegistry::new());
+  let (address, _) = listen_serving(Registry::new(), methods, config, Arc::new(Permissive), Arc::new(AllowAll)).await;
+  let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
+  send(&mut socket, hello).await;
+  let welcome = next_welcome(&mut socket).await;
+  let id = welcome_id(&welcome);
+  (welcome, id)
+}
+
+#[tokio::test]
+async fn logs_a_contract_fingerprint_other_than_the_server_one() {
+  let (log, _logging) = capture_log();
+  let (welcome, session) = welcomed_under_contract(Some([0; 32]), hello_with_contract(0xff)).await;
+  assert_eq!(welcome[&24], Value::Bytes(vec![0; 32]));
+  eventually(|| lines_naming(&log, "differs") == 1, "the mismatch to be logged").await;
+  let text = log.text();
+  assert!(text.contains(&format!("client={}", "ff".repeat(32))), "{text}");
+  assert!(text.contains(&format!("server={}", "00".repeat(32))), "{text}");
+  assert_every_line_names(&log, &session);
+}
+
+#[tokio::test]
+async fn logs_a_hello_without_a_fingerprint_to_a_server_with_one() {
+  let (log, _logging) = capture_log();
+  let (_, session) = welcomed_under_contract(Some([0; 32]), hello_frame()).await;
+  eventually(
+    || lines_naming(&log, "no contract fingerprint") == 1,
+    "the missing fingerprint to be logged",
+  )
+  .await;
+  assert!(log.text().contains(&format!("server={}", "00".repeat(32))), "{}", log.text());
+  assert_every_line_names(&log, &session);
+}
+
+#[tokio::test]
+async fn logs_nothing_about_the_contract_without_a_server_fingerprint() {
+  let (log, _logging) = capture_log();
+  let (welcome, _) = welcomed_under_contract(None, hello_with_contract(0xff)).await;
+  assert_eq!(welcome.get(&24), None);
+  let (mut socket, _) = serving_as(Arc::new(MethodRegistry::new()), SessionConfig::default(), Arc::new(AllowAll)).await;
+  send(&mut socket, heartbeat_frame(0x04, &[1])).await;
+  assert_eq!(next_answer(&mut socket).await.frame_type, 0x05);
+  assert!(!log.text().contains("contract"), "{}", log.text());
 }

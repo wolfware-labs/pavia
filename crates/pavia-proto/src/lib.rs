@@ -12,6 +12,7 @@
 #![forbid(unsafe_code)]
 
 pub mod caps;
+pub mod contract;
 pub mod data;
 pub mod error;
 pub mod frame;

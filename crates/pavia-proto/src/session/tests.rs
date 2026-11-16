@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use super::{
   Answer, AuthFailure, CallRefused, Command, Config, ConfigError, Ending, Input, Output, Session, State, ValidConfig,
 };
+use crate::contract::{ContractPolicy, Fingerprint};
 use crate::data::Codec;
 use crate::frame::Reject;
 use crate::frame::{
@@ -2218,4 +2219,95 @@ fn bounds_client_calls_by_the_server_max_calls_apart_from_server_calls() {
   called(&mut session, 2);
   session.feed(Input::Message(message(&[(4, call(0))])));
   assert!(matches!(sent_frames(&mut session).as_slice(), [(4, Frame::Error(error))] if error.code == 8));
+}
+
+fn handshake(contract: Option<[u8; 32]>, client: Option<[u8; 32]>) -> Vec<Output> {
+  let config = Config {
+    contract: contract.map(Fingerprint::new),
+    ..Config::default()
+  };
+  let mut session = Session::server(&config.validate().unwrap(), Instant::now());
+  let hello = Hello {
+    contract: client,
+    ..hello()
+  };
+  session.feed(Input::Message(message(&[(0, Frame::Hello(hello))])));
+  drain(&mut session);
+  session.feed(authenticated(None));
+  drain(&mut session)
+}
+
+fn welcome_contract(outputs: &[Output]) -> Option<[u8; 32]> {
+  let sent = outputs
+    .iter()
+    .find_map(|output| match output {
+      Output::Transmit(sent) => Some(frames(sent)),
+      _ => None,
+    })
+    .unwrap();
+  let [(0, Frame::Welcome(welcome))] = sent.as_slice() else {
+    panic!("{sent:?}");
+  };
+  welcome.contract
+}
+
+fn mismatches(outputs: &[Output]) -> Vec<&Output> {
+  outputs
+    .iter()
+    .filter(|output| matches!(output, Output::ContractMismatch { .. }))
+    .collect()
+}
+
+#[test]
+fn reports_a_hello_fingerprint_other_than_the_server_one_and_welcomes_it() {
+  let outputs = handshake(Some([0; 32]), Some([0xff; 32]));
+  assert!(matches!(outputs.first(), Some(Output::Established { .. })));
+  assert_eq!(
+    outputs[1],
+    Output::ContractMismatch {
+      client: Some(Fingerprint::new([0xff; 32])),
+      server: Fingerprint::new([0; 32]),
+    }
+  );
+  assert_eq!(welcome_contract(&outputs), Some([0; 32]));
+}
+
+#[test]
+fn reports_a_hello_without_a_fingerprint_to_a_server_with_one() {
+  let outputs = handshake(Some([0; 32]), None);
+  assert_eq!(
+    mismatches(&outputs),
+    [&Output::ContractMismatch {
+      client: None,
+      server: Fingerprint::new([0; 32]),
+    }]
+  );
+}
+
+#[test]
+fn reports_nothing_when_the_fingerprints_match() {
+  let outputs = handshake(Some([7; 32]), Some([7; 32]));
+  assert!(mismatches(&outputs).is_empty());
+  assert_eq!(welcome_contract(&outputs), Some([7; 32]));
+}
+
+#[test]
+fn never_reports_a_mismatch_from_a_server_without_a_fingerprint() {
+  for client in [None, Some([0xff; 32])] {
+    let outputs = handshake(None, client);
+    assert!(mismatches(&outputs).is_empty(), "{client:?}");
+    assert_eq!(welcome_contract(&outputs), None);
+  }
+}
+
+#[test]
+fn refuses_the_strict_contract_policy_until_it_is_supported() {
+  let config = Config {
+    contract: Some(Fingerprint::new([0; 32])),
+    contract_policy: ContractPolicy::Strict,
+    ..Config::default()
+  };
+  let error = config.validate().unwrap_err();
+  assert_eq!(error, ConfigError::Unsupported("contract_policy strict"));
+  assert_eq!(error.to_string(), "contract_policy strict is not supported yet");
 }
