@@ -1,0 +1,5 @@
+error: a union has no contract type (spec 12.1)
+ --> tests/ui/union.rs:4:1
+  |
+4 | union Bits {
+  | ^^^^^

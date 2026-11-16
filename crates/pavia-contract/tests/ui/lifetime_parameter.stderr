@@ -1,0 +1,5 @@
+error: a contract type cannot borrow: lifetime parameters are not supported
+ --> tests/ui/lifetime_parameter.rs:4:17
+  |
+4 | struct Borrowed<'a> {
+  |                 ^^

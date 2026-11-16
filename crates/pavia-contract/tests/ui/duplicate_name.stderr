@@ -1,0 +1,11 @@
+error: two fields are named `name`
+ --> tests/ui/duplicate_name.rs:7:3
+  |
+7 |   nickname: String,
+  |   ^^^^^^^^
+
+error: two variants are named `Online`
+  --> tests/ui/duplicate_name.rs:14:3
+   |
+14 |   Here,
+   |   ^^^^

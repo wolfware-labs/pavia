@@ -1,0 +1,23 @@
+error: `open` applies to an enum, not to a struct
+ --> tests/ui/attribute_misplaced.rs:4:9
+  |
+4 | #[pavia(open)]
+  |         ^^^^
+
+error: `optional` applies to a named field of type `Option<T>`, not to a variant
+  --> tests/ui/attribute_misplaced.rs:11:11
+   |
+11 |   #[pavia(optional)]
+   |           ^^^^^^^^
+
+error: `rename` applies to a named field: a tuple field has no name
+  --> tests/ui/attribute_misplaced.rs:16:33
+   |
+16 | struct Wrapped(#[pavia(rename = "inner")] u32);
+   |                                 ^^^^^^^
+
+error: unknown `pavia` attribute: expected `rename`, `optional` or `open`
+  --> tests/ui/attribute_misplaced.rs:19:9
+   |
+19 | #[pavia(sorted)]
+   |         ^^^^^^

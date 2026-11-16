@@ -1,0 +1,5 @@
+error: `größe` is not a contract name: names match [A-Za-z_][A-Za-z0-9_]* (spec 12.2)
+ --> tests/ui/non_ascii_name.rs:5:3
+  |
+5 |   größe: u32,
+  |   ^^^^^

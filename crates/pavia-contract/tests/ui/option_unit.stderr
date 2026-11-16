@@ -1,0 +1,25 @@
+error[E0277]: `()` cannot be an `Option` value or a type argument of a derived contract type: `{"option": "unit"}` is not allowed (spec 12.1)
+ --> tests/ui/option_unit.rs:5:10
+  |
+5 |   reply: Option<()>,
+  |          ------^^^^
+  |          |
+  |          `unit` here
+  |          required by a bound introduced by this call
+  |
+  = help: the trait `OptionValue` is not implemented for `()`
+  = help: the following other types implement trait `OptionValue`:
+            (A, B)
+            (A, B, C)
+            (A, B, C, D)
+            (A, B, C, D, E)
+            (A, B, C, D, E, F)
+            (A, B, C, D, E, F, G)
+            (A, B, C, D, E, F, G, H)
+            (A,)
+  = note: required for `std::option::Option<()>` to implement `Contract`
+note: required by a bound in `TypeTable::add`
+ --> src/table.rs
+  |
+  |   pub fn add<T: Contract>(&mut self) -> Type {
+  |                 ^^^^^^^^ required by this bound in `TypeTable::add`
