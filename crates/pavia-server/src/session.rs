@@ -476,9 +476,9 @@ async fn carry_out<Z: Authorizer + 'static>(
     if session.is_ended() {
       inbox.close();
     }
-    let welcoming = membership.welcoming.take();
     match output {
       Output::Transmit(message) => {
+        let welcoming = membership.welcoming.take();
         if transport.send(message).await.is_ok() {
           if let Some(id) = welcoming {
             membership.join(id);

@@ -2947,3 +2947,15 @@ async fn logs_nothing_about_the_contract_without_a_server_fingerprint() {
   nothing_sent(&mut socket).await;
   assert!(!log.text().contains("contract"), "{}", log.text());
 }
+
+#[tokio::test]
+async fn registers_a_session_whose_contract_fingerprint_differs_or_is_missing() {
+  for hello in [hello_with_contract(0xff), hello_frame()] {
+    let registry = Registry::new();
+    let mut config = SessionConfig::default();
+    config.contract = Some(Fingerprint::new([0; 32]));
+    let (_socket, welcome) = welcoming(registry.clone(), Arc::new(MethodRegistry::new()), config, hello).await;
+    let id = welcome_id(&welcome);
+    eventually(|| registry.get(&id).is_some(), "the session to be registered after WELCOME").await;
+  }
+}
