@@ -11,6 +11,7 @@ use bytes::Bytes;
 use ciborium::Value;
 use futures_util::{FutureExt, SinkExt, StreamExt};
 use hyper::header::{self, HeaderValue};
+use pavia_proto::contract::Fingerprint;
 use pavia_proto::data::{Codec, Value as Arg};
 use pavia_proto::error::ErrorStatus;
 use pavia_proto::frame::{Auth, Call, Meta, MetaName, MetaValue};
@@ -144,9 +145,13 @@ fn hello_frame() -> Vec<u8> {
 }
 
 fn hello_frame_with(codec: &[u8; 4]) -> Vec<u8> {
-  let mut header = vec![0xa2, 0x0e, 0x81, 0x01, 0x10, 0x81, 0x64];
+  raw_frame(0x01, &hello_header(2, codec))
+}
+
+fn hello_header(entries: u8, codec: &[u8; 4]) -> Vec<u8> {
+  let mut header = vec![0xa0 + entries, 0x0e, 0x81, 0x01, 0x10, 0x81, 0x64];
   header.extend(codec);
-  raw_frame(0x01, &header)
+  header
 }
 
 fn close_frame(code: u8) -> Vec<u8> {
@@ -500,8 +505,7 @@ async fn rejects_a_resume_with_resume_failed() {
   let msg = "unknown session";
   let mut reject = vec![0xa2, 0x06, 0x0b, 0x07, 0x60 + msg.len() as u8];
   reject.extend(msg.as_bytes());
-  let mut hello = vec![0xa3, 0x0e, 0x81, 0x01, 0x10, 0x81, 0x64];
-  hello.extend(b"cbor");
+  let mut hello = hello_header(3, b"cbor");
   hello.extend([0x14, 0xa3, 0x0d, 0x41, 0x00, 0x13, 0x63]);
   hello.extend(b"s_x");
   hello.extend([0x18, 0x2c, 0xa1, 0x00, 0x00]);
@@ -566,8 +570,7 @@ impl Authenticator for Recording {
 }
 
 fn bearer_hello() -> Vec<u8> {
-  let mut hello = vec![0xa3, 0x0e, 0x81, 0x01, 0x10, 0x81, 0x64];
-  hello.extend(b"cbor");
+  let mut hello = hello_header(3, b"cbor");
   hello.extend([0x18, 0x21, 0xa2, 0x0d, 0x64]);
   hello.extend(b"good");
   hello.extend([0x18, 0x23, 0x66]);
@@ -1317,11 +1320,20 @@ async fn serving_as<Z: Authorizer + 'static>(
 async fn serving_in_json(methods: Arc<MethodRegistry<Handler>>) -> Socket {
   let mut config = SessionConfig::default();
   config.codecs = vec![Codec::Json];
-  let (address, _) = listen_serving(Registry::new(), methods, config, Arc::new(Permissive), Arc::new(AllowAll)).await;
+  welcoming(Registry::new(), methods, config, hello_frame_with(b"json")).await.0
+}
+
+async fn welcoming(
+  registry: Registry,
+  methods: Arc<MethodRegistry<Handler>>,
+  config: SessionConfig,
+  hello: Vec<u8>,
+) -> (Socket, BTreeMap<u64, Value>) {
+  let (address, _) = listen_serving(registry, methods, config, Arc::new(Permissive), Arc::new(AllowAll)).await;
   let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
-  send(&mut socket, hello_frame_with(b"json")).await;
-  next_welcome(&mut socket).await;
-  socket
+  send(&mut socket, hello).await;
+  let welcome = next_welcome(&mut socket).await;
+  (socket, welcome)
 }
 
 const GENERAL_HELLO: &[u8] = &[
@@ -2472,8 +2484,7 @@ fn hello_for_server_calls(max_calls: u8) -> Vec<u8> {
 }
 
 fn hello_for_server_calls_in(codec: &[u8; 4], max_calls: u8) -> Vec<u8> {
-  let mut header = vec![0xa4, 0x0e, 0x81, 0x01, 0x10, 0x81, 0x64];
-  header.extend(codec);
+  let mut header = hello_header(4, codec);
   header.extend([0x12, 0x81, 0x6c]);
   header.extend(b"server-calls");
   header.extend([0x15, 0xa1, 0x18, 0x30, max_calls]);
@@ -2485,18 +2496,8 @@ async fn calling(registry: &Registry, hello: Vec<u8>) -> (Socket, SessionId) {
 }
 
 async fn calling_from(registry: Registry, methods: Arc<MethodRegistry<Handler>>, hello: Vec<u8>) -> (Socket, SessionId) {
-  let (address, _) = listen_serving(
-    registry,
-    methods,
-    SessionConfig::default(),
-    Arc::new(Permissive),
-    Arc::new(AllowAll),
-  )
-  .await;
-  let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
-  send(&mut socket, hello).await;
-  let id = welcome_id(&next_welcome(&mut socket).await);
-  (socket, id)
+  let (socket, welcome) = welcoming(registry, methods, SessionConfig::default(), hello).await;
+  (socket, welcome_id(&welcome))
 }
 
 fn call_in_background(
@@ -2878,10 +2879,9 @@ async fn makes_server_calls_in_json_when_the_session_negotiated_it() {
   let mut config = SessionConfig::default();
   config.codecs = vec![Codec::Json];
   let methods = Arc::new(MethodRegistry::new());
-  let (address, _) = listen_serving(registry.clone(), methods, config, Arc::new(Permissive), Arc::new(AllowAll)).await;
-  let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
-  send(&mut socket, hello_for_server_calls_in(b"json", 4)).await;
-  let id = welcome_id(&next_welcome(&mut socket).await);
+  let hello = hello_for_server_calls_in(b"json", 4);
+  let (mut socket, welcome) = welcoming(registry.clone(), methods, config, hello).await;
+  let id = welcome_id(&welcome);
   let (calls, id_again) = (registry.clone(), id.clone());
   let arguments = vec![Arg::Text("save?".to_owned()), Arg::Unsigned(2)];
   let call = tokio::spawn(async move { calls.call(&id_again, &confirm(), arguments, CallOptions::default()).await });
@@ -2899,4 +2899,63 @@ async fn makes_server_calls_in_json_when_the_session_negotiated_it() {
   let error = call.await.unwrap().unwrap_err();
   let detail = Arg::Map(vec![(Arg::Text("reason".to_owned()), Arg::Text("none".to_owned()))]);
   assert_eq!((error.code(), error.detail()), (StatusCode::Unimplemented, Some(&detail)));
+}
+
+fn hello_with_contract(fingerprint: u8) -> Vec<u8> {
+  let mut header = hello_header(3, b"cbor");
+  header.extend([0x18, 0x18, 0x58, 0x20]);
+  header.extend([fingerprint; 32]);
+  raw_frame(0x01, &header)
+}
+
+async fn welcomed_under_contract(contract: Option<[u8; 32]>, hello: Vec<u8>) -> (Socket, BTreeMap<u64, Value>) {
+  let mut config = SessionConfig::default();
+  config.contract = contract.map(Fingerprint::new);
+  welcoming(Registry::new(), Arc::new(MethodRegistry::new()), config, hello).await
+}
+
+#[tokio::test]
+async fn logs_a_contract_fingerprint_other_than_the_server_one() {
+  let (log, _logging) = capture_log();
+  let (_socket, welcome) = welcomed_under_contract(Some([0; 32]), hello_with_contract(0xff)).await;
+  assert_eq!(welcome[&24], Value::Bytes(vec![0; 32]));
+  eventually(|| lines_naming(&log, "differs") == 1, "the mismatch to be logged").await;
+  let text = log.text();
+  assert!(text.contains(&format!("client={}", "ff".repeat(32))), "{text}");
+  assert!(text.contains(&format!("server={}", "00".repeat(32))), "{text}");
+  assert_every_line_names(&log, &welcome_id(&welcome));
+}
+
+#[tokio::test]
+async fn logs_a_hello_without_a_fingerprint_to_a_server_with_one() {
+  let (log, _logging) = capture_log();
+  let (_socket, welcome) = welcomed_under_contract(Some([0; 32]), hello_frame()).await;
+  eventually(
+    || lines_naming(&log, "no contract fingerprint") == 1,
+    "the missing fingerprint to be logged",
+  )
+  .await;
+  assert!(log.text().contains(&format!("server={}", "00".repeat(32))), "{}", log.text());
+  assert_every_line_names(&log, &welcome_id(&welcome));
+}
+
+#[tokio::test]
+async fn logs_nothing_about_the_contract_without_a_server_fingerprint() {
+  let (log, _logging) = capture_log();
+  let (mut socket, welcome) = welcomed_under_contract(None, hello_with_contract(0xff)).await;
+  assert_eq!(welcome.get(&24), None);
+  nothing_sent(&mut socket).await;
+  assert!(!log.text().contains("contract"), "{}", log.text());
+}
+
+#[tokio::test]
+async fn registers_a_session_whose_contract_fingerprint_differs_or_is_missing() {
+  for hello in [hello_with_contract(0xff), hello_frame()] {
+    let registry = Registry::new();
+    let mut config = SessionConfig::default();
+    config.contract = Some(Fingerprint::new([0; 32]));
+    let (_socket, welcome) = welcoming(registry.clone(), Arc::new(MethodRegistry::new()), config, hello).await;
+    let id = welcome_id(&welcome);
+    eventually(|| registry.get(&id).is_some(), "the session to be registered after WELCOME").await;
+  }
 }

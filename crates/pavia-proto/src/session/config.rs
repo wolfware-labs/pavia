@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use thiserror::Error;
 
+use crate::contract::{ContractPolicy, Fingerprint};
 use crate::data::Codec;
 use crate::frame::{Limits, ServerLimits};
 
@@ -53,6 +54,12 @@ pub struct Config {
   /// [`internal_error_message`](Self::internal_error_message), cut to
   /// [`Config::MAX_INTERNAL_ERROR_MESSAGE`] bytes. Off by default; never in production.
   pub disclose_internal_errors: bool,
+  /// The fingerprint of the contract this server runs, sent in WELCOME (§7.2, §12.5). Without
+  /// one, WELCOME omits it and no HELLO fingerprint is ever a mismatch. Default none.
+  pub contract: Option<Fingerprint>,
+  /// What to do when a HELLO's fingerprint differs from [`contract`](Self::contract) or is
+  /// missing. Default [`ContractPolicy::Warn`].
+  pub contract_policy: ContractPolicy,
 }
 
 impl Default for Config {
@@ -70,6 +77,8 @@ impl Default for Config {
       window: 256 << 10,
       internal_error_message: "internal error".to_owned(),
       disclose_internal_errors: false,
+      contract: None,
+      contract_policy: ContractPolicy::Warn,
     }
   }
 }
@@ -87,8 +96,9 @@ impl Config {
 
   /// Checks every setting: every duration from 1 ms to [`Self::MAX_DURATION`], `idle_timeout`
   /// longer than `heartbeat` in whole milliseconds, no zero limit, no empty version or codec list,
-  /// an `internal_error_message` of 1 to [`Self::MAX_INTERNAL_ERROR_MESSAGE`] bytes (§8.4), and
-  /// `max_frame` and `window` at or above the 64 KiB floor (§4.1, §16).
+  /// an `internal_error_message` of 1 to [`Self::MAX_INTERNAL_ERROR_MESSAGE`] bytes (§8.4),
+  /// `max_frame` and `window` at or above the 64 KiB floor (§4.1, §16), and no
+  /// [`ContractPolicy::Strict`], which is not supported yet (#68).
   ///
   /// ```
   /// use pavia_proto::session::{Config, ConfigError};
@@ -136,6 +146,9 @@ impl Config {
     }
     if self.codecs.is_empty() {
       return Err(ConfigError::Empty("codecs"));
+    }
+    if self.contract_policy == ContractPolicy::Strict {
+      return Err(ConfigError::Unsupported("contract_policy strict"));
     }
     if self.internal_error_message.is_empty() {
       return Err(ConfigError::Empty("internal_error_message"));
@@ -191,7 +204,7 @@ impl ValidConfig {
   }
 }
 
-/// A [`Config`] setting the spec does not allow.
+/// A [`Config`] setting the spec does not allow, or one this version does not support yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 #[non_exhaustive]
 pub enum ConfigError {
@@ -217,6 +230,9 @@ pub enum ConfigError {
   /// An `internal_error_message` above [`Config::MAX_INTERNAL_ERROR_MESSAGE`] bytes.
   #[error("{0} must be at most {max} bytes", max = Config::MAX_INTERNAL_ERROR_MESSAGE)]
   TooLarge(&'static str),
+  /// A setting this version does not support yet: [`ContractPolicy::Strict`] (#68).
+  #[error("{0} is not supported yet")]
+  Unsupported(&'static str),
 }
 
 pub(super) fn millis(duration: Duration) -> u64 {

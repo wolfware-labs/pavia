@@ -8,10 +8,13 @@
 //! wrong kind of stream as soon as it decodes one, and so a method registry can record each
 //! method's [`stream::Shape`]. [`session`] is the state machine every driver runs, and
 //! [`negotiate`] and [`caps`] hold its version, codec and capability selection, which clients
-//! share. [`session_id`] is the format of the public session ID. The wire layer stays private.
+//! share. [`session_id`] is the format of the public session ID. [`contract`] holds the contract
+//! fingerprint a server configures and a driver reports on a mismatch. The wire layer stays
+//! private.
 #![forbid(unsafe_code)]
 
 pub mod caps;
+pub mod contract;
 pub mod data;
 pub mod error;
 pub mod frame;

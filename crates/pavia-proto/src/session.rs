@@ -29,7 +29,10 @@
 //! its answer back as [`Input::Authenticated`] or [`Input::AuthFailed`]; the handshake timer keeps
 //! running meanwhile, so a slow authenticator ends in HANDSHAKE_TIMEOUT (§7.1). Right before
 //! WELCOME it yields [`Output::Established`] with the new session ID; the driver makes the session
-//! reachable once that WELCOME is written, never before (§13.4, §14).
+//! reachable once that WELCOME is written, never before (§13.4, §14). WELCOME carries the
+//! configured contract fingerprint, and a HELLO whose fingerprint differs or is missing yields
+//! [`Output::ContractMismatch`] between [`Output::Established`] and that WELCOME; a server without
+//! a fingerprint never does (§7.2).
 //!
 //! After WELCOME every received message, on any stream, moves the idle deadline to `now + idle`;
 //! a timeout at or past it closes with IDLE_TIMEOUT (§7.4). A message that reaches the session
@@ -70,6 +73,7 @@ use std::time::{Duration, Instant};
 use bytes::{Bytes, BytesMut};
 
 use crate::caps::{self, Capability, Caps};
+use crate::contract::Fingerprint;
 use crate::data::Codec;
 use crate::error::{Outcome, ProtocolError};
 use crate::frame::{
@@ -188,8 +192,9 @@ pub enum Output {
     /// HELLO `auth`.
     auth: Option<Auth>,
   },
-  /// The session is established under `session`; the next output is the WELCOME that says so.
-  /// The driver makes the session reachable once that WELCOME is written, never before: nothing
+  /// The session is established under `session`; the next [`Output::Transmit`] is the WELCOME that
+  /// says so, with only an [`Output::ContractMismatch`] possibly between them. The driver makes
+  /// the session reachable once that WELCOME is written, never before: nothing
   /// sent to the session ahead of WELCOME may reach it (§13.4, §14).
   Established {
     /// The session ID WELCOME carries.
@@ -251,6 +256,16 @@ pub enum Output {
     length: u64,
     /// The limit it is above.
     limit: u64,
+  },
+  /// The client's HELLO carries a contract fingerprint other than this server's, or none, and
+  /// the policy is [`ContractPolicy::Warn`](crate::contract::ContractPolicy::Warn): the session
+  /// goes on and the driver reports it (§7.2). Never emitted by a server without a fingerprint.
+  /// Comes between [`Output::Established`] and the WELCOME's [`Output::Transmit`].
+  ContractMismatch {
+    /// The client's fingerprint, or `None` when its HELLO has none.
+    client: Option<Fingerprint>,
+    /// This server's fingerprint.
+    server: Fingerprint,
   },
   /// The session is over. Emitted once, as the last output.
   Ended(Ending),
@@ -683,13 +698,14 @@ impl Session {
       hb: self.config.heartbeat_ms(),
       idle: self.config.idle_ms(),
       resume_window: None,
-      contract: None,
+      contract: self.config.0.contract.map(|server| server.bytes()),
       user,
       resumed: None,
       ack: None,
       lost: None,
       transports: None,
     });
+    let mismatch = self.contract_mismatch(&hello);
     self.state = State::Established {
       hello,
       negotiated,
@@ -699,8 +715,15 @@ impl Session {
     self.outputs.push_back(Output::Established {
       session: session.clone(),
     });
+    self.outputs.extend(mismatch);
     self.transmit(&welcome);
     self.urgent = self.outputs.len();
+  }
+
+  fn contract_mismatch(&self, hello: &Hello) -> Option<Output> {
+    let server = self.config.0.contract?;
+    let client = hello.contract.map(Fingerprint::new);
+    (client != Some(server)).then_some(Output::ContractMismatch { client, server })
   }
 
   fn fail(&mut self, error: &ProtocolError) {
