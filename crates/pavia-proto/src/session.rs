@@ -54,15 +54,18 @@
 //! [`Output::Cancelled`]; the driver answers ERROR CANCELLED once the handler has stopped, and
 //! that answer frees the call's slot (§8.5). A NOTIFY on the control stream becomes
 //! [`Output::Notify`], in arrival order, and is never answered (§9.1); the driver's
-//! [`Command::Notify`] sends one to the client the same way. Frames on the control
-//! stream other than these are otherwise ignored until their feature lands.
+//! [`Command::Notify`] sends one to the client the same way. With `server-calls` granted,
+//! [`Session::call`] opens a unary call to a client method on the next odd stream, bounded by the
+//! client's HELLO `max_calls` and counted apart from the client's calls; the client's RESULT or
+//! ERROR comes back as [`Output::Answered`], and [`Command::Cancel`] cancels it (§8.8). Frames on
+//! the control stream other than these are otherwise ignored until their feature lands.
 //! PING, PONG and CLOSE skip ahead of other queued outputs, in the order they were made (§6.6,
 //! §13.5), but never ahead of WELCOME, the server's first frame (§6.2). Sending CLOSE drops what is
 //! still queued behind it, since nothing follows CLOSE on the transport (§7.7).
 //! Only the WebSocket binding exists so far: one [`Output::Transmit`] is one binary message.
 
 use std::collections::{HashMap, VecDeque};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
 
@@ -70,7 +73,8 @@ use crate::caps::{self, Capability, Caps};
 use crate::data::Codec;
 use crate::error::{Outcome, ProtocolError};
 use crate::frame::{
-  Auth, Call, CallError, CallResult, Close, Frame, FrameType, Heartbeat, Hello, Meta, Notify, Reject, Sequencing, Welcome,
+  Auth, Call, CallError, CallResult, Cancel, Close, Frame, FrameType, Heartbeat, Hello, Meta, Notify, Reject, Sequencing,
+  Welcome,
 };
 use crate::negotiate;
 use crate::registry::{CloseCode, StatusCode};
@@ -163,6 +167,12 @@ pub enum Command {
     /// The data section.
     data: Bytes,
   },
+  /// Cancel the server call on `stream`, from [`Session::call`], with CANCEL (§8.5). Ignored
+  /// unless that call is still waiting for its answer and not cancelled yet.
+  Cancel {
+    /// The call stream.
+    stream: u64,
+  },
 }
 
 /// What the session asks the driver to do, in order.
@@ -222,6 +232,14 @@ pub enum Output {
   Notify {
     /// The NOTIFY frame: method, meta and the encoded arguments.
     notify: Notify,
+  },
+  /// The client answered the server call on `stream`, from [`Session::call`], with RESULT or
+  /// ERROR (§8.4, §8.8). The call is complete.
+  Answered {
+    /// The call stream.
+    stream: u64,
+    /// The answer.
+    answer: Answer,
   },
   /// A [`Command::Notify`] was not sent: its NOTIFY is `length` bytes, above the client's
   /// `max_frame` or the default header limit, `limit` (§5.2, §5.4.1). Nothing tells the client;
@@ -320,10 +338,64 @@ struct Calls {
 }
 
 impl Calls {
+  fn opened_by(&self, side: Side) -> u64 {
+    let opened = self.open.keys().filter(|&&stream| ids::initiator(stream) == side).count();
+    u64::try_from(opened).unwrap_or(u64::MAX)
+  }
+
   fn settle(&mut self, stream: u64) {
     if self.open.get(&stream).is_some_and(CallState::is_complete) {
       self.open.remove(&stream);
       self.ids.close(stream);
+    }
+  }
+}
+
+/// The client's answer to a server call (§8.4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Answer {
+  /// RESULT: the call succeeded.
+  Result(CallResult),
+  /// ERROR: the call failed.
+  Error(CallError),
+}
+
+/// Why [`Session::call`] made no call. Nothing was sent, so the caller reports it with `nx`
+/// (§8.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CallRefused {
+  /// The session is not established, or has ended (§8.8).
+  NotEstablished,
+  /// The client was not granted `server-calls`; a CALL from the server would be a protocol
+  /// error (§7.10).
+  NotGranted,
+  /// As many server calls are open as the client's `max_calls`, 100 when its HELLO sets none,
+  /// or the server stream IDs are used up (§6.5).
+  TooManyCalls,
+  /// The CALL is above the client's `max_frame` or the default header limit (§5.2, §5.4.1).
+  TooLarge,
+}
+
+impl CallRefused {
+  /// The status the caller reports: NOT_FOUND, FAILED_PRECONDITION or RESOURCE_EXHAUSTED.
+  #[must_use]
+  pub const fn code(self) -> StatusCode {
+    match self {
+      Self::NotEstablished => StatusCode::NotFound,
+      Self::NotGranted => StatusCode::FailedPrecondition,
+      Self::TooManyCalls | Self::TooLarge => StatusCode::ResourceExhausted,
+    }
+  }
+
+  /// A message for the caller's local error.
+  #[must_use]
+  pub const fn msg(self) -> &'static str {
+    match self {
+      Self::NotEstablished => "the session has ended",
+      Self::NotGranted => "the client was not granted server-calls",
+      Self::TooManyCalls => "as many server calls are open as the client's max_calls",
+      Self::TooLarge => "the CALL is above the client's max_frame or header limit",
     }
   }
 }
@@ -367,6 +439,40 @@ impl Session {
   #[must_use]
   pub fn open_calls(&self) -> usize {
     self.calls.open.len()
+  }
+
+  /// Calls the client method `method` with `data`, the arguments already encoded as one array in
+  /// the session codec, as a unary server call on the next server stream (§6.1, §8.8). `deadline`
+  /// goes in the CALL for the client, in whole ms; enforcing it is the caller's, with
+  /// [`Command::Cancel`] (§8.6). The answer comes as [`Output::Answered`] for the returned stream.
+  ///
+  /// # Errors
+  ///
+  /// [`CallRefused`] when the call cannot be made; nothing is sent then.
+  pub fn call(&mut self, method: String, data: Bytes, deadline: Option<Duration>) -> Result<u64, CallRefused> {
+    let State::Established { negotiated, .. } = &self.state else {
+      return Err(CallRefused::NotEstablished);
+    };
+    if !negotiated.caps.contains(Capability::ServerCalls) {
+      return Err(CallRefused::NotGranted);
+    }
+    if self.calls.opened_by(self.local) >= self.peer_max_calls() {
+      return Err(CallRefused::TooManyCalls);
+    }
+    let call = Frame::Call(Call {
+      method,
+      shape: 0,
+      deadline: deadline.map(config::millis),
+      meta: None,
+      data,
+    });
+    if !self.fits(&call) {
+      return Err(CallRefused::TooLarge);
+    }
+    let stream = self.calls.ids.open_next().ok_or(CallRefused::TooManyCalls)?;
+    self.calls.open.insert(stream, CallState::new(Shape::Unary, Role::Caller));
+    self.transmit_on(stream, &call);
+    Ok(stream)
   }
 
   /// Whether the session has ended. Every later input is ignored.
@@ -436,6 +542,7 @@ impl Session {
         self.answer(stream, &Frame::Error(error));
       }
       Input::Command(Command::Notify { method, data }) => self.notify(method, data),
+      Input::Command(Command::Cancel { stream }) => self.cancel(stream),
       Input::Message(_) | Input::Timeout | Input::Authenticated { .. } | Input::AuthFailed(_) if expired => {
         self.close(CloseCode::HandshakeTimeout, None);
       }
@@ -603,7 +710,7 @@ impl Session {
   }
 
   fn peer_closed(&mut self, close: Close) {
-    let code = CloseCode::from_u16_lossy(u16::try_from(close.code).unwrap_or(u16::MAX));
+    let code = CloseCode::from_u64_lossy(close.code);
     self.outputs.push_back(Output::CloseTransport {
       code,
       reason: close.msg.clone().unwrap_or_default(),
@@ -657,19 +764,32 @@ impl Session {
     match (self.calls.ids.receive(stream, ids::opens_stream(frame_type)), frame) {
       (Err(error), _) => self.fail(&error),
       (Ok(Admitted::Opened), Frame::Call(call)) => self.open_call(stream, call),
-      (Ok(_), _) => {
+      (Ok(_), frame) => {
+        let sender = if ids::initiator(stream) == self.local {
+          Role::Callee
+        } else {
+          Role::Caller
+        };
         let step = self
           .calls
           .open
           .get_mut(&stream)
-          .map_or(Ok(Step::Ignored), |call| call.on_frame(Role::Caller, frame_type));
+          .map_or(Ok(Step::Ignored), |call| call.on_frame(sender, frame_type));
         self.calls.settle(stream);
-        match step {
-          Ok(Step::Accepted) if frame_type == FrameType::Cancel && self.calls.open.contains_key(&stream) => {
+        match (step, frame) {
+          (Ok(Step::Accepted), _) if frame_type == FrameType::Cancel && self.calls.open.contains_key(&stream) => {
             self.outputs.push_back(Output::Cancelled { stream });
           }
-          Ok(_) => {}
-          Err(error) => self.fail(&error),
+          (Ok(Step::Accepted), Frame::Result(result)) => {
+            let answer = Answer::Result(result);
+            self.outputs.push_back(Output::Answered { stream, answer });
+          }
+          (Ok(Step::Accepted), Frame::Error(error)) => {
+            let answer = Answer::Error(error);
+            self.outputs.push_back(Output::Answered { stream, answer });
+          }
+          (Ok(_), _) => {}
+          (Err(error), _) => self.fail(&error),
         }
       }
     }
@@ -682,7 +802,16 @@ impl Session {
   }
 
   fn calls_full(&self) -> bool {
-    u64::try_from(self.calls.open.len()).map_or(true, |open| open >= self.config.0.max_calls)
+    self.calls.opened_by(Side::Client) >= self.config.0.max_calls
+  }
+
+  fn cancel(&mut self, stream: u64) {
+    if ids::initiator(stream) == self.local
+      && let Some(call) = self.calls.open.get_mut(&stream)
+      && matches!(call.on_frame(Role::Caller, FrameType::Cancel), Ok(Step::Accepted))
+    {
+      self.transmit_on(stream, &Frame::Cancel(Cancel { msg: None }));
+    }
   }
 
   fn refuse_beyond_max_calls(&mut self, stream: u64) {
@@ -756,6 +885,14 @@ impl Session {
       .and_then(|hello| hello.limits.as_ref())
       .and_then(|limits| limits.max_frame)
       .unwrap_or(config::DEFAULT_MAX_FRAME)
+  }
+
+  fn peer_max_calls(&self) -> u64 {
+    self
+      .hello()
+      .and_then(|hello| hello.limits.as_ref())
+      .and_then(|limits| limits.max_calls)
+      .unwrap_or(config::DEFAULT_MAX_CALLS)
   }
 
   fn transmit(&mut self, frame: &Frame) {

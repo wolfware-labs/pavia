@@ -2,7 +2,9 @@ use bytes::{Bytes, BytesMut};
 
 use std::time::{Duration, Instant};
 
-use super::{AuthFailure, Command, Config, ConfigError, Ending, Input, Output, Session, State, ValidConfig};
+use super::{
+  Answer, AuthFailure, CallRefused, Command, Config, ConfigError, Ending, Input, Output, Session, State, ValidConfig,
+};
 use crate::data::Codec;
 use crate::frame::Reject;
 use crate::frame::{
@@ -1616,22 +1618,22 @@ fn closes_on_an_item_from_the_caller_of_a_unary_call() {
   assert!(ended_with(&mut session, CloseCode::ProtocolError));
 }
 
-fn welcomed_by_a_client_with(max_frame: u64) -> Session {
+fn welcomed_by(hello: Hello) -> Session {
   let mut session = server();
-  let hello = Hello {
-    limits: Some(Limits {
-      max_calls: None,
-      max_frame: Some(max_frame),
-      max_subs: None,
-      max_dgram: None,
-      window: None,
-    }),
-    ..hello()
-  };
   session.feed(Input::Message(message(&[(0, Frame::Hello(hello))])));
   session.feed(authenticated(None));
   drain(&mut session);
   session
+}
+
+fn welcomed_by_a_client_with(max_frame: u64) -> Session {
+  welcomed_by(Hello {
+    limits: Some(Limits {
+      max_frame: Some(max_frame),
+      ..Limits::default()
+    }),
+    ..hello()
+  })
 }
 
 #[test]
@@ -2008,4 +2010,212 @@ fn drops_a_notify_command_above_the_client_max_frame_or_the_header_limit() {
   };
   assert_eq!((*length, *limit), (16_385, 16_384));
   assert!(!session.is_ended());
+}
+
+fn welcomed_for_server_calls(max_calls: Option<u64>, max_frame: Option<u64>) -> Session {
+  welcomed_by(Hello {
+    caps: Some(vec!["server-calls".into()]),
+    limits: Some(Limits {
+      max_calls,
+      max_frame,
+      ..Limits::default()
+    }),
+    ..hello()
+  })
+}
+
+fn confirm(session: &mut Session) -> Result<u64, CallRefused> {
+  session.call("ui/confirm".to_owned(), Bytes::from_static(&[0x80]), None)
+}
+
+fn client_result(stream: u64) -> Input {
+  Input::Message(message(&[(stream, result(&[0xf5]))]))
+}
+
+fn client_error(code: StatusCode) -> CallError {
+  CallError {
+    code: u64::from(code),
+    msg: "no handler".to_owned(),
+    nx: Some(true),
+    meta: None,
+    data: Bytes::new(),
+  }
+}
+
+#[test]
+fn opens_server_calls_on_odd_streams_in_order_with_their_deadline() {
+  let mut session = welcomed_for_server_calls(None, None);
+  assert_eq!(confirm(&mut session), Ok(1));
+  assert_eq!(
+    session.call(
+      "ui/pick".to_owned(),
+      Bytes::from_static(&[0x81, 0x01]),
+      Some(Duration::from_micros(200_999))
+    ),
+    Ok(3)
+  );
+  let sent = sent_frames(&mut session);
+  let calls: Vec<_> = sent
+    .iter()
+    .map(|(stream, frame)| match frame {
+      Frame::Call(call) => (*stream, call.method.as_str(), call.shape, call.deadline, call.data.to_vec()),
+      other => panic!("{other:?}"),
+    })
+    .collect();
+  assert_eq!(
+    calls,
+    [
+      (1, "ui/confirm", 0, None, vec![0x80]),
+      (3, "ui/pick", 0, Some(200), vec![0x81, 0x01]),
+    ]
+  );
+  assert_eq!(session.open_calls(), 2);
+}
+
+#[test]
+fn hands_the_client_answers_to_the_driver_and_completes_the_calls() {
+  let mut session = welcomed_for_server_calls(None, None);
+  confirm(&mut session).unwrap();
+  confirm(&mut session).unwrap();
+  drain(&mut session);
+  session.feed(Input::Message(message(&[(
+    1,
+    Frame::Credit(crate::frame::Credit { credit: 64 }),
+  )])));
+  assert_eq!(drain(&mut session), []);
+  session.feed(client_result(1));
+  let unimplemented = client_error(StatusCode::Unimplemented);
+  session.feed(Input::Message(message(&[(3, Frame::Error(unimplemented.clone()))])));
+  assert_eq!(
+    drain(&mut session),
+    [
+      Output::Answered {
+        stream: 1,
+        answer: Answer::Result(CallResult {
+          meta: None,
+          data: Bytes::from_static(&[0xf5]),
+        }),
+      },
+      Output::Answered {
+        stream: 3,
+        answer: Answer::Error(unimplemented),
+      },
+    ]
+  );
+  assert_eq!(session.open_calls(), 0);
+  assert!(!session.is_ended());
+}
+
+#[test]
+fn refuses_a_server_call_outside_an_established_session_or_without_server_calls() {
+  let mut session = greeted();
+  assert_eq!(confirm(&mut session), Err(CallRefused::NotEstablished));
+  let (mut session, _) = welcomed(None);
+  assert_eq!(confirm(&mut session), Err(CallRefused::NotGranted));
+  let mut session = welcomed_for_server_calls(None, None);
+  session.feed(Input::TransportLost);
+  drain(&mut session);
+  assert_eq!(confirm(&mut session), Err(CallRefused::NotEstablished));
+  assert_eq!(drain(&mut session), []);
+  let refusals = [
+    CallRefused::NotEstablished,
+    CallRefused::NotGranted,
+    CallRefused::TooManyCalls,
+    CallRefused::TooLarge,
+  ];
+  assert_eq!(
+    refusals.map(|refused| (refused.code(), refused.msg())),
+    [
+      (StatusCode::NotFound, "the session has ended"),
+      (StatusCode::FailedPrecondition, "the client was not granted server-calls"),
+      (
+        StatusCode::ResourceExhausted,
+        "as many server calls are open as the client's max_calls"
+      ),
+      (
+        StatusCode::ResourceExhausted,
+        "the CALL is above the client's max_frame or header limit"
+      ),
+    ]
+  );
+}
+
+#[test]
+fn bounds_server_calls_by_the_client_max_calls_apart_from_client_calls() {
+  let mut session = welcomed_for_server_calls(Some(1), None);
+  assert_eq!(confirm(&mut session), Ok(1));
+  drain(&mut session);
+  assert_eq!(confirm(&mut session), Err(CallRefused::TooManyCalls));
+  assert_eq!(drain(&mut session), []);
+  called(&mut session, 2);
+  session.feed(client_result(1));
+  drain(&mut session);
+  assert_eq!(confirm(&mut session), Ok(3));
+}
+
+#[test]
+fn bounds_server_calls_by_one_hundred_when_the_client_sets_no_max_calls() {
+  let mut session = welcomed_for_server_calls(None, None);
+  for _ in 0..100 {
+    confirm(&mut session).unwrap();
+  }
+  assert_eq!(confirm(&mut session), Err(CallRefused::TooManyCalls));
+}
+
+#[test]
+fn refuses_a_server_call_above_the_client_max_frame() {
+  let mut session = welcomed_for_server_calls(None, Some(MAX_FRAME_FLOOR));
+  let data = Bytes::from(vec![0; usize::try_from(MAX_FRAME_FLOOR).unwrap()]);
+  assert_eq!(session.call("ui/confirm".to_owned(), data, None), Err(CallRefused::TooLarge));
+  assert_eq!(drain(&mut session), []);
+  assert_eq!(session.open_calls(), 0);
+}
+
+#[test]
+fn cancels_a_server_call_once_and_only_while_it_waits_for_its_answer() {
+  let mut session = welcomed_for_server_calls(None, None);
+  confirm(&mut session).unwrap();
+  drain(&mut session);
+  called(&mut session, 2);
+  session.feed(Input::Command(Command::Cancel { stream: 2 }));
+  session.feed(Input::Command(Command::Cancel { stream: 5 }));
+  assert_eq!(drain(&mut session), []);
+  session.feed(Input::Command(Command::Cancel { stream: 1 }));
+  session.feed(Input::Command(Command::Cancel { stream: 1 }));
+  assert!(matches!(
+    sent_frames(&mut session).as_slice(),
+    [(1, Frame::Cancel(Cancel { msg: None }))]
+  ));
+  let cancelled = client_error(StatusCode::Cancelled);
+  session.feed(Input::Message(message(&[(1, Frame::Error(cancelled.clone()))])));
+  assert_eq!(
+    drain(&mut session),
+    [Output::Answered {
+      stream: 1,
+      answer: Answer::Error(cancelled),
+    }]
+  );
+  session.feed(Input::Command(Command::Cancel { stream: 1 }));
+  assert_eq!(drain(&mut session), []);
+}
+
+#[test]
+fn bounds_client_calls_by_the_server_max_calls_apart_from_server_calls() {
+  let config = Config {
+    max_calls: 1,
+    ..Config::default()
+  };
+  let mut session = Session::server(&config.validate().unwrap(), Instant::now());
+  let hello = Hello {
+    caps: Some(vec!["server-calls".into()]),
+    ..hello()
+  };
+  session.feed(Input::Message(message(&[(0, Frame::Hello(hello))])));
+  session.feed(authenticated(None));
+  drain(&mut session);
+  assert_eq!(confirm(&mut session), Ok(1));
+  drain(&mut session);
+  called(&mut session, 2);
+  session.feed(Input::Message(message(&[(4, call(0))])));
+  assert!(matches!(sent_frames(&mut session).as_slice(), [(4, Frame::Error(error))] if error.code == 8));
 }

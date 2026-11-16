@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::task::{Context, Poll};
+use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -15,7 +15,7 @@ use pavia_proto::data::{Codec, Value as Arg};
 use pavia_proto::error::ErrorStatus;
 use pavia_proto::frame::{Auth, Call, Meta, MetaName, MetaValue};
 use pavia_proto::registry::{CloseCode, StatusCode};
-use pavia_proto::session::{Command, Config as SessionConfig, Ending, Input};
+use pavia_proto::session::{Command, Config as SessionConfig, Ending, Input, Session};
 use pavia_proto::session_id::SessionId;
 use pavia_proto::stream::{Shape, Side};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf};
@@ -33,11 +33,11 @@ use tracing::Dispatch;
 use tracing::dispatcher::DefaultGuard;
 use tracing::subscriber::NoSubscriber;
 
-use super::{Calls, Disclosure, Failed, Lane, Refusal, RunningCall, authenticated, run, validate_call};
+use super::{Calls, Disclosure, Failed, Lane, Outgoing, Refusal, RunningCall, authenticated, run, validate_call};
 use crate::auth::{AllowAll, AuthFailure, Authenticator, Authorizer, Permissive, Principal, RequestContext};
 use crate::methods::{Handler, HandlerContext, HandlerError, MethodEntry, MethodName, MethodRegistry, StatusError};
-use crate::sessions::{Handle, Registry};
-use crate::test_support::{EXPECT_WITHIN, floor_frame, has_ws_close, send, serve_on_loopback};
+use crate::sessions::{CallError, CallOptions, Calling, Claim, Handle, Registry};
+use crate::test_support::{EXPECT_WITHIN, confirm, floor_frame, has_ws_close, send, serve_on_loopback};
 use crate::websocket::{Config, Endpoint, SUBPROTOCOL, Transport};
 
 type Socket = WebSocketStream<TcpStream>;
@@ -199,6 +199,10 @@ async fn established<S: AsyncRead + AsyncWrite + Unpin>(socket: &mut WebSocketSt
   send(socket, hello_frame()).await;
   let welcome = next_welcome(socket).await;
   assert_eq!(welcome.len(), 7);
+  welcome_id(&welcome)
+}
+
+fn welcome_id(welcome: &BTreeMap<u64, Value>) -> SessionId {
   let Value::Text(id) = &welcome[&19] else {
     panic!("WELCOME without a session ID");
   };
@@ -1223,7 +1227,11 @@ async fn next_answer(socket: &mut Socket) -> Answer {
   else {
     panic!("expected a binary message");
   };
-  let mut rest = &message[..];
+  answer_in(&message)
+}
+
+fn answer_in(message: &[u8]) -> Answer {
+  let mut rest = message;
   let stream = varint(&mut rest);
   let frame_type = rest[0];
   rest = &rest[2..];
@@ -2101,7 +2109,8 @@ async fn cancelled_after_it_finished(outcome: Result<Arg, Failed>) -> Command {
     streams: HashMap::new(),
     tasks: HashMap::new(),
     lane: Lane::default(),
-    handle: Handle::new(mpsc::channel(1).0),
+    outgoing: Outgoing::default(),
+    handle: Handle::channel().0,
   };
   let task = calls.running.spawn(async move { outcome });
   let running = RunningCall {
@@ -2456,4 +2465,438 @@ async fn returns_false_to_a_notification_sent_after_the_session_ended() {
   ending.await.unwrap();
   go.send(()).unwrap();
   assert!(!delivered.await.unwrap().unwrap());
+}
+
+fn hello_for_server_calls(max_calls: u8) -> Vec<u8> {
+  hello_for_server_calls_in(b"cbor", max_calls)
+}
+
+fn hello_for_server_calls_in(codec: &[u8; 4], max_calls: u8) -> Vec<u8> {
+  let mut header = vec![0xa4, 0x0e, 0x81, 0x01, 0x10, 0x81, 0x64];
+  header.extend(codec);
+  header.extend([0x12, 0x81, 0x6c]);
+  header.extend(b"server-calls");
+  header.extend([0x15, 0xa1, 0x18, 0x30, max_calls]);
+  raw_frame(0x01, &header)
+}
+
+async fn calling(registry: &Registry, hello: Vec<u8>) -> (Socket, SessionId) {
+  calling_from(registry.clone(), Arc::new(MethodRegistry::new()), hello).await
+}
+
+async fn calling_from(registry: Registry, methods: Arc<MethodRegistry<Handler>>, hello: Vec<u8>) -> (Socket, SessionId) {
+  let (address, _) = listen_serving(
+    registry,
+    methods,
+    SessionConfig::default(),
+    Arc::new(Permissive),
+    Arc::new(AllowAll),
+  )
+  .await;
+  let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
+  send(&mut socket, hello).await;
+  let id = welcome_id(&next_welcome(&mut socket).await);
+  (socket, id)
+}
+
+fn call_in_background(
+  registry: &Registry,
+  id: &SessionId,
+  options: CallOptions,
+) -> tokio::task::JoinHandle<Result<Arg, CallError>> {
+  let (registry, id) = (registry.clone(), id.clone());
+  tokio::spawn(async move { registry.call(&id, &confirm(), Vec::new(), options).await })
+}
+
+async fn next_server_call(socket: &mut Socket, stream: u64) -> Answer {
+  let call = next_answer(socket).await;
+  assert_eq!((call.stream, call.frame_type), (stream, 0x10));
+  assert_eq!(call.header[&2], Value::Text("ui/confirm".to_owned()));
+  assert_eq!(call.header[&5], Value::from(0));
+  assert_eq!(call.data, [0x80]);
+  call
+}
+
+async fn nothing_sent(socket: &mut Socket) {
+  send(socket, heartbeat_frame(0x04, &[9])).await;
+  assert_eq!(next_answer(socket).await.frame_type, 0x05);
+}
+
+#[tokio::test]
+async fn returns_the_client_answers_to_server_calls_on_odd_streams() {
+  let registry = Registry::new();
+  let (mut socket, id) = calling(&registry, hello_for_server_calls(4)).await;
+  let call = call_in_background(&registry, &id, CallOptions::default());
+  assert_eq!(next_server_call(&mut socket, 1).await.header.get(&4), None);
+  send(&mut socket, method_frame(1, 0x13, &[], &[0xf5])).await;
+  assert_eq!(call.await.unwrap(), Ok(Arg::Bool(true)));
+  let call = call_in_background(&registry, &id, CallOptions::default());
+  next_server_call(&mut socket, 3).await;
+  send(
+    &mut socket,
+    method_frame(3, 0x14, &[0xa3, 0x06, 0x0c, 0x07, 0x60, 0x18, 0x2d, 0xf5], &[]),
+  )
+  .await;
+  let error = call.await.unwrap().unwrap_err();
+  assert_eq!(
+    (error.code(), error.nx(), error.detail()),
+    (StatusCode::Unimplemented, true, None)
+  );
+}
+
+#[tokio::test]
+async fn hands_back_the_client_error_detail_and_an_unknown_code() {
+  let registry = Registry::new();
+  let (mut socket, id) = calling(&registry, hello_for_server_calls(4)).await;
+  let call = call_in_background(&registry, &id, CallOptions::default());
+  next_server_call(&mut socket, 1).await;
+  let header = [0xa2, 0x06, 0x18, 0x63, 0x07, 0x62, b'n', b'o'];
+  send(&mut socket, method_frame(1, 0x14, &header, &[0x63, b'w', b'h', b'y'])).await;
+  let error = call.await.unwrap().unwrap_err();
+  assert_eq!((error.code(), error.msg(), error.nx()), (StatusCode::Unknown, "no", false));
+  assert_eq!(error.detail(), Some(&Arg::Text("why".to_owned())));
+}
+
+#[tokio::test]
+async fn fails_with_internal_a_result_or_error_detail_that_does_not_decode() {
+  let registry = Registry::new();
+  let (mut socket, id) = calling(&registry, hello_for_server_calls(4)).await;
+  let call = call_in_background(&registry, &id, CallOptions::default());
+  next_server_call(&mut socket, 1).await;
+  send(&mut socket, method_frame(1, 0x13, &[], &[0xff])).await;
+  let error = call.await.unwrap().unwrap_err();
+  assert_eq!(
+    (error.code(), error.msg(), error.nx()),
+    (StatusCode::Internal, "the client's RESULT does not decode", false)
+  );
+  let call = call_in_background(&registry, &id, CallOptions::default());
+  next_server_call(&mut socket, 3).await;
+  let header = [0xa2, 0x06, 0x0c, 0x07, 0x62, b'n', b'o'];
+  send(&mut socket, method_frame(3, 0x14, &header, &[0xff])).await;
+  let error = call.await.unwrap().unwrap_err();
+  assert_eq!(
+    (error.code(), error.msg(), error.nx(), error.detail()),
+    (StatusCode::Internal, "the client's ERROR detail does not decode", false, None)
+  );
+}
+
+#[tokio::test]
+async fn fails_a_server_call_with_unavailable_when_the_client_goes_away() {
+  let registry = Registry::new();
+  let (mut socket, id) = calling(&registry, hello_for_server_calls(4)).await;
+  let call = call_in_background(&registry, &id, CallOptions::default());
+  next_server_call(&mut socket, 1).await;
+  drop(socket);
+  let error = tokio::time::timeout(Duration::from_millis(100), call)
+    .await
+    .expect("UNAVAILABLE without waiting for a deadline")
+    .unwrap()
+    .unwrap_err();
+  assert_eq!((error.code(), error.nx()), (StatusCode::Unavailable, false));
+}
+
+#[tokio::test]
+async fn refuses_a_server_call_beyond_the_client_max_calls_without_sending_it() {
+  let registry = Registry::new();
+  let (mut socket, id) = calling(&registry, hello_for_server_calls(1)).await;
+  let first = call_in_background(&registry, &id, CallOptions::default());
+  next_server_call(&mut socket, 1).await;
+  let error = registry
+    .call(&id, &confirm(), Vec::new(), CallOptions::default())
+    .await
+    .unwrap_err();
+  assert_eq!((error.code(), error.nx()), (StatusCode::ResourceExhausted, true));
+  nothing_sent(&mut socket).await;
+  send(&mut socket, method_frame(1, 0x13, &[], &[0xf5])).await;
+  assert_eq!(first.await.unwrap(), Ok(Arg::Bool(true)));
+}
+
+#[tokio::test]
+async fn cancels_a_server_call_past_its_deadline() {
+  let registry = Registry::new();
+  let (mut socket, id) = calling(&registry, hello_for_server_calls(4)).await;
+  let call = call_in_background(
+    &registry,
+    &id,
+    CallOptions::default().with_deadline(Duration::from_millis(200)),
+  );
+  let sent = next_server_call(&mut socket, 1).await;
+  let Value::Integer(left) = sent.header[&4] else {
+    panic!("{:?}", sent.header);
+  };
+  assert!(u64::try_from(left).unwrap() <= 200, "{left:?}");
+  let error = call.await.unwrap().unwrap_err();
+  assert_eq!((error.code(), error.nx()), (StatusCode::DeadlineExceeded, false));
+  let cancel = next_answer(&mut socket).await;
+  assert_eq!((cancel.stream, cancel.frame_type), (1, 0x15));
+}
+
+#[tokio::test]
+async fn cancels_a_server_call_whose_future_is_dropped() {
+  let registry = Registry::new();
+  let (mut socket, id) = calling(&registry, hello_for_server_calls(1)).await;
+  let call = call_in_background(&registry, &id, CallOptions::default());
+  next_server_call(&mut socket, 1).await;
+  call.abort();
+  let cancel = next_answer(&mut socket).await;
+  assert_eq!((cancel.stream, cancel.frame_type), (1, 0x15));
+  send(&mut socket, method_frame(1, 0x14, &[0xa2, 0x06, 0x01, 0x07, 0x60], &[])).await;
+  nothing_sent(&mut socket).await;
+  let call = call_in_background(&registry, &id, CallOptions::default());
+  next_server_call(&mut socket, 3).await;
+  call.abort();
+  let cancel = next_answer(&mut socket).await;
+  assert_eq!((cancel.stream, cancel.frame_type), (3, 0x15));
+}
+
+#[tokio::test]
+async fn refuses_server_calls_locally_with_nx_when_nothing_can_be_sent() {
+  let registry = Registry::new();
+  let (mut socket, id) = calling(&registry, hello_frame()).await;
+  let error = registry
+    .call(&id, &confirm(), Vec::new(), CallOptions::default())
+    .await
+    .unwrap_err();
+  assert_eq!((error.code(), error.nx()), (StatusCode::FailedPrecondition, true));
+  let handle = registry.get(&id).unwrap();
+  let odd = handle
+    .call(&confirm(), vec![Arg::Simple(25)], CallOptions::default())
+    .await
+    .unwrap_err();
+  assert_eq!((odd.code(), odd.nx()), (StatusCode::InvalidArgument, true));
+  nothing_sent(&mut socket).await;
+  let unknown = SessionId::parse("AAAAAAAAAAAAAAAAAAAAAA").unwrap();
+  let error = registry
+    .call(&unknown, &confirm(), Vec::new(), CallOptions::default())
+    .await
+    .unwrap_err();
+  assert_eq!((error.code(), error.nx()), (StatusCode::NotFound, true));
+  send(&mut socket, close_frame(0)).await;
+  eventually(|| registry.get(&id).is_none(), "the session to leave the registry").await;
+  let error = handle.call(&confirm(), Vec::new(), CallOptions::default()).await.unwrap_err();
+  assert_eq!((error.code(), error.nx()), (StatusCode::NotFound, true));
+}
+
+#[tokio::test]
+async fn lets_a_handler_call_back_the_client_that_called_it() {
+  let mut methods = MethodRegistry::new();
+  let save = Handler::with_context(0, |context: HandlerContext, _| async move {
+    context
+      .call(&confirm(), Vec::new(), CallOptions::default())
+      .await
+      .map_err(HandlerError::unexpected)
+  });
+  methods.register_server_method("doc/save", MethodEntry::call(save)).unwrap();
+  let (mut socket, _) = calling_from(Registry::new(), Arc::new(methods), hello_for_server_calls(4)).await;
+  send(&mut socket, call_frame(2, "doc/save", &[0x80])).await;
+  next_server_call(&mut socket, 1).await;
+  send(&mut socket, method_frame(1, 0x13, &[], &[0xf5])).await;
+  let answer = next_answer(&mut socket).await;
+  assert_eq!((answer.stream, answer.frame_type, answer.data), (2, 0x13, vec![0xf5]));
+}
+
+#[tokio::test]
+async fn delivers_an_answer_that_arrives_with_the_end_of_the_session() {
+  let registry = Registry::new();
+  let (mut socket, id) = calling(&registry, hello_for_server_calls(4)).await;
+  let call = call_in_background(&registry, &id, CallOptions::default());
+  next_server_call(&mut socket, 1).await;
+  send(&mut socket, [method_frame(1, 0x13, &[], &[0xf5]), close_frame(0)].concat()).await;
+  assert_eq!(call.await.unwrap(), Ok(Arg::Bool(true)));
+}
+
+#[tokio::test]
+async fn reports_a_client_error_with_code_zero_as_unknown() {
+  let registry = Registry::new();
+  let (mut socket, id) = calling(&registry, hello_for_server_calls(4)).await;
+  let call = call_in_background(&registry, &id, CallOptions::default());
+  next_server_call(&mut socket, 1).await;
+  send(&mut socket, method_frame(1, 0x14, &[0xa2, 0x06, 0x00, 0x07, 0x60], &[])).await;
+  let error = call.await.unwrap().unwrap_err();
+  assert_eq!(error.code(), StatusCode::Unknown);
+  assert_eq!(error.to_string(), "Unknown: ");
+}
+
+fn established_for_calls() -> Session {
+  let now = std::time::Instant::now();
+  let mut session = Session::server(&SessionConfig::default().validate().unwrap(), now);
+  session.handle_input(Input::Message(Bytes::from(hello_for_server_calls(4))), now);
+  session.handle_input(
+    Input::Authenticated {
+      session: SessionId::parse("AAAAAAAAAAAAAAAAAAAAAA").unwrap(),
+      user: None,
+    },
+    now,
+  );
+  while session.poll_output().is_some() {}
+  session
+}
+
+fn queued_call(token: u64, deadline: Option<tokio::time::Instant>) -> (Calling, oneshot::Receiver<Result<Arg, CallError>>) {
+  let (reply, answer) = oneshot::channel();
+  let calling = Calling {
+    token,
+    method: confirm(),
+    arguments: Vec::new(),
+    deadline,
+    claim: Claim::default(),
+    reply,
+  };
+  (calling, answer)
+}
+
+#[test]
+fn never_sends_a_call_whose_caller_has_already_gone() {
+  let mut session = established_for_calls();
+  let (calling, _answer) = queued_call(0, None);
+  assert!(calling.claim.abandon());
+  let mut outgoing = Outgoing::default();
+  outgoing.open(&mut session, calling, Codec::Cbor);
+  assert_eq!(session.poll_output(), None);
+  assert_eq!(session.open_calls(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn sends_the_time_left_and_refuses_a_call_with_under_a_millisecond_left() {
+  let mut session = established_for_calls();
+  let mut outgoing = Outgoing::default();
+  let now = tokio::time::Instant::now();
+  for (token, left) in [(0, 100), (1, 1)] {
+    let (calling, _answer) = queued_call(token, Some(now + Duration::from_millis(left)));
+    outgoing.open(&mut session, calling, Codec::Cbor);
+    let Some(pavia_proto::session::Output::Transmit(message)) = session.poll_output() else {
+      panic!("no CALL with {left} ms left");
+    };
+    assert_eq!(answer_in(&message).header[&4], Value::from(left));
+  }
+  let (calling, answer) = queued_call(2, Some(now + Duration::from_micros(999)));
+  outgoing.open(&mut session, calling, Codec::Cbor);
+  assert_eq!(session.poll_output(), None);
+  let error = answer.await.unwrap().unwrap_err();
+  assert_eq!((error.code(), error.nx()), (StatusCode::DeadlineExceeded, true));
+}
+
+#[tokio::test]
+async fn forgets_a_server_call_once_it_is_answered_or_abandoned() {
+  let mut session = established_for_calls();
+  let mut outgoing = Outgoing::default();
+  let (calling, answer) = queued_call(7, None);
+  outgoing.open(&mut session, calling, Codec::Cbor);
+  assert_eq!(outgoing.sizes(), (1, 1));
+  let result = pavia_proto::frame::CallResult {
+    meta: None,
+    data: Bytes::from_static(&[0xf5]),
+  };
+  outgoing.answered(1, pavia_proto::session::Answer::Result(result), Codec::Cbor);
+  assert_eq!(outgoing.sizes(), (0, 0));
+  assert_eq!(answer.await.unwrap(), Ok(Arg::Bool(true)));
+  let (calling, _answer) = queued_call(8, None);
+  outgoing.open(&mut session, calling, Codec::Cbor);
+  assert_eq!(outgoing.abandon(8), Some(3));
+  assert_eq!(outgoing.sizes(), (0, 0));
+  assert_eq!(outgoing.abandon(8), None);
+}
+
+#[derive(Default)]
+enum Gate {
+  #[default]
+  Open,
+  Stalled(Option<Waker>),
+  Broken,
+}
+
+struct GatedWrites {
+  inner: DuplexStream,
+  gate: Arc<Mutex<Gate>>,
+}
+
+impl AsyncRead for GatedWrites {
+  fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+    Pin::new(&mut self.inner).poll_read(cx, buf)
+  }
+}
+
+impl AsyncWrite for GatedWrites {
+  fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+    match &mut *self.gate.lock().unwrap() {
+      Gate::Open => {}
+      Gate::Stalled(waker) => {
+        *waker = Some(cx.waker().clone());
+        return Poll::Pending;
+      }
+      Gate::Broken => return Poll::Ready(Err(io::Error::from(io::ErrorKind::BrokenPipe))),
+    }
+    Pin::new(&mut self.inner).poll_write(cx, buf)
+  }
+
+  fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    Pin::new(&mut self.inner).poll_flush(cx)
+  }
+
+  fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    Pin::new(&mut self.inner).poll_shutdown(cx)
+  }
+}
+
+#[tokio::test]
+async fn refuses_calls_still_queued_when_the_session_ends() {
+  let registry = Registry::new();
+  let (endpoint, mut endings) = recording(&registry, SessionConfig::default());
+  let gate = Arc::new(Mutex::new(Gate::Open));
+  let (client, server) = tokio::io::duplex(4096);
+  let server = GatedWrites {
+    inner: server,
+    gate: Arc::clone(&gate),
+  };
+  tokio::spawn(async move { endpoint.serve_connection(server, None).await });
+  let mut socket = open(client).await;
+  send(&mut socket, hello_for_server_calls(4)).await;
+  let id = welcome_id(&next_welcome(&mut socket).await);
+  *gate.lock().unwrap() = Gate::Stalled(None);
+  send(&mut socket, heartbeat_frame(0x04, &[1])).await;
+  eventually(
+    || matches!(*gate.lock().unwrap(), Gate::Stalled(Some(_))),
+    "the PONG to stall",
+  )
+  .await;
+  let handle = registry.get(&id).unwrap();
+  let method = confirm();
+  let mut call = Box::pin(handle.call(&method, Vec::new(), CallOptions::default()));
+  assert!((&mut call).now_or_never().is_none(), "the call to be queued");
+  let Gate::Stalled(Some(waker)) = std::mem::replace(&mut *gate.lock().unwrap(), Gate::Broken) else {
+    panic!("the write is no longer stalled");
+  };
+  waker.wake();
+  collect(&mut endings, 1).await;
+  let error = tokio::time::timeout(EXPECT_WITHIN, call).await.unwrap().unwrap_err();
+  assert_eq!((error.code(), error.nx()), (StatusCode::NotFound, true));
+}
+
+#[tokio::test]
+async fn makes_server_calls_in_json_when_the_session_negotiated_it() {
+  let registry = Registry::new();
+  let mut config = SessionConfig::default();
+  config.codecs = vec![Codec::Json];
+  let methods = Arc::new(MethodRegistry::new());
+  let (address, _) = listen_serving(registry.clone(), methods, config, Arc::new(Permissive), Arc::new(AllowAll)).await;
+  let mut socket = open(TcpStream::connect(address).await.unwrap()).await;
+  send(&mut socket, hello_for_server_calls_in(b"json", 4)).await;
+  let id = welcome_id(&next_welcome(&mut socket).await);
+  let (calls, id_again) = (registry.clone(), id.clone());
+  let arguments = vec![Arg::Text("save?".to_owned()), Arg::Unsigned(2)];
+  let call = tokio::spawn(async move { calls.call(&id_again, &confirm(), arguments, CallOptions::default()).await });
+  let sent = next_answer(&mut socket).await;
+  assert_eq!(
+    (sent.stream, sent.frame_type, sent.data),
+    (1, 0x10, br#"["save?",2]"#.to_vec())
+  );
+  send(&mut socket, method_frame(1, 0x13, &[], b"true")).await;
+  assert_eq!(call.await.unwrap(), Ok(Arg::Bool(true)));
+  let call = call_in_background(&registry, &id, CallOptions::default());
+  next_answer(&mut socket).await;
+  let header = [0xa2, 0x06, 0x0c, 0x07, 0x62, b'n', b'o'];
+  send(&mut socket, method_frame(3, 0x14, &header, br#"{"reason":"none"}"#)).await;
+  let error = call.await.unwrap().unwrap_err();
+  let detail = Arg::Map(vec![(Arg::Text("reason".to_owned()), Arg::Text("none".to_owned()))]);
+  assert_eq!((error.code(), error.detail()), (StatusCode::Unimplemented, Some(&detail)));
 }

@@ -50,7 +50,7 @@ fn round_trips_every_name() {
 
 #[test]
 fn grants_calls_and_ignores_what_is_not_implemented() {
-  assert_eq!(IMPLEMENTED, [Capability::Calls]);
+  assert_eq!(IMPLEMENTED, [Capability::Calls, Capability::ServerCalls]);
   let requests: [Option<&[&str]>; 5] = [
     None,
     Some(&[]),
@@ -62,6 +62,12 @@ fn grants_calls_and_ignores_what_is_not_implemented() {
     let names: Vec<_> = Caps::grant(requested).names().collect();
     assert_eq!(names, ["calls"], "{requested:?}");
   }
+}
+
+#[test]
+fn grants_server_calls_only_when_the_client_asks() {
+  let names: Vec<_> = Caps::grant(Some(&["server-calls", "resume"])).names().collect();
+  assert_eq!(names, ["calls", "server-calls"]);
 }
 
 #[test]

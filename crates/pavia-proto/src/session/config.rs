@@ -12,6 +12,8 @@ use crate::wire::envelope;
 
 /// The `max_frame` a peer that advertises none accepts, and this server's default (§16).
 pub(super) const DEFAULT_MAX_FRAME: u64 = 1 << 20;
+/// The `max_calls` a peer that advertises none accepts, and this server's default (§16).
+pub(super) const DEFAULT_MAX_CALLS: u64 = 100;
 
 /// Session settings chosen by the application. [`Config::validate`] turns them into the
 /// [`ValidConfig`] a session is built from, so a WELCOME never advertises a value the spec
@@ -61,7 +63,7 @@ impl Default for Config {
       codecs: vec![Codec::Cbor],
       heartbeat: Duration::from_secs(15),
       idle_timeout: Duration::from_secs(45),
-      max_calls: 100,
+      max_calls: DEFAULT_MAX_CALLS,
       max_frame: DEFAULT_MAX_FRAME,
       max_subs: 256,
       max_dgram: 1_100,
@@ -217,6 +219,6 @@ pub enum ConfigError {
   TooLarge(&'static str),
 }
 
-fn millis(duration: Duration) -> u64 {
+pub(super) fn millis(duration: Duration) -> u64 {
   u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }

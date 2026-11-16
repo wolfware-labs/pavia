@@ -103,6 +103,10 @@ impl StreamIds {
 
   /// Whether `stream_id` is open. Stream 0 always is.
   #[must_use]
+  #[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "only tests read it; the session asks its open calls instead")
+  )]
   pub fn is_open(&self, stream_id: u64) -> bool {
     stream_id == 0 || self.open.contains(&stream_id)
   }
@@ -122,7 +126,7 @@ const fn first_id(side: Side) -> u64 {
   }
 }
 
-const fn initiator(stream_id: u64) -> Side {
+pub(crate) const fn initiator(stream_id: u64) -> Side {
   if stream_id.is_multiple_of(2) {
     Side::Client
   } else {

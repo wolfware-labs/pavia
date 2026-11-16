@@ -1,18 +1,21 @@
-use pavia_proto::registry::CloseCode;
+use std::time::Duration;
+
+use futures_util::FutureExt;
+use pavia_proto::registry::{CloseCode, StatusCode};
 use pavia_proto::session::Command;
 use pavia_proto::session_id::SessionId;
 use tokio::sync::mpsc;
 
-use super::{Handle, Registry};
-use crate::test_support::EXPECT_WITHIN;
+use super::{CallOptions, Handle, QUEUE, Registry};
+use crate::test_support::{EXPECT_WITHIN, confirm};
 
 fn id(text: &str) -> SessionId {
   SessionId::parse(text).unwrap()
 }
 
 fn handle() -> (Handle, mpsc::Receiver<Command>) {
-  let (sender, receiver) = mpsc::channel(1);
-  (Handle::new(sender), receiver)
+  let (handle, inbox) = Handle::channel();
+  (handle, inbox.commands)
 }
 
 const CLOSE: Command = Command::Close {
@@ -87,4 +90,75 @@ fn removes_an_entry_even_after_a_panic_poisoned_the_lock() {
   .join();
   drop(registration);
   assert!(registry.is_empty());
+}
+
+#[tokio::test]
+async fn sends_no_call_given_up_first_and_cancels_one_opened_first() {
+  for opened in [false, true] {
+    let (handle, mut inbox) = Handle::channel();
+    let method = confirm();
+    let mut call = Box::pin(handle.call(&method, Vec::new(), CallOptions::default()));
+    assert!((&mut call).now_or_never().is_none(), "the call to wait for its answer");
+    let calling = inbox.calls.try_recv().unwrap();
+    assert_eq!(opened && calling.claim.open(), opened);
+    drop(call);
+    if opened {
+      assert_eq!(inbox.abandoned.try_recv().ok(), Some(calling.token));
+    } else {
+      assert!(!calling.claim.open(), "a call given up was opened");
+      assert!(inbox.abandoned.try_recv().is_err(), "a call never sent was cancelled");
+    }
+  }
+}
+
+#[tokio::test(start_paused = true)]
+async fn reports_nx_for_a_deadline_that_passes_before_the_call_is_taken_up() {
+  let (handle, mut inbox) = Handle::channel();
+  let options = CallOptions::default().with_deadline(Duration::from_millis(50));
+  let error = handle.call(&confirm(), Vec::new(), options).await.unwrap_err();
+  assert_eq!((error.code(), error.nx()), (StatusCode::DeadlineExceeded, true));
+  let calling = inbox.calls.try_recv().unwrap();
+  assert!(!calling.claim.open());
+  assert!(inbox.abandoned.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn refuses_queued_calls_as_calls_to_an_ended_session() {
+  let (handle, mut inbox) = Handle::channel();
+  let method = confirm();
+  let mut call = Box::pin(handle.call(&method, Vec::new(), CallOptions::default()));
+  assert!((&mut call).now_or_never().is_none(), "the call to wait in the queue");
+  inbox.refuse_queued_calls();
+  let error = tokio::time::timeout(EXPECT_WITHIN, call)
+    .await
+    .expect("the queued call to be refused")
+    .unwrap_err();
+  assert_eq!(
+    (error.code(), error.nx(), error.msg()),
+    (StatusCode::NotFound, true, "the session has ended")
+  );
+}
+
+#[tokio::test]
+async fn counts_the_wait_for_queue_space_against_the_deadline() {
+  let (handle, _inbox) = Handle::channel();
+  let method = confirm();
+  for _ in 0..QUEUE {
+    let _ = handle.call(&method, Vec::new(), CallOptions::default()).now_or_never();
+  }
+  let options = CallOptions::default().with_deadline(Duration::from_millis(50));
+  let error = tokio::time::timeout(EXPECT_WITHIN, handle.call(&method, Vec::new(), options))
+    .await
+    .expect("the deadline to end the wait for queue space")
+    .unwrap_err();
+  assert_eq!((error.code(), error.nx()), (StatusCode::DeadlineExceeded, true));
+}
+
+#[tokio::test]
+async fn refuses_a_deadline_too_far_away_to_count_down_to() {
+  let (handle, mut inbox) = Handle::channel();
+  let options = CallOptions::default().with_deadline(Duration::MAX);
+  let error = handle.call(&confirm(), Vec::new(), options).await.unwrap_err();
+  assert_eq!((error.code(), error.nx()), (StatusCode::InvalidArgument, true));
+  assert!(inbox.calls.try_recv().is_err());
 }

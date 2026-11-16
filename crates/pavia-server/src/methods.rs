@@ -8,7 +8,7 @@
 //! with the CALL arguments as dynamic values. A handler that fails returns a [`HandlerError`]: a
 //! deliberate [`StatusError`], answered as given, or an unexpected error, answered INTERNAL (§8.4).
 //! A handler made with [`Handler::with_context`] also gets a [`HandlerContext`], through which it
-//! can notify the client of the session that ran it (§9.1).
+//! can notify the client of the session that ran it (§9.1) or call one of its methods (§8.8).
 //!
 //! ```text
 //!  register_server_method("chat/send") ─▶ name rule ─▶ not on the server side yet ─▶ stored
@@ -34,7 +34,7 @@ use pavia_proto::session::Command;
 use pavia_proto::stream::{Shape, Side};
 use thiserror::Error;
 
-use crate::sessions::Handle;
+use crate::sessions::{CallError, CallOptions, Handle};
 
 /// A method name that follows the rule of §8.1: `"<service>/<method>"`, each segment
 /// `[A-Za-z_][A-Za-z0-9_]*`.
@@ -301,6 +301,16 @@ impl HandlerContext {
       data,
     };
     Ok(self.session.send(notify).await.is_ok())
+  }
+
+  /// Calls the client method `method` of the session that called this handler and returns its
+  /// answer, as [`Handle::call`] does (§8.8).
+  ///
+  /// # Errors
+  ///
+  /// The errors of [`Handle::call`].
+  pub async fn call(&self, method: &MethodName, arguments: Vec<Value>, options: CallOptions) -> Result<Value, CallError> {
+    self.session.call(method, arguments, options).await
   }
 }
 

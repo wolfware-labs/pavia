@@ -10,6 +10,7 @@ use tokio::net::TcpListener;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
 
+use crate::methods::MethodName;
 use crate::websocket::{Endpoint, Transport};
 
 pub(crate) const EXPECT_WITHIN: Duration = Duration::from_secs(5);
@@ -23,6 +24,10 @@ where
   let address = listener.local_addr().unwrap();
   tokio::spawn(endpoint.serve(listener));
   address
+}
+
+pub(crate) fn confirm() -> MethodName {
+  MethodName::parse("ui/confirm").unwrap()
 }
 
 pub(crate) fn floor_frame() -> SessionConfig {
