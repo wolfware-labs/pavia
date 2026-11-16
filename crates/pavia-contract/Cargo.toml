@@ -13,6 +13,3 @@ license.workspace = true
 pavia-contract-derive.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-
-[dev-dependencies]
-trybuild.workspace = true

@@ -1,11 +1,10 @@
 error[E0277]: `()` cannot be an `Option` value or a type argument of a derived contract type: `{"option": "unit"}` is not allowed (spec 12.1)
- --> tests/ui/option_unit.rs:5:10
+ --> tests/ui/generic_argument_unit.rs:9:26
   |
-5 |   reply: Option<()>,
-  |          ------^^^^
-  |          |
-  |          `unit` here
-  |          required by a bound introduced by this call
+9 |   TypeTable::new().add::<Page<()>>();
+  |                    ---   ^^^^^^^^ `unit` here
+  |                    |
+  |                    required by a bound introduced by this call
   |
   = help: the trait `OptionValue` is not implemented for `()`
   = help: the following other types implement trait `OptionValue`:
@@ -17,9 +16,16 @@ error[E0277]: `()` cannot be an `Option` value or a type argument of a derived c
             (A, B, C, D, E, F, G)
             (A, B, C, D, E, F, G, H)
             (A,)
-  = note: required for `std::option::Option<()>` to implement `Contract`
+note: required for `Page<()>` to implement `Contract`
+ --> tests/ui/generic_argument_unit.rs:4:8
+  |
+3 | #[derive(Contract)]
+  |          -------- type parameter would need to implement `Contract`
+4 | struct Page<T> {
+  |        ^^^^^^^
+  = help: consider manually implementing `Contract` to avoid undesired bounds
 note: required by a bound in `TypeTable::add`
- --> src/table.rs
+ --> $WORKSPACE/crates/pavia-contract/src/table.rs
   |
   |   pub fn add<T: Contract>(&mut self) -> Type {
   |                 ^^^^^^^^ required by this bound in `TypeTable::add`

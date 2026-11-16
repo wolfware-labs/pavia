@@ -6,7 +6,7 @@ error[E0277]: `#[pavia(optional)]` needs an `Option` field, and `std::string::St
   |
   = help: the trait `OptionField` is not implemented for `std::string::String`
 help: the trait `OptionField` is implemented for `std::option::Option<T>`
- --> src/mapping.rs
+ --> $WORKSPACE/crates/pavia-contract/src/mapping.rs
   |
   | impl<T> OptionField for Option<T> {}
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

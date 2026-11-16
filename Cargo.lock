@@ -781,16 +781,18 @@ dependencies = [
  "pavia-contract-derive",
  "serde_json",
  "thiserror",
- "trybuild",
 ]
 
 [[package]]
 name = "pavia-contract-derive"
 version = "0.1.0-alpha.0"
 dependencies = [
+ "pavia-contract",
  "proc-macro2",
  "quote",
+ "serde_json",
  "syn 2.0.119",
+ "trybuild",
 ]
 
 [[package]]
