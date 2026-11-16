@@ -97,7 +97,7 @@ pub enum TypeError {
     name: String,
   },
   /// A name outside `[A-Za-z_][A-Za-z0-9_]*` (§12.2).
-  #[error("type name `{name}` does not match [A-Za-z_][A-Za-z0-9_]* (spec 12.2)")]
+  #[error("`{name}` is not a contract name: names match [A-Za-z_][A-Za-z0-9_]* (spec 12.2)")]
   InvalidName {
     /// The name.
     name: String,

@@ -57,7 +57,9 @@ impl MethodName {
   /// letter or `_` followed by ASCII letters, digits or `_`.
   pub fn parse(name: &str) -> Result<Self, InvalidMethodName> {
     match name.split_once('/') {
-      Some((service, method)) if is_segment(service) && is_segment(method) => Ok(Self(name.into())),
+      Some((service, method)) if pavia_contract::name::is_valid(service) && pavia_contract::name::is_valid(method) => {
+        Ok(Self(name.into()))
+      }
       _ => Err(InvalidMethodName(name.to_owned())),
     }
   }
@@ -83,12 +85,6 @@ impl MethodName {
   fn halves(&self) -> (&str, &str) {
     self.0.split_once('/').unwrap_or((&self.0, ""))
   }
-}
-
-fn is_segment(segment: &str) -> bool {
-  let mut bytes = segment.bytes();
-  bytes.next().is_some_and(|first| first.is_ascii_alphabetic() || first == b'_')
-    && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
 impl FromStr for MethodName {

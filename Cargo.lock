@@ -823,6 +823,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "pavia-contract",
  "pavia-proto",
  "pavia-vectors",
  "serde_json",

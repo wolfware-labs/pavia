@@ -51,7 +51,7 @@ fn writes_composite_types_as_their_manifest_json() {
 #[test]
 fn writes_optional_and_open_only_when_set() {
   let field = Field::new("lang", Type::Option(Box::new(Primitive::String.into())));
-  let optional = Field::optional("lang", Type::Option(Box::new(Primitive::String.into())));
+  let optional = field.clone().optional();
   assert!(!field.is_optional());
   assert!(optional.is_optional());
   assert_eq!(
@@ -64,13 +64,13 @@ fn writes_optional_and_open_only_when_set() {
 
   let variants = || vec![Variant::unit("Online"), Variant::new("Away", Primitive::U64.into())];
   assert!(!Enum::new(variants()).is_open());
-  assert!(Enum::open(variants()).is_open());
+  assert!(Enum::new(variants()).open().is_open());
   assert_eq!(
     Definition::Enum(Enum::new(variants())).to_json(),
     json!({"enum": {"variants": [{"name": "Online"}, {"name": "Away", "type": "u64"}]}}),
   );
   assert_eq!(
-    Definition::Enum(Enum::open(variants())).to_json()["enum"]["open"],
+    Definition::Enum(Enum::new(variants()).open()).to_json()["enum"]["open"],
     json!(true)
   );
 }

@@ -1,0 +1,11 @@
+error: empty parentheses have no contract type: drop them for a unit struct or variant (spec 12.1)
+ --> tests/ui/empty_tuple.rs:4:15
+  |
+4 | struct Nothing();
+  |               ^^
+
+error: empty parentheses have no contract type: drop them for a unit struct or variant (spec 12.1)
+ --> tests/ui/empty_tuple.rs:8:7
+  |
+8 |   Stop(),
+  |       ^^

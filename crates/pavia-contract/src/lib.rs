@@ -25,6 +25,10 @@
 //! ```
 //!
 //! See the crate README for its place in the workspace.
+//!
+//! [`schema`] is public because a hand-written [`Contract`] impl builds its contract type from it, and the
+//! manifest writer (#67) and the typed codecs (#66) read it. [`name`] is the name grammar of §12.2, which
+//! the server's method names follow too.
 #![forbid(unsafe_code)]
 
 mod mapping;

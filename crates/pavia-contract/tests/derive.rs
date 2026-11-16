@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+#![expect(dead_code, reason = "the types exist for their derived impls, which never read a field")]
 
 use pavia_contract::schema::{Definition, Type};
 use pavia_contract::{Bytes, Contract, Timestamp, TypeError, TypeTable, Uuid};
@@ -48,7 +48,7 @@ struct Page<T> {
 }
 
 #[derive(Contract)]
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types, reason = "the name `Page<Message>` is given, to collide with it")]
 struct Page_Message {
   count: u32,
 }

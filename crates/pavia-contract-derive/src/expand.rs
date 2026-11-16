@@ -126,9 +126,9 @@ fn enumeration(data: &DataEnum, open: bool) -> syn::Result<TokenStream> {
       }
     });
   }
-  let constructor = if open { quote!(open) } else { quote!(new) };
+  let open = open.then(|| quote!(.open()));
   Ok(quote! {
-    ::pavia_contract::schema::Definition::Enum(::pavia_contract::schema::Enum::#constructor(::std::vec![#(#variants),*]))
+    ::pavia_contract::schema::Definition::Enum(::pavia_contract::schema::Enum::new(::std::vec![#(#variants),*])#open)
   })
 }
 
@@ -148,11 +148,12 @@ fn named(fields: &FieldsNamed) -> syn::Result<TokenStream> {
     let added = add(ty);
     items.push(if attrs.optional.is_some() {
       quote_spanned! {ty.span()=>
-        ::pavia_contract::schema::Field::optional(#name, {
+        ::pavia_contract::schema::Field::new(#name, {
           fn optional<T: ::pavia_contract::OptionField + ?::std::marker::Sized>() {}
           optional::<#ty>();
           #added
         })
+        .optional()
       }
     } else {
       quote!(::pavia_contract::schema::Field::new(#name, #added))
@@ -162,6 +163,12 @@ fn named(fields: &FieldsNamed) -> syn::Result<TokenStream> {
 }
 
 fn unnamed(fields: &FieldsUnnamed) -> syn::Result<TokenStream> {
+  if fields.unnamed.is_empty() {
+    return Err(syn::Error::new(
+      fields.paren_token.span.join(),
+      "empty parentheses have no contract type: drop them for a unit struct or variant (spec 12.1)",
+    ));
+  }
   let mut items = Vec::new();
   for field in &fields.unnamed {
     let attrs = Attrs::parse(&field.attrs)?;

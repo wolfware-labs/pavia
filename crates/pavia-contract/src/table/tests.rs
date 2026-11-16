@@ -58,7 +58,7 @@ fn reports_a_name_outside_the_grammar() {
   );
   assert_eq!(
     errors[0].to_string(),
-    "type name `not-valid` does not match [A-Za-z_][A-Za-z0-9_]* (spec 12.2)"
+    "`not-valid` is not a contract name: names match [A-Za-z_][A-Za-z0-9_]* (spec 12.2)"
   );
 }
 

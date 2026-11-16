@@ -16,6 +16,7 @@ getrandom = { workspace = true, features = ["std"] }
 http-body-util.workspace = true
 hyper = { workspace = true, features = ["http1", "server"] }
 hyper-util = { workspace = true, features = ["tokio"] }
+pavia-contract.workspace = true
 pavia-proto.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }

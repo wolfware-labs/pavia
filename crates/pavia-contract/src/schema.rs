@@ -181,15 +181,12 @@ impl Field {
     }
   }
 
-  /// A field named `name` of type `ty` whose key may be missing on the wire, which decodes as absent.
-  /// `ty` is an [`Type::Option`] (§12.1).
+  /// The same field, whose key may be missing on the wire, which decodes as absent. Its type is an
+  /// [`Type::Option`] (§12.1).
   #[must_use]
-  pub fn optional(name: impl Into<String>, ty: Type) -> Self {
-    Self {
-      name: name.into(),
-      ty,
-      optional: true,
-    }
+  pub const fn optional(mut self) -> Self {
+    self.optional = true;
+    self
   }
 
   /// The field's name.
@@ -235,11 +232,11 @@ impl Enum {
     Self { variants, open: false }
   }
 
-  /// An open enum with `variants`, in declaration order: decoders map an unknown variant to a catch-all
-  /// instead of refusing it (§12.1).
+  /// The same enum, open: decoders map an unknown variant to a catch-all instead of refusing it (§12.1).
   #[must_use]
-  pub const fn open(variants: Vec<Variant>) -> Self {
-    Self { variants, open: true }
+  pub const fn open(mut self) -> Self {
+    self.open = true;
+    self
   }
 
   /// The variants, in declaration order.
