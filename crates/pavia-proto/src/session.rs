@@ -31,7 +31,8 @@
 //! WELCOME it yields [`Output::Established`] with the new session ID; the driver makes the session
 //! reachable once that WELCOME is written, never before (§13.4, §14). WELCOME carries the
 //! configured contract fingerprint, and a HELLO whose fingerprint differs or is missing yields
-//! [`Output::ContractMismatch`] right after it; a server without a fingerprint never does (§7.2).
+//! [`Output::ContractMismatch`] between [`Output::Established`] and that WELCOME; a server without
+//! a fingerprint never does (§7.2).
 //!
 //! After WELCOME every received message, on any stream, moves the idle deadline to `now + idle`;
 //! a timeout at or past it closes with IDLE_TIMEOUT (§7.4). A message that reaches the session
@@ -191,8 +192,9 @@ pub enum Output {
     /// HELLO `auth`.
     auth: Option<Auth>,
   },
-  /// The session is established under `session`; the next output is the WELCOME that says so.
-  /// The driver makes the session reachable once that WELCOME is written, never before: nothing
+  /// The session is established under `session`; the next [`Output::Transmit`] is the WELCOME that
+  /// says so, with only an [`Output::ContractMismatch`] possibly between them. The driver makes
+  /// the session reachable once that WELCOME is written, never before: nothing
   /// sent to the session ahead of WELCOME may reach it (§13.4, §14).
   Established {
     /// The session ID WELCOME carries.
@@ -258,7 +260,7 @@ pub enum Output {
   /// The client's HELLO carries a contract fingerprint other than this server's, or none, and
   /// the policy is [`ContractPolicy::Warn`](crate::contract::ContractPolicy::Warn): the session
   /// goes on and the driver reports it (§7.2). Never emitted by a server without a fingerprint.
-  /// Comes right after [`Output::Established`].
+  /// Comes between [`Output::Established`] and the WELCOME's [`Output::Transmit`].
   ContractMismatch {
     /// The client's fingerprint, or `None` when its HELLO has none.
     client: Option<Fingerprint>,
