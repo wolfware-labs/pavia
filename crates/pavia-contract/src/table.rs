@@ -99,7 +99,9 @@ impl TypeTable {
   /// [`TypeError::Collision`] when two Rust types with the same name define different types, or a user
   /// type takes a generated name, [`TypeError::InvalidName`] for a name outside the grammar of §12.2,
   /// [`TypeError::OptionOfUnit`] for an `Option` of a named type that is `unit` through aliases, and
-  /// [`TypeError::AliasCycle`] for an alias that leads back to itself through aliases only.
+  /// [`TypeError::AliasCycle`] for an alias that leads back to itself through aliases only. The last two
+  /// are not checked through a name with a collision, whose types the table cannot tell apart; they show
+  /// once the collision is fixed.
   pub fn finish(mut self) -> Result<BTreeMap<String, Definition>, Vec<TypeError>> {
     for (name, definition) in std::mem::take(&mut self.shared) {
       if self.definitions.get(&name) != Some(&definition) {

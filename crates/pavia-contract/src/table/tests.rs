@@ -81,6 +81,58 @@ impl Contract for LoopProbe {
   }
 }
 
+struct Via;
+
+impl Contract for Via {
+  fn name() -> String {
+    "Via".into()
+  }
+
+  fn contract_type(table: &mut TypeTable) -> Type {
+    table.define::<Self>(|table| Definition::Alias(table.add::<UnitProbe>()))
+  }
+}
+
+impl OptionValue for Via {}
+
+struct SameUnit;
+
+impl Contract for SameUnit {
+  fn name() -> String {
+    "Same".into()
+  }
+
+  fn contract_type(table: &mut TypeTable) -> Type {
+    table.define::<Self>(|_| Definition::Alias(Primitive::Unit.into()))
+  }
+}
+
+struct SameVia;
+
+impl Contract for SameVia {
+  fn name() -> String {
+    "Same".into()
+  }
+
+  fn contract_type(table: &mut TypeTable) -> Type {
+    table.define::<Self>(|table| Definition::Alias(table.add::<ToSame>()))
+  }
+}
+
+struct ToSame;
+
+impl Contract for ToSame {
+  fn name() -> String {
+    "ToSame".into()
+  }
+
+  fn contract_type(table: &mut TypeTable) -> Type {
+    table.define::<Self>(|table| Definition::Alias(table.add::<SameUnit>()))
+  }
+}
+
+impl OptionValue for ToSame {}
+
 struct Built;
 
 thread_local! {
@@ -232,13 +284,31 @@ fn checks_no_chain_through_a_collided_name_in_either_order() {
   user_first.add::<UnitProbe>();
   user_first.add::<OptionProbe>();
   user_first.add::<LoopProbe>();
+  user_first.add::<Option<Via>>();
   let mut instance_first = TypeTable::new();
   instance_first.add::<LoopProbe>();
   instance_first.add::<OptionProbe>();
   instance_first.add::<UnitProbe>();
+  instance_first.add::<Option<Via>>();
 
   for table in [user_first, instance_first] {
     assert_eq!(table.finish(), Err(vec![TypeError::Collision { name: "Probe".into() }]));
+  }
+}
+
+#[test]
+fn checks_no_chain_through_a_name_whose_definitions_differ_in_either_order() {
+  let mut unit_first = TypeTable::new();
+  unit_first.add::<SameUnit>();
+  unit_first.add::<SameVia>();
+  unit_first.add::<Option<ToSame>>();
+  let mut alias_first = TypeTable::new();
+  alias_first.add::<SameVia>();
+  alias_first.add::<SameUnit>();
+  alias_first.add::<Option<ToSame>>();
+
+  for table in [unit_first, alias_first] {
+    assert_eq!(table.finish(), Err(vec![TypeError::Collision { name: "Same".into() }]));
   }
 }
 
