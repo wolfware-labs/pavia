@@ -1,4 +1,4 @@
-error[E0432]: unresolved import `nowhere`
+error[E0433]: cannot find module or crate `nowhere` in this scope
  --> tests/ui/crate_path_unresolved.rs:4:17
   |
 4 | #[pavia(crate = "nowhere::contract")]

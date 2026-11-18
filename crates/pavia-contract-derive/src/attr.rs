@@ -49,7 +49,7 @@ impl Attrs {
           let value: LitStr = meta.value()?.parse()?;
           refuse_repeated(parsed.krate.is_some(), &meta)?;
           parsed.krate = Some(Krate {
-            path: value.parse()?,
+            path: value.parse_with(Path::parse_mod_style)?,
             span: value.span(),
           });
         } else {

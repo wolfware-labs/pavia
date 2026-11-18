@@ -408,5 +408,8 @@ fn reaches_the_contract_crate_through_the_given_path() {
   table.add::<Relayed>();
   let types = types(table);
 
-  assert_eq!(types["Relayed"], json!({"struct": {"fields": [{"name": "text", "type": "string"}]}}));
+  assert_eq!(
+    types["Relayed"],
+    json!({"struct": {"fields": [{"name": "text", "type": "string"}]}})
+  );
 }
