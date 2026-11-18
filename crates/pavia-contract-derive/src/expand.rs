@@ -203,7 +203,7 @@ fn unnamed(krate: &Path, fields: &FieldsUnnamed) -> syn::Result<TokenStream> {
   })
 }
 
-/// `krate` with every token at `span`, so an error a bound through it causes points at `span`.
+/// `krate` with every token moved to `span`: an unmet bound written through it is then reported at `span`.
 fn respanned(krate: &Path, span: Span) -> TokenStream {
   krate
     .to_token_stream()

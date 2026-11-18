@@ -34,14 +34,8 @@ error: `crate` applies to the type, not to a field
 31 | struct Carried(#[pavia(crate = "pavia_contract")] u32);
    |                                ^^^^^^^^^^^^^^^^
 
-error: expected path segment after `::`
-  --> tests/ui/attribute_misplaced.rs:34:17
-   |
-34 | #[pavia(crate = "pavia_contract::<u8>")]
-   |                 ^^^^^^^^^^^^^^^^^^^^^^
-
 error: unknown `pavia` attribute: expected `rename`, `optional`, `open` or `crate`
-  --> tests/ui/attribute_misplaced.rs:40:9
+  --> tests/ui/attribute_misplaced.rs:34:9
    |
-40 | #[pavia(sorted)]
+34 | #[pavia(sorted)]
    |         ^^^^^^

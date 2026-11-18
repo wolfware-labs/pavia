@@ -1,0 +1,5 @@
+error: expected path segment after `::`
+ --> tests/ui/crate_path_arguments.rs:4:17
+  |
+4 | #[pavia(crate = "pavia_contract::<u8>")]
+  |                 ^^^^^^^^^^^^^^^^^^^^^^

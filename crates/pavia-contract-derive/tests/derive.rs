@@ -97,8 +97,10 @@ mod facade {
 
 #[derive(Contract)]
 #[pavia(crate = "crate::facade::contract")]
-struct Relayed {
-  text: String,
+struct Relayed<T> {
+  items: Vec<T>,
+  #[pavia(optional)]
+  note: Option<String>,
 }
 
 #[derive(Contract)]
@@ -405,11 +407,14 @@ fn reports_aliases_that_lead_back_to_themselves() {
 #[test]
 fn reaches_the_contract_crate_through_the_given_path() {
   let mut table = TypeTable::new();
-  table.add::<Relayed>();
+  table.add::<Relayed<Message>>();
   let types = types(table);
 
   assert_eq!(
-    types["Relayed"],
-    json!({"struct": {"fields": [{"name": "text", "type": "string"}]}})
+    types["Relayed_Message"],
+    json!({"struct": {"fields": [
+      {"name": "items", "type": {"list": {"ref": "Message"}}},
+      {"name": "note", "type": {"option": "string"}, "optional": true}
+    ]}})
   );
 }

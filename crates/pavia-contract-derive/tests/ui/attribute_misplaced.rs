@@ -31,12 +31,6 @@ enum Routed {
 struct Carried(#[pavia(crate = "pavia_contract")] u32);
 
 #[derive(Contract)]
-#[pavia(crate = "pavia_contract::<u8>")]
-struct Generic {
-  value: u32,
-}
-
-#[derive(Contract)]
 #[pavia(sorted)]
 struct Unknown {
   value: u32,
