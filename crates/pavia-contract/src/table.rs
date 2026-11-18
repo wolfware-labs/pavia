@@ -134,7 +134,7 @@ impl TypeTable {
 enum Chain<'a> {
   /// To a definition that is not an alias of a reference.
   Ends(Option<&'a Definition>),
-  /// Back to a name it passed, so the type has no value.
+  /// Back to a name it passed, never reaching a type.
   Loops,
 }
 
@@ -159,8 +159,9 @@ pub enum TypeError {
     name: String,
   },
   /// An alias that leads back to itself through aliases only, such as `struct Left(Box<Right>)` with
-  /// `struct Right(Box<Left>)`: the type has no value, and no codec or generated type can hold it.
-  #[error("`{name}` leads back to itself through aliases only, so the type has no value")]
+  /// `struct Right(Box<Left>)`: the chain never reaches a type, so a generated `type Left = Right` cannot
+  /// compile.
+  #[error("`{name}` leads back to itself through aliases only, so it never reaches a type")]
   AliasCycle {
     /// The name of an alias on the cycle, or leading to it.
     name: String,

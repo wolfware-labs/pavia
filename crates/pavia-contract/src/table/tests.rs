@@ -91,6 +91,18 @@ impl Contract for Cycle {
 
 impl OptionValue for Cycle {}
 
+struct Toward;
+
+impl Contract for Toward {
+  fn name() -> String {
+    "Toward".into()
+  }
+
+  fn contract_type(table: &mut TypeTable) -> Type {
+    table.define::<Self>(|table| Definition::Alias(table.add::<Cycle>()))
+  }
+}
+
 #[test]
 fn starts_empty() {
   assert_eq!(TypeTable::new().finish(), Ok(BTreeMap::new()));
@@ -201,6 +213,20 @@ fn reports_an_alias_that_refers_to_itself() {
   assert_eq!(errors, [TypeError::AliasCycle { name: "Cycle".into() }]);
   assert_eq!(
     errors[0].to_string(),
-    "`Cycle` leads back to itself through aliases only, so the type has no value"
+    "`Cycle` leads back to itself through aliases only, so it never reaches a type"
+  );
+}
+
+#[test]
+fn reports_an_alias_that_leads_into_a_cycle() {
+  let mut table = TypeTable::new();
+  table.add::<Toward>();
+
+  assert_eq!(
+    table.finish(),
+    Err(vec![
+      TypeError::AliasCycle { name: "Cycle".into() },
+      TypeError::AliasCycle { name: "Toward".into() },
+    ])
   );
 }
