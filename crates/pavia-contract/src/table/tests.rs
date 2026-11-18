@@ -12,7 +12,7 @@ impl<const ID: u8> Contract for Named<ID> {
   }
 
   fn contract_type(table: &mut TypeTable) -> Type {
-    table.define::<Self>(|_| Definition::Alias(if ID == 1 { Primitive::U16 } else { Primitive::U8 }.into()))
+    table.define::<Self>(|_| Definition::Alias(if ID % 2 == 1 { Primitive::U16 } else { Primitive::U8 }.into()))
   }
 }
 
@@ -25,6 +25,21 @@ impl Contract for Instance {
 
   fn contract_type(table: &mut TypeTable) -> Type {
     table.define_instance::<Self>(|_| Definition::Alias(Primitive::U8.into()))
+  }
+}
+
+struct Leaky;
+
+impl Contract for Leaky {
+  fn name() -> String {
+    "Shared".into()
+  }
+
+  fn contract_type(table: &mut TypeTable) -> Type {
+    table.define_instance::<Self>(|table| {
+      table.add::<Named<9>>();
+      Definition::Alias(Primitive::U8.into())
+    })
   }
 }
 
@@ -126,6 +141,7 @@ fn reports_each_collision_once() {
   assert_eq!(table.add::<Named<0>>(), Type::Ref("Shared".into()));
   assert_eq!(table.add::<Named<1>>(), Type::Ref("Shared".into()));
   table.add::<Named<2>>();
+  table.add::<Named<3>>();
   table.add::<Named<0>>();
 
   assert_eq!(table.finish(), Err(vec![TypeError::Collision { name: "Shared".into() }]));
@@ -148,6 +164,25 @@ fn reports_a_user_type_with_a_generated_name_even_when_both_are_equal() {
   table.add::<Instance>();
 
   assert_eq!(table.finish(), Err(vec![TypeError::Collision { name: "Shared".into() }]));
+}
+
+#[test]
+fn reports_the_errors_inside_a_colliding_type_in_either_order() {
+  let mut user_first = TypeTable::new();
+  user_first.add::<Named<0>>();
+  user_first.add::<Leaky>();
+  let mut instance_first = TypeTable::new();
+  instance_first.add::<Leaky>();
+  instance_first.add::<Named<0>>();
+
+  for table in [user_first, instance_first] {
+    let errors = table.finish().unwrap_err();
+    assert_eq!(errors.len(), 2);
+    assert!(errors.contains(&TypeError::Collision { name: "Shared".into() }));
+    assert!(errors.contains(&TypeError::InvalidName {
+      name: "not-valid".into()
+    }));
+  }
 }
 
 #[test]

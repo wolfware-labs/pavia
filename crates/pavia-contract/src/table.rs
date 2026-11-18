@@ -79,7 +79,10 @@ impl TypeTable {
         let definition = build(self);
         self.shared.push((name.clone(), definition));
       }
-      Some(_) => self.report(TypeError::Collision { name: name.clone() }),
+      Some(_) => {
+        build(self);
+        self.report(TypeError::Collision { name: name.clone() });
+      }
     }
     Type::Ref(name)
   }
