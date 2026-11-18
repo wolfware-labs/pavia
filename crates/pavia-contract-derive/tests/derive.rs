@@ -360,7 +360,7 @@ fn refuses_an_option_of_an_alias_of_unit() {
   );
   assert_eq!(
     errors[0].to_string(),
-    r#"`Again` is `unit` through an alias, and an `Option` wraps it: `{"option": "unit"}` is not allowed (spec 12.1)"#
+    r#"`Again` is `unit`, and an `Option` wraps it: `{"option": "unit"}` is not allowed (spec 12.1)"#
   );
 }
 

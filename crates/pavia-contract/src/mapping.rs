@@ -131,7 +131,7 @@ impl<T: OptionValue> Contract for Option<T> {
 
   fn contract_type(table: &mut TypeTable) -> Type {
     let value = table.add::<T>();
-    table.record_wrapped(&value);
+    table.record_wrapped::<T>(&value);
     Type::Option(Box::new(value))
   }
 }

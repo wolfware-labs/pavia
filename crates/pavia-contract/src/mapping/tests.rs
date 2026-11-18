@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap};
 use serde_json::json;
 
 use crate::schema::{Primitive, Type};
-use crate::{Bytes, Contract, Timestamp, TypeTable, Uuid};
+use crate::{Bytes, Contract, OptionValue, Timestamp, TypeError, TypeTable, Uuid};
 
 fn json_of<T: Contract>() -> serde_json::Value {
   let mut table = TypeTable::new();
@@ -74,4 +74,27 @@ fn names_arguments_by_primitive_or_composite() {
 #[test]
 fn maps_the_unit_primitive_to_unit() {
   assert_eq!(TypeTable::new().add::<()>(), Type::Primitive(Primitive::Unit));
+}
+
+struct HandUnit;
+
+impl Contract for HandUnit {
+  fn name() -> String {
+    "HandUnit".into()
+  }
+
+  fn contract_type(_: &mut TypeTable) -> Type {
+    Primitive::Unit.into()
+  }
+}
+
+impl OptionValue for HandUnit {}
+
+#[test]
+fn reports_an_option_of_a_hand_written_unit() {
+  let mut table = TypeTable::new();
+  table.add::<Option<HandUnit>>();
+  table.add::<Option<Vec<HandUnit>>>();
+
+  assert_eq!(table.finish(), Err(vec![TypeError::OptionOfUnit { name: "HandUnit".into() }]));
 }

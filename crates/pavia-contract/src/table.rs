@@ -84,11 +84,16 @@ impl TypeTable {
     Type::Ref(name)
   }
 
-  /// Records that an `Option` wraps `value`, so that [`TypeTable::finish`] can check that it is not `unit`
-  /// through aliases.
-  pub(crate) fn record_wrapped(&mut self, value: &Type) {
-    if let Type::Ref(name) = value {
-      self.wrapped.insert(name.clone());
+  /// Records that an `Option` wraps `value`, the contract type of `T`. A `unit` value is reported at once,
+  /// for a hand-written [`Contract`] impl that also implements [`OptionValue`](crate::OptionValue); a named
+  /// one is checked by [`TypeTable::finish`], once every alias is defined.
+  pub(crate) fn record_wrapped<T: Contract>(&mut self, value: &Type) {
+    match value {
+      Type::Primitive(Primitive::Unit) => self.report(TypeError::OptionOfUnit { name: T::name() }),
+      Type::Ref(name) => {
+        self.wrapped.insert(name.clone());
+      }
+      _ => {}
     }
   }
 
@@ -98,7 +103,7 @@ impl TypeTable {
   ///
   /// [`TypeError::Collision`] when two Rust types with the same name define different types, or a user
   /// type takes a generated name, [`TypeError::InvalidName`] for a name outside the grammar of §12.2,
-  /// [`TypeError::OptionOfUnit`] for an `Option` of a named type that is `unit` through aliases, and
+  /// [`TypeError::OptionOfUnit`] for an `Option` of a type that is `unit`, directly or through aliases, and
   /// [`TypeError::AliasCycle`] for an alias that leads back to itself through aliases only. The last two
   /// are not checked through a name with a collision, whose types the table cannot tell apart; they show
   /// once the collision is fixed.
@@ -192,13 +197,11 @@ pub enum TypeError {
     /// The name both types have.
     name: String,
   },
-  /// An `Option` wraps a named type that is `unit` through aliases, such as `struct Nothing(())`, which
-  /// would be `{"option": "unit"}` (§12.1).
-  #[error(
-    "`{name}` is `unit` through an alias, and an `Option` wraps it: `{{\"option\": \"unit\"}}` is not allowed (spec 12.1)"
-  )]
+  /// An `Option` wraps a type that is `unit`: through aliases, such as `struct Nothing(())`, or directly,
+  /// from a hand-written [`Contract`] impl. It would be `{"option": "unit"}` (§12.1).
+  #[error("`{name}` is `unit`, and an `Option` wraps it: `{{\"option\": \"unit\"}}` is not allowed (spec 12.1)")]
   OptionOfUnit {
-    /// The name of the alias.
+    /// The name of the type.
     name: String,
   },
   /// An alias that leads back to itself through aliases only, such as `struct Left(Box<Right>)` with
