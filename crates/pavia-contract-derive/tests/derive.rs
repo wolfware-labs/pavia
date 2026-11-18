@@ -349,12 +349,24 @@ fn maps_aliases_that_recurse_through_an_option() {
   table.add::<Chain>();
   table.add::<Doc>();
   table.add::<Ping>();
-  table.add::<Option<Left>>();
   let types = types(table);
 
   assert_eq!(types["Chain"], json!({"alias": {"option": {"ref": "Chain"}}}));
   assert_eq!(types["Doc"], json!({"alias": {"map": {"option": {"ref": "Doc"}}}}));
   assert_eq!(types["Ping"], json!({"alias": {"option": {"ref": "Pong"}}}));
   assert_eq!(types["Pong"], json!({"alias": {"list": {"option": {"ref": "Ping"}}}}));
-  assert_eq!(types["Left"], json!({"alias": {"ref": "Right"}}));
+}
+
+#[test]
+fn reports_aliases_that_lead_back_to_themselves() {
+  let mut table = TypeTable::new();
+  table.add::<Option<Left>>();
+
+  assert_eq!(
+    table.finish().unwrap_err(),
+    [
+      TypeError::AliasCycle { name: "Left".into() },
+      TypeError::AliasCycle { name: "Right".into() },
+    ]
+  );
 }

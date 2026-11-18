@@ -193,10 +193,14 @@ fn accepts_an_alias_of_unit_outside_an_option() {
 }
 
 #[test]
-fn accepts_an_option_of_an_alias_that_refers_to_itself() {
+fn reports_an_alias_that_refers_to_itself() {
   let mut table = TypeTable::new();
   table.add::<Option<Cycle>>();
 
-  let types = table.finish().unwrap();
-  assert_eq!(types["Cycle"], Definition::Alias(Type::Ref("Cycle".into())));
+  let errors = table.finish().unwrap_err();
+  assert_eq!(errors, [TypeError::AliasCycle { name: "Cycle".into() }]);
+  assert_eq!(
+    errors[0].to_string(),
+    "`Cycle` leads back to itself through aliases only, so the type has no value"
+  );
 }

@@ -78,8 +78,9 @@ impl TypeTable {
   /// # Errors
   ///
   /// [`TypeError::Collision`] when two Rust types with the same name define different types,
-  /// [`TypeError::InvalidName`] for a name outside the grammar of §12.2, and [`TypeError::OptionOfUnit`]
-  /// for an `Option` of a named type that is `unit` through aliases.
+  /// [`TypeError::InvalidName`] for a name outside the grammar of §12.2, [`TypeError::OptionOfUnit`] for
+  /// an `Option` of a named type that is `unit` through aliases, and [`TypeError::AliasCycle`] for an alias
+  /// that leads back to itself through aliases only.
   pub fn finish(mut self) -> Result<BTreeMap<String, Definition>, Vec<TypeError>> {
     for (name, definition) in std::mem::take(&mut self.shared) {
       if self.definitions.get(&name) != Some(&definition) {
@@ -87,9 +88,21 @@ impl TypeTable {
       }
     }
     for name in std::mem::take(&mut self.wrapped) {
-      if self.aliases_unit(&name) {
+      if matches!(
+        self.follow(&name),
+        Chain::Ends(Some(Definition::Alias(Type::Primitive(Primitive::Unit))))
+      ) {
         self.report(TypeError::OptionOfUnit { name });
       }
+    }
+    let cycles: Vec<String> = self
+      .definitions
+      .keys()
+      .filter(|name| matches!(self.follow(name), Chain::Loops))
+      .cloned()
+      .collect();
+    for name in cycles {
+      self.report(TypeError::AliasCycle { name });
     }
     if self.errors.is_empty() {
       Ok(self.definitions)
@@ -98,17 +111,16 @@ impl TypeTable {
     }
   }
 
-  fn aliases_unit(&self, name: &str) -> bool {
+  fn follow<'a>(&'a self, name: &'a str) -> Chain<'a> {
     let mut visited = BTreeSet::new();
     let mut name = name;
     while visited.insert(name) {
       match self.definitions.get(name) {
-        Some(Definition::Alias(Type::Primitive(Primitive::Unit))) => return true,
         Some(Definition::Alias(Type::Ref(target))) => name = target,
-        _ => return false,
+        definition => return Chain::Ends(definition),
       }
     }
-    false
+    Chain::Loops
   }
 
   fn report(&mut self, error: TypeError) {
@@ -116,6 +128,14 @@ impl TypeTable {
       self.errors.push(error);
     }
   }
+}
+
+/// Where a chain of `Alias(Ref)` definitions leads.
+enum Chain<'a> {
+  /// To a definition that is not an alias of a reference.
+  Ends(Option<&'a Definition>),
+  /// Back to a name it passed, so the type has no value.
+  Loops,
 }
 
 /// What keeps the collected types from being a valid `types` table.
@@ -136,6 +156,13 @@ pub enum TypeError {
   )]
   OptionOfUnit {
     /// The name of the alias.
+    name: String,
+  },
+  /// An alias that leads back to itself through aliases only, such as `struct Left(Box<Right>)` with
+  /// `struct Right(Box<Left>)`: the type has no value, and no codec or generated type can hold it.
+  #[error("`{name}` leads back to itself through aliases only, so the type has no value")]
+  AliasCycle {
+    /// The name of an alias on the cycle, or leading to it.
     name: String,
   },
   /// A name outside `[A-Za-z_][A-Za-z0-9_]*` (§12.2).
