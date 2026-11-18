@@ -16,6 +16,18 @@ impl<const ID: u8> Contract for Named<ID> {
   }
 }
 
+struct Instance;
+
+impl Contract for Instance {
+  fn name() -> String {
+    "Shared".into()
+  }
+
+  fn contract_type(table: &mut TypeTable) -> Type {
+    table.define_instance::<Self>(|_| Definition::Alias(Primitive::U8.into()))
+  }
+}
+
 struct Built;
 
 thread_local! {
@@ -127,6 +139,15 @@ fn shares_a_name_between_types_with_one_definition() {
 
   let types = table.finish().unwrap();
   assert_eq!(types["Shared"], Definition::Alias(Primitive::U8.into()));
+}
+
+#[test]
+fn reports_a_user_type_with_a_generated_name_even_when_both_are_equal() {
+  let mut table = TypeTable::new();
+  table.add::<Named<0>>();
+  table.add::<Instance>();
+
+  assert_eq!(table.finish(), Err(vec![TypeError::Collision { name: "Shared".into() }]));
 }
 
 #[test]

@@ -59,6 +59,11 @@ pub fn contract(input: &DeriveInput) -> syn::Result<TokenStream> {
   let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
   let ident = &input.ident;
   let type_name = monomorphized(&name, &arguments);
+  let define = if arguments.is_empty() {
+    quote!(define)
+  } else {
+    quote!(define_instance)
+  };
 
   Ok(quote! {
     #[automatically_derived]
@@ -68,7 +73,7 @@ pub fn contract(input: &DeriveInput) -> syn::Result<TokenStream> {
       }
 
       fn contract_type(table: &mut ::pavia_contract::TypeTable) -> ::pavia_contract::schema::Type {
-        table.define::<Self>(|#[allow(unused_variables)] table| #definition)
+        table.#define::<Self>(|#[allow(unused_variables)] table| #definition)
       }
     }
 

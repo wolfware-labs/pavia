@@ -92,6 +92,13 @@ struct Pair(u32, String);
 struct UnitFirst((), u32);
 
 #[derive(Contract)]
+#[pavia(rename = "Page_Message")]
+struct SamePage {
+  items: Vec<Message>,
+  next: Option<String>,
+}
+
+#[derive(Contract)]
 struct Nothing(());
 
 #[derive(Contract)]
@@ -228,6 +235,20 @@ fn reports_a_generated_name_taken_by_a_user_type() {
   assert_eq!(
     table.finish().unwrap_err(),
     vec![TypeError::Collision {
+      name: "Page_Message".into()
+    }]
+  );
+}
+
+#[test]
+fn reports_a_user_type_with_the_fields_of_the_instantiation_it_is_named_after() {
+  let mut table = TypeTable::new();
+  table.add::<SamePage>();
+  table.add::<Page<Message>>();
+
+  assert_eq!(
+    table.finish().unwrap_err(),
+    [TypeError::Collision {
       name: "Page_Message".into()
     }]
   );

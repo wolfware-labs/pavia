@@ -22,7 +22,7 @@ use crate::schema::{Definition, Primitive, Type};
 #[derive(Debug, Default)]
 pub struct TypeTable {
   seen: BTreeSet<TypeId>,
-  names: BTreeSet<String>,
+  generated: BTreeMap<String, bool>,
   definitions: BTreeMap<String, Definition>,
   shared: Vec<(String, Definition)>,
   wrapped: BTreeSet<String>,
@@ -45,22 +45,39 @@ impl TypeTable {
   ///
   /// `build` runs once per type, after the name is taken, so a type that refers to itself gets a
   /// reference instead of recursing. Several Rust types can share a name when they define the same type,
-  /// as `Page<Box<Message>>` and `Page<Message>` do; [`TypeTable::finish`] reports a name whose types
-  /// differ.
+  /// as `Box<Message>` and `Message` do; [`TypeTable::finish`] reports a name whose types differ.
   pub fn define<T: Contract>(&mut self, build: impl FnOnce(&mut Self) -> Definition) -> Type {
+    self.define_named::<T>(false, build)
+  }
+
+  /// As [`TypeTable::define`], for an instantiation of a generic type, whose name is monomorphized
+  /// (§12.1): `Page<Message>` is `Page_Message`.
+  ///
+  /// A generated name that a type defined with [`TypeTable::define`] also takes is a collision, even when
+  /// both define the same type.
+  pub fn define_instance<T: Contract>(&mut self, build: impl FnOnce(&mut Self) -> Definition) -> Type {
+    self.define_named::<T>(true, build)
+  }
+
+  fn define_named<T: Contract>(&mut self, generated: bool, build: impl FnOnce(&mut Self) -> Definition) -> Type {
     let name = T::name();
     if !self.seen.insert(TypeId::of::<T>()) {
       return Type::Ref(name);
     }
-    if self.names.insert(name.clone()) {
-      if !name::is_valid(&name) {
-        self.report(TypeError::InvalidName { name: name.clone() });
+    match self.generated.get(&name) {
+      None => {
+        self.generated.insert(name.clone(), generated);
+        if !name::is_valid(&name) {
+          self.report(TypeError::InvalidName { name: name.clone() });
+        }
+        let definition = build(self);
+        self.definitions.insert(name.clone(), definition);
       }
-      let definition = build(self);
-      self.definitions.insert(name.clone(), definition);
-    } else {
-      let definition = build(self);
-      self.shared.push((name.clone(), definition));
+      Some(&first) if first == generated => {
+        let definition = build(self);
+        self.shared.push((name.clone(), definition));
+      }
+      Some(_) => self.report(TypeError::Collision { name: name.clone() }),
     }
     Type::Ref(name)
   }
@@ -77,7 +94,8 @@ impl TypeTable {
   ///
   /// # Errors
   ///
-  /// [`TypeError::Collision`] when two Rust types with the same name define different types,
+  /// [`TypeError::Collision`] when two Rust types with the same name define different types, or a user
+  /// type takes a generated name,
   /// [`TypeError::InvalidName`] for a name outside the grammar of §12.2, [`TypeError::OptionOfUnit`] for
   /// an `Option` of a named type that is `unit` through aliases, and [`TypeError::AliasCycle`] for an alias
   /// that leads back to itself through aliases only.
@@ -142,8 +160,8 @@ enum Chain<'a> {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum TypeError {
-  /// Two Rust types have the same name and define different types, such as a user type `Page_Message`
-  /// and the instantiation `Page<Message>` (§12.1).
+  /// Two Rust types have the same name and define different types, or a user type such as `Page_Message`
+  /// takes the generated name of an instantiation such as `Page<Message>` (§12.1).
   #[error("two types are named `{name}` (spec 12.1)")]
   Collision {
     /// The name both types have.

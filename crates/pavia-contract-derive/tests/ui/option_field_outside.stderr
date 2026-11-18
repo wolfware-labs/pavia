@@ -1,0 +1,28 @@
+error[E0277]: the trait bound `Nickname: pavia_contract::mapping::sealed::Sealed` is not satisfied
+ --> tests/ui/option_field_outside.rs:5:22
+  |
+5 | impl OptionField for Nickname {}
+  |                      ^^^^^^^^ unsatisfied trait bound
+  |
+help: the trait `pavia_contract::mapping::sealed::Sealed` is not implemented for `Nickname`
+ --> tests/ui/option_field_outside.rs:3:1
+  |
+3 | struct Nickname;
+  | ^^^^^^^^^^^^^^^
+help: the following other types implement trait `pavia_contract::mapping::sealed::Sealed`
+ --> $WORKSPACE/crates/pavia-contract/src/mapping.rs
+  |
+  |   impl Sealed for String {}
+  |   ^^^^^^^^^^^^^^^^^^^^^^ `std::string::String`
+  |
+  |   impl<T> Sealed for Option<T> {}
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `std::option::Option<T>`
+note: required by a bound in `OptionField`
+ --> $WORKSPACE/crates/pavia-contract/src/mapping.rs
+  |
+  | pub trait OptionField: sealed::Sealed {}
+  |                        ^^^^^^^^^^^^^^ required by this bound in `OptionField`
+  = note: `OptionField` is a "sealed trait", because to implement it you also need to implement `pavia_contract::mapping::sealed::Sealed`, which is not accessible; this is usually done to force you to use one of the provided types that already implement it
+  = help: the following types implement the trait:
+            std::string::String
+            std::option::Option<T>

@@ -66,7 +66,7 @@ impl MapKey for String {}
   message = "`#[pavia(optional)]` needs an `Option` field, and `{Self}` is not one (spec 12.1)",
   label = "not an `Option`"
 )]
-pub trait OptionField {}
+pub trait OptionField: sealed::Sealed {}
 
 impl<T> OptionField for Option<T> {}
 
@@ -74,6 +74,8 @@ mod sealed {
   pub trait Sealed {}
 
   impl Sealed for String {}
+
+  impl<T> Sealed for Option<T> {}
 }
 
 macro_rules! primitives {
