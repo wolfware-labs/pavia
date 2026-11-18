@@ -78,7 +78,8 @@ impl Primitive {
 pub enum Type {
   /// A primitive: `"u32"`, `"string"`.
   Primitive(Primitive),
-  /// `{"option": T}`: `T`, or absent. `T` is never `unit`.
+  /// `{"option": T}`: `T`, or absent. `T` is never `unit` (§12.1); the `Option<T>` mapping checks it, and
+  /// a type built by hand is checked when the manifest is validated (#67).
   Option(Box<Type>),
   /// `{"list": T}`.
   List(Box<Type>),

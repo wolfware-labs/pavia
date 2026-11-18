@@ -84,17 +84,19 @@ impl TypeTable {
     Type::Ref(name)
   }
 
-  /// Records that an `Option` wraps `value`, the contract type of `T`. A `unit` value is reported at once,
-  /// for a hand-written [`Contract`] impl that also implements [`OptionValue`](crate::OptionValue); a named
-  /// one is checked by [`TypeTable::finish`], once every alias is defined.
-  pub(crate) fn record_wrapped<T: Contract>(&mut self, value: &Type) {
-    match value {
+  /// As [`TypeTable::add`], for the value an `Option` wraps. A `unit` value is reported at once, for a
+  /// hand-written [`Contract`] impl that also implements [`OptionValue`](crate::OptionValue); a named one
+  /// is checked by [`TypeTable::finish`], once every alias is defined.
+  pub(crate) fn add_wrapped<T: Contract>(&mut self) -> Type {
+    let value = self.add::<T>();
+    match &value {
       Type::Primitive(Primitive::Unit) => self.report(TypeError::OptionOfUnit { name: T::name() }),
       Type::Ref(name) => {
         self.wrapped.insert(name.clone());
       }
       _ => {}
     }
+    value
   }
 
   /// The named types by name, or every error found while collecting them.

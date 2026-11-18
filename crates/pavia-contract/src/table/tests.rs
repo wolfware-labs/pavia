@@ -194,6 +194,20 @@ impl Contract for Again {
 
 impl OptionValue for Again {}
 
+struct HandUnit;
+
+impl Contract for HandUnit {
+  fn name() -> String {
+    "HandUnit".into()
+  }
+
+  fn contract_type(_: &mut TypeTable) -> Type {
+    Primitive::Unit.into()
+  }
+}
+
+impl OptionValue for HandUnit {}
+
 struct Cycle;
 
 impl Contract for Cycle {
@@ -377,6 +391,15 @@ fn reports_an_option_of_a_type_that_is_unit_through_aliases() {
       TypeError::OptionOfUnit { name: "Nothing".into() },
     ])
   );
+}
+
+#[test]
+fn reports_an_option_of_a_hand_written_unit() {
+  let mut table = TypeTable::new();
+  table.add::<Option<HandUnit>>();
+  table.add::<Option<Vec<HandUnit>>>();
+
+  assert_eq!(table.finish(), Err(vec![TypeError::OptionOfUnit { name: "HandUnit".into() }]));
 }
 
 #[test]
