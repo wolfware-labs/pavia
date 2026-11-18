@@ -22,7 +22,7 @@ use crate::schema::{Definition, Primitive, Type};
 #[derive(Debug, Default)]
 pub struct TypeTable {
   seen: BTreeSet<TypeId>,
-  generated: BTreeMap<String, bool>,
+  kinds: BTreeMap<String, NameKind>,
   definitions: BTreeMap<String, Definition>,
   shared: Vec<(String, Definition)>,
   wrapped: BTreeSet<String>,
@@ -45,35 +45,37 @@ impl TypeTable {
   ///
   /// `build` runs once per type, after the name is taken, so a type that refers to itself gets a
   /// reference instead of recursing. Several Rust types can share a name when they define the same type,
-  /// as `Box<Message>` and `Message` do; [`TypeTable::finish`] reports a name whose types differ.
+  /// such as two structs with the same fields renamed to one name; [`TypeTable::finish`] reports a name
+  /// whose types differ.
   pub fn define<T: Contract>(&mut self, build: impl FnOnce(&mut Self) -> Definition) -> Type {
-    self.define_named::<T>(false, build)
+    self.define_as::<T>(NameKind::UserDefined, build)
   }
 
   /// As [`TypeTable::define`], for an instantiation of a generic type, whose name is monomorphized
   /// (§12.1): `Page<Message>` is `Page_Message`.
   ///
-  /// A generated name that a type defined with [`TypeTable::define`] also takes is a collision, even when
-  /// both define the same type.
+  /// Instantiations share a name when they define the same type, as `Page<Box<Message>>` and
+  /// `Page<Message>` do. A generated name that a type defined with [`TypeTable::define`] also takes is a
+  /// collision, even when both define the same type.
   pub fn define_instance<T: Contract>(&mut self, build: impl FnOnce(&mut Self) -> Definition) -> Type {
-    self.define_named::<T>(true, build)
+    self.define_as::<T>(NameKind::Generated, build)
   }
 
-  fn define_named<T: Contract>(&mut self, generated: bool, build: impl FnOnce(&mut Self) -> Definition) -> Type {
+  fn define_as<T: Contract>(&mut self, kind: NameKind, build: impl FnOnce(&mut Self) -> Definition) -> Type {
     let name = T::name();
     if !self.seen.insert(TypeId::of::<T>()) {
       return Type::Ref(name);
     }
-    match self.generated.get(&name) {
+    match self.kinds.get(&name) {
       None => {
-        self.generated.insert(name.clone(), generated);
+        self.kinds.insert(name.clone(), kind);
         if !name::is_valid(&name) {
           self.report(TypeError::InvalidName { name: name.clone() });
         }
         let definition = build(self);
         self.definitions.insert(name.clone(), definition);
       }
-      Some(&first) if first == generated => {
+      Some(&first) if first == kind => {
         let definition = build(self);
         self.shared.push((name.clone(), definition));
       }
@@ -95,10 +97,9 @@ impl TypeTable {
   /// # Errors
   ///
   /// [`TypeError::Collision`] when two Rust types with the same name define different types, or a user
-  /// type takes a generated name,
-  /// [`TypeError::InvalidName`] for a name outside the grammar of §12.2, [`TypeError::OptionOfUnit`] for
-  /// an `Option` of a named type that is `unit` through aliases, and [`TypeError::AliasCycle`] for an alias
-  /// that leads back to itself through aliases only.
+  /// type takes a generated name, [`TypeError::InvalidName`] for a name outside the grammar of §12.2,
+  /// [`TypeError::OptionOfUnit`] for an `Option` of a named type that is `unit` through aliases, and
+  /// [`TypeError::AliasCycle`] for an alias that leads back to itself through aliases only.
   pub fn finish(mut self) -> Result<BTreeMap<String, Definition>, Vec<TypeError>> {
     for (name, definition) in std::mem::take(&mut self.shared) {
       if self.definitions.get(&name) != Some(&definition) {
@@ -146,6 +147,15 @@ impl TypeTable {
       self.errors.push(error);
     }
   }
+}
+
+/// Where a name in the table comes from (§12.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NameKind {
+  /// The name of a type the user defined, after any rename.
+  UserDefined,
+  /// The monomorphized name of a generic instantiation.
+  Generated,
 }
 
 /// Where a chain of `Alias(Ref)` definitions leads.

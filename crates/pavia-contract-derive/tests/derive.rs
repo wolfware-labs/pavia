@@ -248,7 +248,7 @@ fn reports_a_user_type_with_the_fields_of_the_instantiation_it_is_named_after() 
 
   assert_eq!(
     table.finish().unwrap_err(),
-    [TypeError::Collision {
+    vec![TypeError::Collision {
       name: "Page_Message".into()
     }]
   );
