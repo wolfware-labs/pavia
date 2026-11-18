@@ -55,6 +55,14 @@ pub fn contract(input: &DeriveInput) -> syn::Result<TokenStream> {
     }
   }
   let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
+  let option_value_where = alias_target(&input.data).map(|target| {
+    let mut clause = where_clause.cloned().unwrap_or_else(|| parse_quote!(where));
+    clause
+      .predicates
+      .push(parse_quote!(for<'pavia> #target: ::pavia_contract::OptionValue));
+    clause
+  });
+  let option_value_where = option_value_where.as_ref().or(where_clause);
   let ident = &input.ident;
   let type_name = monomorphized(&name, &arguments);
 
@@ -71,8 +79,22 @@ pub fn contract(input: &DeriveInput) -> syn::Result<TokenStream> {
     }
 
     #[automatically_derived]
-    impl #impl_generics ::pavia_contract::OptionValue for #ident #type_generics #where_clause {}
+    impl #impl_generics ::pavia_contract::OptionValue for #ident #type_generics #option_value_where {}
   })
+}
+
+/// The aliased type of a one-field tuple struct, which is an `Option` value only when its target is one:
+/// `struct Nothing(())` aliases `unit`, so `Option<Nothing>` would be `{"option": "unit"}` (§12.1). The bound
+/// is higher-ranked so that a target that is never an `Option` value fails where the alias is wrapped, not
+/// at the derive.
+fn alias_target(data: &Data) -> Option<&Type> {
+  match data {
+    Data::Struct(data) => match &data.fields {
+      Fields::Unnamed(fields) if fields.unnamed.len() == 1 => fields.unnamed.first().map(|field| &field.ty),
+      _ => None,
+    },
+    _ => None,
+  }
 }
 
 fn monomorphized(name: &str, arguments: &[Ident]) -> TokenStream {

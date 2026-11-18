@@ -1,5 +1,7 @@
 #![expect(dead_code, reason = "the types exist for their derived impls, which never read a field")]
 
+use std::collections::{BTreeMap, HashMap};
+
 use pavia_contract::schema::{Definition, Type};
 use pavia_contract::{Bytes, Contract, Timestamp, TypeError, TypeTable, Uuid};
 use serde_json::{Value, json};
@@ -167,6 +169,25 @@ fn defines_each_generic_instantiation_as_its_own_type() {
   assert_eq!(
     types["Page_List_Message"]["struct"]["fields"][0]["type"],
     json!({"list": {"list": {"ref": "Message"}}})
+  );
+}
+
+#[test]
+fn shares_a_name_between_rust_types_with_one_contract_type() {
+  let mut table = TypeTable::new();
+  table.add::<Page<Box<Message>>>();
+  table.add::<Page<Message>>();
+  table.add::<Page<HashMap<String, u32>>>();
+  table.add::<Page<BTreeMap<String, u32>>>();
+  let types = types(table);
+
+  assert_eq!(
+    types["Page_Message"]["struct"]["fields"][0]["type"],
+    json!({"list": {"ref": "Message"}})
+  );
+  assert_eq!(
+    types["Page_Map_u32"]["struct"]["fields"][0]["type"],
+    json!({"list": {"map": "u32"}})
   );
 }
 

@@ -1,8 +1,8 @@
 //! The type table: the named types a contract uses, collected from the Rust types that map to them.
 
 use std::any::TypeId;
-use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::Contract;
 use crate::name;
@@ -24,6 +24,8 @@ use crate::schema::{Definition, Type};
 pub struct TypeTable {
   owners: BTreeMap<String, TypeId>,
   definitions: BTreeMap<String, Definition>,
+  sharers: BTreeSet<TypeId>,
+  shared: Vec<(String, Definition)>,
   errors: Vec<TypeError>,
 }
 
@@ -42,14 +44,16 @@ impl TypeTable {
   /// A reference to `T`'s named type, defined by `build` the first time `T` is added.
   ///
   /// `build` runs once per type, after the name is taken, so a type that refers to itself gets a
-  /// reference instead of recursing. A second Rust type with the same name is reported by
-  /// [`TypeTable::finish`].
+  /// reference instead of recursing. Several Rust types can share a name when they define the same type,
+  /// as `Page<Box<Message>>` and `Page<Message>` do; [`TypeTable::finish`] reports a name whose types
+  /// differ.
   pub fn define<T: Contract>(&mut self, build: impl FnOnce(&mut Self) -> Definition) -> Type {
     let name = T::name();
     match self.owners.entry(name.clone()) {
       Entry::Occupied(owner) => {
-        if *owner.get() != TypeId::of::<T>() {
-          self.report(TypeError::Collision { name: name.clone() });
+        if *owner.get() != TypeId::of::<T>() && self.sharers.insert(TypeId::of::<T>()) {
+          let definition = build(self);
+          self.shared.push((name.clone(), definition));
         }
       }
       Entry::Vacant(owner) => {
@@ -68,9 +72,14 @@ impl TypeTable {
   ///
   /// # Errors
   ///
-  /// [`TypeError::Collision`] when two Rust types have the same name, and [`TypeError::InvalidName`] for a
-  /// name outside the grammar of §12.2.
-  pub fn finish(self) -> Result<BTreeMap<String, Definition>, Vec<TypeError>> {
+  /// [`TypeError::Collision`] when two Rust types with the same name define different types, and
+  /// [`TypeError::InvalidName`] for a name outside the grammar of §12.2.
+  pub fn finish(mut self) -> Result<BTreeMap<String, Definition>, Vec<TypeError>> {
+    for (name, definition) in std::mem::take(&mut self.shared) {
+      if self.definitions.get(&name) != Some(&definition) {
+        self.report(TypeError::Collision { name });
+      }
+    }
     if self.errors.is_empty() {
       Ok(self.definitions)
     } else {
@@ -89,8 +98,8 @@ impl TypeTable {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum TypeError {
-  /// Two Rust types have the same name, such as a user type `Page_Message` and the instantiation
-  /// `Page<Message>` (§12.1).
+  /// Two Rust types have the same name and define different types, such as a user type `Page_Message`
+  /// and the instantiation `Page<Message>` (§12.1).
   #[error("two types are named `{name}` (spec 12.1)")]
   Collision {
     /// The name both types have.

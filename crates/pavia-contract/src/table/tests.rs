@@ -12,7 +12,7 @@ impl<const ID: u8> Contract for Named<ID> {
   }
 
   fn contract_type(table: &mut TypeTable) -> Type {
-    table.define::<Self>(|_| Definition::Alias(Primitive::U8.into()))
+    table.define::<Self>(|_| Definition::Alias(if ID == 1 { Primitive::U16 } else { Primitive::U8 }.into()))
   }
 }
 
@@ -42,6 +42,16 @@ fn reports_each_collision_once() {
   table.add::<Named<0>>();
 
   assert_eq!(table.finish(), Err(vec![TypeError::Collision { name: "Shared".into() }]));
+}
+
+#[test]
+fn shares_a_name_between_types_with_one_definition() {
+  let mut table = TypeTable::new();
+  table.add::<Named<0>>();
+  table.add::<Named<2>>();
+
+  let types = table.finish().unwrap();
+  assert_eq!(types["Shared"], Definition::Alias(Primitive::U8.into()));
 }
 
 #[test]

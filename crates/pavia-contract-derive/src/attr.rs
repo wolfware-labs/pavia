@@ -1,6 +1,7 @@
 //! The `#[pavia(...)]` attributes on a type, a field or a variant.
 
 use proc_macro2::Span;
+use syn::meta::ParseNestedMeta;
 use syn::spanned::Spanned;
 use syn::{Attribute, LitStr};
 
@@ -26,13 +27,16 @@ impl Attrs {
       attr.parse_nested_meta(|meta| {
         if meta.path.is_ident("rename") {
           let value: LitStr = meta.value()?.parse()?;
+          once(parsed.rename.is_some(), &meta)?;
           parsed.rename = Some(Rename {
             value: value.value(),
             span: value.span(),
           });
         } else if meta.path.is_ident("optional") {
+          once(parsed.optional.is_some(), &meta)?;
           parsed.optional = Some(meta.path.span());
         } else if meta.path.is_ident("open") {
+          once(parsed.open.is_some(), &meta)?;
           parsed.open = Some(meta.path.span());
         } else {
           return Err(meta.error("unknown `pavia` attribute: expected `rename`, `optional` or `open`"));
@@ -54,6 +58,15 @@ impl Attrs {
   /// An error when `open` is present, which `what` does not take.
   pub fn refuse_open(&self, what: &str) -> syn::Result<()> {
     refuse(self.open, &format!("`open` applies to an enum, not to {what}"))
+  }
+}
+
+fn once(seen: bool, meta: &ParseNestedMeta<'_>) -> syn::Result<()> {
+  if seen {
+    let key = meta.path.get_ident().map(ToString::to_string).unwrap_or_default();
+    Err(meta.error(format!("`{key}` is given twice")))
+  } else {
+    Ok(())
   }
 }
 
