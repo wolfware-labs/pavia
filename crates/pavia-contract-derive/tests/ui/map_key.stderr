@@ -18,5 +18,7 @@ help: the trait `MapKey` is implemented for `std::string::String`
 note: required by a bound in `TypeTable::add`
  --> $WORKSPACE/crates/pavia-contract/src/table.rs
   |
+  | impl TypeTable {
+...
   |   pub fn add<T: Contract>(&mut self) -> Type {
   |                 ^^^^^^^^ required by this bound in `TypeTable::add`
