@@ -43,6 +43,44 @@ impl Contract for Leaky {
   }
 }
 
+struct UnitProbe;
+
+impl Contract for UnitProbe {
+  fn name() -> String {
+    "Probe".into()
+  }
+
+  fn contract_type(table: &mut TypeTable) -> Type {
+    table.define::<Self>(|_| Definition::Alias(Primitive::Unit.into()))
+  }
+}
+
+struct OptionProbe;
+
+impl Contract for OptionProbe {
+  fn name() -> String {
+    "Probe".into()
+  }
+
+  fn contract_type(table: &mut TypeTable) -> Type {
+    table.define_instance::<Self>(|table| Definition::Alias(table.add::<Option<Self>>()))
+  }
+}
+
+impl OptionValue for OptionProbe {}
+
+struct LoopProbe;
+
+impl Contract for LoopProbe {
+  fn name() -> String {
+    "Probe".into()
+  }
+
+  fn contract_type(table: &mut TypeTable) -> Type {
+    table.define_instance::<Self>(|table| Definition::Alias(table.add::<Self>()))
+  }
+}
+
 struct Built;
 
 thread_local! {
@@ -176,12 +214,31 @@ fn reports_the_errors_inside_a_colliding_type_in_either_order() {
   instance_first.add::<Named<0>>();
 
   for table in [user_first, instance_first] {
-    let errors = table.finish().unwrap_err();
-    assert_eq!(errors.len(), 2);
-    assert!(errors.contains(&TypeError::Collision { name: "Shared".into() }));
-    assert!(errors.contains(&TypeError::InvalidName {
-      name: "not-valid".into()
-    }));
+    assert_eq!(
+      table.finish(),
+      Err(vec![
+        TypeError::InvalidName {
+          name: "not-valid".into()
+        },
+        TypeError::Collision { name: "Shared".into() },
+      ])
+    );
+  }
+}
+
+#[test]
+fn checks_no_chain_through_a_collided_name_in_either_order() {
+  let mut user_first = TypeTable::new();
+  user_first.add::<UnitProbe>();
+  user_first.add::<OptionProbe>();
+  user_first.add::<LoopProbe>();
+  let mut instance_first = TypeTable::new();
+  instance_first.add::<LoopProbe>();
+  instance_first.add::<OptionProbe>();
+  instance_first.add::<UnitProbe>();
+
+  for table in [user_first, instance_first] {
+    assert_eq!(table.finish(), Err(vec![TypeError::Collision { name: "Probe".into() }]));
   }
 }
 

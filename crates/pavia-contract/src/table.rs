@@ -66,23 +66,20 @@ impl TypeTable {
     if !self.seen.insert(TypeId::of::<T>()) {
       return Type::Ref(name);
     }
-    match self.kinds.get(&name) {
+    let first = self.kinds.get(&name).copied();
+    if first.is_none() {
+      self.kinds.insert(name.clone(), kind);
+      if !name::is_valid(&name) {
+        self.report(TypeError::InvalidName { name: name.clone() });
+      }
+    }
+    let definition = build(self);
+    match first {
       None => {
-        self.kinds.insert(name.clone(), kind);
-        if !name::is_valid(&name) {
-          self.report(TypeError::InvalidName { name: name.clone() });
-        }
-        let definition = build(self);
         self.definitions.insert(name.clone(), definition);
       }
-      Some(&first) if first == kind => {
-        let definition = build(self);
-        self.shared.push((name.clone(), definition));
-      }
-      Some(_) => {
-        build(self);
-        self.report(TypeError::Collision { name: name.clone() });
-      }
+      Some(first) if first == kind => self.shared.push((name.clone(), definition)),
+      Some(_) => self.report(TypeError::Collision { name: name.clone() }),
     }
     Type::Ref(name)
   }
@@ -109,9 +106,17 @@ impl TypeTable {
         self.report(TypeError::Collision { name });
       }
     }
+    let collided: BTreeSet<String> = self
+      .errors
+      .iter()
+      .filter_map(|error| match error {
+        TypeError::Collision { name } => Some(name.clone()),
+        _ => None,
+      })
+      .collect();
     for name in std::mem::take(&mut self.wrapped) {
       if matches!(
-        self.follow(&name),
+        self.follow(&name, &collided),
         Chain::Ends(Some(Definition::Alias(Type::Primitive(Primitive::Unit))))
       ) {
         self.report(TypeError::OptionOfUnit { name });
@@ -120,7 +125,7 @@ impl TypeTable {
     let cycles: Vec<String> = self
       .definitions
       .keys()
-      .filter(|name| matches!(self.follow(name), Chain::Loops))
+      .filter(|name| matches!(self.follow(name, &collided), Chain::Loops))
       .cloned()
       .collect();
     for name in cycles {
@@ -133,10 +138,15 @@ impl TypeTable {
     }
   }
 
-  fn follow<'a>(&'a self, name: &'a str) -> Chain<'a> {
+  /// Where `name`'s chain of aliases leads. A chain through a name in `collided` ends there unknown: that
+  /// name has several definitions, and the table keeps only the first.
+  fn follow<'a>(&'a self, name: &'a str, collided: &BTreeSet<String>) -> Chain<'a> {
     let mut visited = BTreeSet::new();
     let mut name = name;
     while visited.insert(name) {
+      if collided.contains(name) {
+        return Chain::Ends(None);
+      }
       match self.definitions.get(name) {
         Some(Definition::Alias(Type::Ref(target))) => name = target,
         definition => return Chain::Ends(definition),
@@ -163,7 +173,7 @@ enum NameKind {
 
 /// Where a chain of `Alias(Ref)` definitions leads.
 enum Chain<'a> {
-  /// To a definition that is not an alias of a reference.
+  /// To a definition that is not an alias of a reference, or to a name whose definition is not known.
   Ends(Option<&'a Definition>),
   /// Back to a name it passed, never reaching a type.
   Loops,
