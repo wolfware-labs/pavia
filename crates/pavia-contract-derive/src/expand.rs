@@ -3,7 +3,8 @@
 //! Each field type is checked where its contract type is added, `table.add::<T>()`, spanned at the field,
 //! so an unsupported type (`HashMap<u32, T>`, `Option<()>`) fails there with the marker trait's message.
 //! A type parameter is bounded by `OptionValue`, so `Option<T>`, `Vec<T>` and `Box<T>` fields need no
-//! further bound; a recursive generic type would loop on a where clause per field.
+//! further bound; a recursive generic type would loop on a where clause per field. A one-field tuple struct
+//! is an `OptionValue` only when its field's type is one.
 
 use proc_macro2::{Span, TokenStream};
 use quote::{quote, quote_spanned};
@@ -55,14 +56,14 @@ pub fn contract(input: &DeriveInput) -> syn::Result<TokenStream> {
     }
   }
   let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
-  let option_value_where = alias_target(&input.data).map(|target| {
-    let mut clause = where_clause.cloned().unwrap_or_else(|| parse_quote!(where));
-    clause
+  let mut option_value_generics = generics.clone();
+  if let Some(target) = alias_target(&input.data) {
+    option_value_generics
+      .make_where_clause()
       .predicates
       .push(parse_quote!(for<'pavia> #target: ::pavia_contract::OptionValue));
-    clause
-  });
-  let option_value_where = option_value_where.as_ref().or(where_clause);
+  }
+  let option_value_where = &option_value_generics.where_clause;
   let ident = &input.ident;
   let type_name = monomorphized(&name, &arguments);
 

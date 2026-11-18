@@ -27,16 +27,16 @@ impl Attrs {
       attr.parse_nested_meta(|meta| {
         if meta.path.is_ident("rename") {
           let value: LitStr = meta.value()?.parse()?;
-          once(parsed.rename.is_some(), &meta)?;
+          refuse_repeated(parsed.rename.is_some(), &meta)?;
           parsed.rename = Some(Rename {
             value: value.value(),
             span: value.span(),
           });
         } else if meta.path.is_ident("optional") {
-          once(parsed.optional.is_some(), &meta)?;
+          refuse_repeated(parsed.optional.is_some(), &meta)?;
           parsed.optional = Some(meta.path.span());
         } else if meta.path.is_ident("open") {
-          once(parsed.open.is_some(), &meta)?;
+          refuse_repeated(parsed.open.is_some(), &meta)?;
           parsed.open = Some(meta.path.span());
         } else {
           return Err(meta.error("unknown `pavia` attribute: expected `rename`, `optional` or `open`"));
@@ -61,9 +61,9 @@ impl Attrs {
   }
 }
 
-fn once(seen: bool, meta: &ParseNestedMeta<'_>) -> syn::Result<()> {
+fn refuse_repeated(seen: bool, meta: &ParseNestedMeta<'_>) -> syn::Result<()> {
   if seen {
-    let key = meta.path.get_ident().map(ToString::to_string).unwrap_or_default();
+    let key = meta.path.require_ident()?;
     Err(meta.error(format!("`{key}` is given twice")))
   } else {
     Ok(())

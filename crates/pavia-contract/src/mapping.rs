@@ -39,8 +39,8 @@ pub trait Contract: 'static {
 /// (§12.1).
 ///
 /// It also bounds the type parameters of a derived generic type, whose fields may wrap them in an
-/// `Option`. `#[derive(Contract)]` implements it too; a hand-written [`Contract`] impl adds it the same
-/// way.
+/// `Option`. `#[derive(Contract)]` implements it too, for a one-field tuple struct only when the field's
+/// type is one; a hand-written [`Contract`] impl adds it the same way.
 #[diagnostic::on_unimplemented(
   message = "`{Self}` cannot be an `Option` value or a type argument of a derived contract type: \
              `{{\"option\": \"unit\"}}` is not allowed (spec 12.1)",

@@ -7,7 +7,7 @@
 //! - an enum is an `enum`: a unit variant has no type, a one-field variant that field's type, a tuple
 //!   variant a `tuple`, and a variant with named fields a `struct` written in place.
 //!
-//! Attributes, under `#[pavia(...)]`:
+//! Attributes, under `#[pavia(...)]`, each given at most once:
 //!
 //! - `rename = "name"` on the type, a field or a variant: the name in the manifest;
 //! - `optional` on a named field of type `Option<T>`: the key may be missing on the wire;
