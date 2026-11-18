@@ -2,7 +2,8 @@
 //!
 //! A Rust type with no contract equivalent has no impl, so using it fails to compile. The marker traits
 //! [`MapKey`] and [`OptionValue`] carry the message for the two shapes the spec rules out by name: a map
-//! whose keys are not strings, and `{"option": "unit"}`.
+//! whose keys are not strings, and `{"option": "unit"}`. An `Option` of a named type that is `unit` through
+//! aliases passes the marker trait, and [`TypeTable::finish`] reports it.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -128,7 +129,7 @@ impl<T: OptionValue> Contract for Option<T> {
 
   fn contract_type(table: &mut TypeTable) -> Type {
     let value = table.add::<T>();
-    table.wrapped(&value);
+    table.record_wrapped(&value);
     Type::Option(Box::new(value))
   }
 }

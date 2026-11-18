@@ -67,7 +67,7 @@ impl TypeTable {
 
   /// Records that an `Option` wraps `value`, so that [`TypeTable::finish`] can check that it is not `unit`
   /// through aliases.
-  pub(crate) fn wrapped(&mut self, value: &Type) {
+  pub(crate) fn record_wrapped(&mut self, value: &Type) {
     if let Type::Ref(name) = value {
       self.wrapped.insert(name.clone());
     }
@@ -77,9 +77,9 @@ impl TypeTable {
   ///
   /// # Errors
   ///
-  /// [`TypeError::Collision`] when two Rust types with the same name define different types, and
+  /// [`TypeError::Collision`] when two Rust types with the same name define different types,
   /// [`TypeError::InvalidName`] for a name outside the grammar of §12.2, and [`TypeError::OptionOfUnit`]
-  /// for an `Option` of a named type that aliases `unit`.
+  /// for an `Option` of a named type that is `unit` through aliases.
   pub fn finish(mut self) -> Result<BTreeMap<String, Definition>, Vec<TypeError>> {
     for (name, definition) in std::mem::take(&mut self.shared) {
       if self.definitions.get(&name) != Some(&definition) {

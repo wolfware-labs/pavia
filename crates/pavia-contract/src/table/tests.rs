@@ -49,6 +49,48 @@ impl Contract for Counter {
   }
 }
 
+struct Nothing;
+
+impl Contract for Nothing {
+  fn name() -> String {
+    "Nothing".into()
+  }
+
+  fn contract_type(table: &mut TypeTable) -> Type {
+    table.define::<Self>(|_| Definition::Alias(Primitive::Unit.into()))
+  }
+}
+
+impl OptionValue for Nothing {}
+
+struct Again;
+
+impl Contract for Again {
+  fn name() -> String {
+    "Again".into()
+  }
+
+  fn contract_type(table: &mut TypeTable) -> Type {
+    table.define::<Self>(|table| Definition::Alias(table.add::<Nothing>()))
+  }
+}
+
+impl OptionValue for Again {}
+
+struct Cycle;
+
+impl Contract for Cycle {
+  fn name() -> String {
+    "Cycle".into()
+  }
+
+  fn contract_type(table: &mut TypeTable) -> Type {
+    table.define::<Self>(|table| Definition::Alias(table.add::<Self>()))
+  }
+}
+
+impl OptionValue for Cycle {}
+
 #[test]
 fn starts_empty() {
   assert_eq!(TypeTable::new().finish(), Ok(BTreeMap::new()));
@@ -125,4 +167,36 @@ fn says_which_name_collides() {
     .to_string(),
     "two types are named `Page_Message` (spec 12.1)"
   );
+}
+
+#[test]
+fn reports_an_option_of_a_type_that_is_unit_through_aliases() {
+  let mut table = TypeTable::new();
+  table.add::<Option<Again>>();
+  table.add::<Option<Nothing>>();
+
+  assert_eq!(
+    table.finish(),
+    Err(vec![
+      TypeError::OptionOfUnit { name: "Again".into() },
+      TypeError::OptionOfUnit { name: "Nothing".into() },
+    ])
+  );
+}
+
+#[test]
+fn accepts_an_alias_of_unit_outside_an_option() {
+  let mut table = TypeTable::new();
+  table.add::<Again>();
+
+  assert_eq!(table.finish().unwrap().len(), 2);
+}
+
+#[test]
+fn accepts_an_option_of_an_alias_that_refers_to_itself() {
+  let mut table = TypeTable::new();
+  table.add::<Option<Cycle>>();
+
+  let types = table.finish().unwrap();
+  assert_eq!(types["Cycle"], Definition::Alias(Type::Ref("Cycle".into())));
 }
