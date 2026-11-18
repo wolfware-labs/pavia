@@ -3,8 +3,9 @@
 //! Each field type is checked where its contract type is added, `table.add::<T>()`, spanned at the field,
 //! so an unsupported type (`HashMap<u32, T>`, `Option<()>`) fails there with the marker trait's message.
 //! A type parameter is bounded by `OptionValue`, so `Option<T>`, `Vec<T>` and `Box<T>` fields need no
-//! further bound; a recursive generic type would loop on a where clause per field. A one-field tuple struct
-//! is an `OptionValue` only when its field's type is one.
+//! further bound; a recursive generic type would loop on a where clause per field. An alias of `unit`, such
+//! as `struct Nothing(())`, is an `OptionValue` too: a bound on the aliased type would loop on a recursive
+//! alias (`struct Chain(Option<Box<Chain>>)`), so `TypeTable::finish` reports an `Option` of it instead.
 
 use proc_macro2::{Span, TokenStream};
 use quote::{quote, quote_spanned};
@@ -56,14 +57,6 @@ pub fn contract(input: &DeriveInput) -> syn::Result<TokenStream> {
     }
   }
   let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
-  let mut option_value_generics = generics.clone();
-  if let Some(target) = alias_target(&input.data) {
-    option_value_generics
-      .make_where_clause()
-      .predicates
-      .push(parse_quote!(for<'pavia> #target: ::pavia_contract::OptionValue));
-  }
-  let option_value_where = &option_value_generics.where_clause;
   let ident = &input.ident;
   let type_name = monomorphized(&name, &arguments);
 
@@ -80,22 +73,8 @@ pub fn contract(input: &DeriveInput) -> syn::Result<TokenStream> {
     }
 
     #[automatically_derived]
-    impl #impl_generics ::pavia_contract::OptionValue for #ident #type_generics #option_value_where {}
+    impl #impl_generics ::pavia_contract::OptionValue for #ident #type_generics #where_clause {}
   })
-}
-
-/// The aliased type of a one-field tuple struct, which is an `Option` value only when its target is one:
-/// `struct Nothing(())` aliases `unit`, so `Option<Nothing>` would be `{"option": "unit"}` (§12.1). The bound
-/// is higher-ranked so that a target that is never an `Option` value fails where the alias is wrapped, not
-/// at the derive.
-fn alias_target(data: &Data) -> Option<&Type> {
-  match data {
-    Data::Struct(data) => match &data.fields {
-      Fields::Unnamed(fields) if fields.unnamed.len() == 1 => fields.unnamed.first().map(|field| &field.ty),
-      _ => None,
-    },
-    _ => None,
-  }
 }
 
 fn monomorphized(name: &str, arguments: &[Ident]) -> TokenStream {

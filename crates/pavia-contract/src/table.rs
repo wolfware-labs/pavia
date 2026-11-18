@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::Contract;
 use crate::name;
-use crate::schema::{Definition, Type};
+use crate::schema::{Definition, Primitive, Type};
 
 /// The named types collected so far, keyed by their manifest name (§12.2 `types`).
 ///
@@ -25,6 +25,7 @@ pub struct TypeTable {
   names: BTreeSet<String>,
   definitions: BTreeMap<String, Definition>,
   shared: Vec<(String, Definition)>,
+  wrapped: BTreeSet<String>,
   errors: Vec<TypeError>,
 }
 
@@ -64,16 +65,30 @@ impl TypeTable {
     Type::Ref(name)
   }
 
+  /// Records that an `Option` wraps `value`, so that [`TypeTable::finish`] can check that it is not `unit`
+  /// through aliases.
+  pub(crate) fn wrapped(&mut self, value: &Type) {
+    if let Type::Ref(name) = value {
+      self.wrapped.insert(name.clone());
+    }
+  }
+
   /// The named types by name, or every error found while collecting them.
   ///
   /// # Errors
   ///
   /// [`TypeError::Collision`] when two Rust types with the same name define different types, and
-  /// [`TypeError::InvalidName`] for a name outside the grammar of §12.2.
+  /// [`TypeError::InvalidName`] for a name outside the grammar of §12.2, and [`TypeError::OptionOfUnit`]
+  /// for an `Option` of a named type that aliases `unit`.
   pub fn finish(mut self) -> Result<BTreeMap<String, Definition>, Vec<TypeError>> {
     for (name, definition) in std::mem::take(&mut self.shared) {
       if self.definitions.get(&name) != Some(&definition) {
         self.report(TypeError::Collision { name });
+      }
+    }
+    for name in std::mem::take(&mut self.wrapped) {
+      if self.aliases_unit(&name) {
+        self.report(TypeError::OptionOfUnit { name });
       }
     }
     if self.errors.is_empty() {
@@ -81,6 +96,19 @@ impl TypeTable {
     } else {
       Err(self.errors)
     }
+  }
+
+  fn aliases_unit(&self, name: &str) -> bool {
+    let mut visited = BTreeSet::new();
+    let mut name = name;
+    while visited.insert(name) {
+      match self.definitions.get(name) {
+        Some(Definition::Alias(Type::Primitive(Primitive::Unit))) => return true,
+        Some(Definition::Alias(Type::Ref(target))) => name = target,
+        _ => return false,
+      }
+    }
+    false
   }
 
   fn report(&mut self, error: TypeError) {
@@ -99,6 +127,15 @@ pub enum TypeError {
   #[error("two types are named `{name}` (spec 12.1)")]
   Collision {
     /// The name both types have.
+    name: String,
+  },
+  /// An `Option` wraps a named type that is `unit` through aliases, such as `struct Nothing(())`, which
+  /// would be `{"option": "unit"}` (§12.1).
+  #[error(
+    "`{name}` is `unit` through an alias, and an `Option` wraps it: `{{\"option\": \"unit\"}}` is not allowed (spec 12.1)"
+  )]
+  OptionOfUnit {
+    /// The name of the alias.
     name: String,
   },
   /// A name outside `[A-Za-z_][A-Za-z0-9_]*` (§12.2).

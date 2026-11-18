@@ -39,8 +39,9 @@ pub trait Contract: 'static {
 /// (§12.1).
 ///
 /// It also bounds the type parameters of a derived generic type, whose fields may wrap them in an
-/// `Option`. `#[derive(Contract)]` implements it too, for a one-field tuple struct only when the field's
-/// type is one; a hand-written [`Contract`] impl adds it the same way.
+/// `Option`. `#[derive(Contract)]` implements it too; a hand-written [`Contract`] impl adds it the same way.
+/// A named type that is `unit` through aliases, such as `struct Nothing(())`, implements it as well, and
+/// [`TypeTable::finish`](crate::TypeTable::finish) reports an `Option` of it.
 #[diagnostic::on_unimplemented(
   message = "`{Self}` cannot be an `Option` value or a type argument of a derived contract type: \
              `{{\"option\": \"unit\"}}` is not allowed (spec 12.1)",
@@ -126,7 +127,9 @@ impl<T: OptionValue> Contract for Option<T> {
   }
 
   fn contract_type(table: &mut TypeTable) -> Type {
-    Type::Option(Box::new(table.add::<T>()))
+    let value = table.add::<T>();
+    table.wrapped(&value);
+    Type::Option(Box::new(value))
   }
 }
 

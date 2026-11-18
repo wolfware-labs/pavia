@@ -92,6 +92,30 @@ struct Pair(u32, String);
 struct UnitFirst((), u32);
 
 #[derive(Contract)]
+struct Nothing(());
+
+#[derive(Contract)]
+struct Again(Box<Nothing>);
+
+#[derive(Contract)]
+struct Chain(Option<Box<Chain>>);
+
+#[derive(Contract)]
+struct Doc(HashMap<String, Option<Box<Doc>>>);
+
+#[derive(Contract)]
+struct Ping(Option<Box<Pong>>);
+
+#[derive(Contract)]
+struct Pong(Vec<Option<Box<Ping>>>);
+
+#[derive(Contract)]
+struct Left(Box<Right>);
+
+#[derive(Contract)]
+struct Right(Box<Left>);
+
+#[derive(Contract)]
 struct Empty;
 
 #[derive(Contract)]
@@ -296,4 +320,41 @@ fn lets_option_wrap_a_tuple_struct_with_a_unit_field() {
   let types = types(table);
 
   assert_eq!(types["UnitFirst"], json!({"alias": {"tuple": ["unit", "u32"]}}));
+}
+
+#[test]
+fn refuses_an_option_of_an_alias_of_unit() {
+  let mut table = TypeTable::new();
+  table.add::<Nothing>();
+  table.add::<Option<Again>>();
+  table.add::<Option<Box<Nothing>>>();
+
+  let errors = table.finish().unwrap_err();
+  assert_eq!(
+    errors,
+    [
+      TypeError::OptionOfUnit { name: "Again".into() },
+      TypeError::OptionOfUnit { name: "Nothing".into() },
+    ]
+  );
+  assert_eq!(
+    errors[0].to_string(),
+    r#"`Again` is `unit` through an alias, and an `Option` wraps it: `{"option": "unit"}` is not allowed (spec 12.1)"#
+  );
+}
+
+#[test]
+fn maps_aliases_that_recurse_through_an_option() {
+  let mut table = TypeTable::new();
+  table.add::<Chain>();
+  table.add::<Doc>();
+  table.add::<Ping>();
+  table.add::<Option<Left>>();
+  let types = types(table);
+
+  assert_eq!(types["Chain"], json!({"alias": {"option": {"ref": "Chain"}}}));
+  assert_eq!(types["Doc"], json!({"alias": {"map": {"option": {"ref": "Doc"}}}}));
+  assert_eq!(types["Ping"], json!({"alias": {"option": {"ref": "Pong"}}}));
+  assert_eq!(types["Pong"], json!({"alias": {"list": {"option": {"ref": "Ping"}}}}));
+  assert_eq!(types["Left"], json!({"alias": {"ref": "Right"}}));
 }
