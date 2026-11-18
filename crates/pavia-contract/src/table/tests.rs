@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use super::{TypeError, TypeTable};
-use crate::Contract;
 use crate::schema::{Definition, Primitive, Type};
+use crate::{Contract, OptionValue};
 
 struct Named<const ID: u8>;
 
@@ -15,6 +15,27 @@ impl<const ID: u8> Contract for Named<ID> {
     table.define::<Self>(|_| Definition::Alias(if ID == 1 { Primitive::U16 } else { Primitive::U8 }.into()))
   }
 }
+
+struct Built;
+
+thread_local! {
+  static BUILDS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+impl Contract for Built {
+  fn name() -> String {
+    "Built".into()
+  }
+
+  fn contract_type(table: &mut TypeTable) -> Type {
+    table.define::<Self>(|_| {
+      BUILDS.set(BUILDS.get() + 1);
+      Definition::Alias(Primitive::Bool.into())
+    })
+  }
+}
+
+impl OptionValue for Built {}
 
 struct Counter;
 
@@ -70,6 +91,17 @@ fn reports_a_name_outside_the_grammar() {
     errors[0].to_string(),
     "`not-valid` is not a contract name: names match [A-Za-z_][A-Za-z0-9_]* (spec 12.2)"
   );
+}
+
+#[test]
+fn builds_each_type_once() {
+  let mut table = TypeTable::new();
+  table.add::<Built>();
+  table.add::<Built>();
+  table.add::<Option<Built>>();
+
+  assert_eq!(BUILDS.get(), 1);
+  assert_eq!(table.finish().unwrap().len(), 1);
 }
 
 #[test]

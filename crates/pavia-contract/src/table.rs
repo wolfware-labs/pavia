@@ -1,7 +1,6 @@
 //! The type table: the named types a contract uses, collected from the Rust types that map to them.
 
 use std::any::TypeId;
-use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::Contract;
@@ -22,9 +21,9 @@ use crate::schema::{Definition, Type};
 /// ```
 #[derive(Debug, Default)]
 pub struct TypeTable {
-  owners: BTreeMap<String, TypeId>,
+  seen: BTreeSet<TypeId>,
+  names: BTreeSet<String>,
   definitions: BTreeMap<String, Definition>,
-  sharers: BTreeSet<TypeId>,
   shared: Vec<(String, Definition)>,
   errors: Vec<TypeError>,
 }
@@ -49,21 +48,18 @@ impl TypeTable {
   /// differ.
   pub fn define<T: Contract>(&mut self, build: impl FnOnce(&mut Self) -> Definition) -> Type {
     let name = T::name();
-    match self.owners.entry(name.clone()) {
-      Entry::Occupied(owner) => {
-        if *owner.get() != TypeId::of::<T>() && self.sharers.insert(TypeId::of::<T>()) {
-          let definition = build(self);
-          self.shared.push((name.clone(), definition));
-        }
+    if !self.seen.insert(TypeId::of::<T>()) {
+      return Type::Ref(name);
+    }
+    if self.names.insert(name.clone()) {
+      if !name::is_valid(&name) {
+        self.report(TypeError::InvalidName { name: name.clone() });
       }
-      Entry::Vacant(owner) => {
-        owner.insert(TypeId::of::<T>());
-        if !name::is_valid(&name) {
-          self.report(TypeError::InvalidName { name: name.clone() });
-        }
-        let definition = build(self);
-        self.definitions.insert(name.clone(), definition);
-      }
+      let definition = build(self);
+      self.definitions.insert(name.clone(), definition);
+    } else {
+      let definition = build(self);
+      self.shared.push((name.clone(), definition));
     }
     Type::Ref(name)
   }

@@ -89,6 +89,9 @@ enum Shape {
 struct Pair(u32, String);
 
 #[derive(Contract)]
+struct UnitFirst((), u32);
+
+#[derive(Contract)]
 struct Empty;
 
 #[derive(Contract)]
@@ -281,4 +284,16 @@ fn maps_a_tuple_struct_to_an_alias_of_a_tuple_and_a_unit_struct_to_a_struct_with
   assert_eq!(types["Pair"].to_json(), json!({"alias": {"tuple": ["u32", "string"]}}));
   assert!(matches!(&types["Empty"], Definition::Struct(definition) if definition.fields().is_empty()));
   assert_eq!(types["Empty"].to_json(), json!({"struct": {"fields": []}}));
+}
+
+#[test]
+fn lets_option_wrap_a_tuple_struct_with_a_unit_field() {
+  let mut table = TypeTable::new();
+  assert_eq!(
+    table.add::<Option<UnitFirst>>().to_json(),
+    json!({"option": {"ref": "UnitFirst"}})
+  );
+  let types = types(table);
+
+  assert_eq!(types["UnitFirst"], json!({"alias": {"tuple": ["unit", "u32"]}}));
 }
