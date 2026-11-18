@@ -91,6 +91,16 @@ struct Pair(u32, String);
 #[derive(Contract)]
 struct UnitFirst((), u32);
 
+mod facade {
+  pub use pavia_contract as contract;
+}
+
+#[derive(Contract)]
+#[pavia(crate = "crate::facade::contract")]
+struct Relayed {
+  text: String,
+}
+
 #[derive(Contract)]
 #[pavia(rename = "Page_Message")]
 struct SamePage {
@@ -390,4 +400,13 @@ fn reports_aliases_that_lead_back_to_themselves() {
       TypeError::AliasCycle { name: "Right".into() },
     ]
   );
+}
+
+#[test]
+fn reaches_the_contract_crate_through_the_given_path() {
+  let mut table = TypeTable::new();
+  table.add::<Relayed>();
+  let types = types(table);
+
+  assert_eq!(types["Relayed"], json!({"struct": {"fields": [{"name": "text", "type": "string"}]}}));
 }

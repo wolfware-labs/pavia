@@ -1,0 +1,7 @@
+error[E0432]: unresolved import `nowhere`
+ --> tests/ui/crate_path_unresolved.rs:4:17
+  |
+4 | #[pavia(crate = "nowhere::contract")]
+  |                 ^^^^^^^^^^^^^^^^^^^ use of unresolved module or unlinked crate `nowhere`
+  |
+  = help: if you wanted to use a crate named `nowhere`, use `cargo add nowhere` to add it to your `Cargo.toml`

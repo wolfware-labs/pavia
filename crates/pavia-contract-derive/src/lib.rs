@@ -11,11 +11,13 @@
 //!
 //! - `rename = "name"` on the type, a field or a variant: the name in the manifest;
 //! - `optional` on a named field of type `Option<T>`: the key may be missing on the wire;
-//! - `open` on an enum: decoders accept unknown variants (§12.1).
+//! - `open` on an enum: decoders accept unknown variants (§12.1);
+//! - `crate = "path"` on the type: the path the generated code reaches `pavia_contract` by, for a crate
+//!   that renames the dependency or uses the derive through a re-export.
 //!
 //! Every name, after any rename, must match `[A-Za-z_][A-Za-z0-9_]*` (§12.2). A generic type's name is
 //! monomorphized: `Page<Message>` is `Page_Message` (§12.1). The generated code refers to the
-//! `pavia_contract` crate by that name.
+//! `pavia_contract` crate as `::pavia_contract` unless `crate` says otherwise.
 //!
 //! See the crate README for its place in the workspace.
 #![forbid(unsafe_code)]

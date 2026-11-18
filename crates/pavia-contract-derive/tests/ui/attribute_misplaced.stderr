@@ -16,8 +16,14 @@ error: `rename` applies to a named field: a tuple field has no name
 16 | struct Wrapped(#[pavia(rename = "inner")] u32);
    |                                 ^^^^^^^
 
-error: unknown `pavia` attribute: expected `rename`, `optional` or `open`
-  --> tests/ui/attribute_misplaced.rs:19:9
+error: `crate` applies to the type, not to a field
+  --> tests/ui/attribute_misplaced.rs:20:19
    |
-19 | #[pavia(sorted)]
+20 |   #[pavia(crate = "pavia_contract")]
+   |                   ^^^^^^^^^^^^^^^^
+
+error: unknown `pavia` attribute: expected `rename`, `optional`, `open` or `crate`
+  --> tests/ui/attribute_misplaced.rs:25:9
+   |
+25 | #[pavia(sorted)]
    |         ^^^^^^

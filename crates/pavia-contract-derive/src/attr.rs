@@ -3,11 +3,17 @@
 use proc_macro2::Span;
 use syn::meta::ParseNestedMeta;
 use syn::spanned::Spanned;
-use syn::{Attribute, LitStr};
+use syn::{Attribute, LitStr, Path};
 
 /// A `rename = "..."`: the name, and where it was written.
 pub struct Rename {
   pub value: String,
+  pub span: Span,
+}
+
+/// A `crate = "..."`: the path the generated code reaches `pavia_contract` by, and where it was written.
+pub struct Krate {
+  pub path: Path,
   pub span: Span,
 }
 
@@ -17,6 +23,7 @@ pub struct Attrs {
   pub rename: Option<Rename>,
   pub optional: Option<Span>,
   pub open: Option<Span>,
+  pub krate: Option<Krate>,
 }
 
 impl Attrs {
@@ -38,8 +45,15 @@ impl Attrs {
         } else if meta.path.is_ident("open") {
           refuse_repeated(parsed.open.is_some(), &meta)?;
           parsed.open = Some(meta.path.span());
+        } else if meta.path.is_ident("crate") {
+          let value: LitStr = meta.value()?.parse()?;
+          refuse_repeated(parsed.krate.is_some(), &meta)?;
+          parsed.krate = Some(Krate {
+            path: value.parse()?,
+            span: value.span(),
+          });
         } else {
-          return Err(meta.error("unknown `pavia` attribute: expected `rename`, `optional` or `open`"));
+          return Err(meta.error("unknown `pavia` attribute: expected `rename`, `optional`, `open` or `crate`"));
         }
         Ok(())
       })?;
@@ -58,6 +72,14 @@ impl Attrs {
   /// An error when `open` is present, which `what` does not take.
   pub fn refuse_open(&self, what: &str) -> syn::Result<()> {
     refuse(self.open, &format!("`open` applies to an enum, not to {what}"))
+  }
+
+  /// An error when `crate` is present, which `what` does not take.
+  pub fn refuse_crate(&self, what: &str) -> syn::Result<()> {
+    refuse(
+      self.krate.as_ref().map(|krate| krate.span),
+      &format!("`crate` applies to the type, not to {what}"),
+    )
   }
 }
 
