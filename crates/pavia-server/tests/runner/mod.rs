@@ -275,6 +275,18 @@ fn milliseconds(body: &Json, key: &str) -> Result<Duration, String> {
     .ok_or_else(|| format!("{key} is not a number of milliseconds"))
 }
 
+/// Plays `script` against `endpoint` in both modes, which must reach the same result, and returns it.
+pub fn run_in_both_modes<H, F>(script: &Script, endpoint: Endpoint<H>) -> Result<Verdict, Failure>
+where
+  H: Fn(Transport) -> F + Clone + Send + Sync + 'static,
+  F: Future<Output = ()> + Send + 'static,
+{
+  let in_memory = run(script, Mode::InMemory, endpoint.clone(), &[]);
+  let socket = run(script, Mode::Socket, endpoint, &[]);
+  assert_eq!(in_memory, socket, "the two modes disagree");
+  in_memory
+}
+
 /// Plays `script` against `endpoint` on a runtime of its own. `granted` lists the capabilities
 /// the endpoint is configured to grant; a script that requires others is skipped, as is one for
 /// the WebTransport binding.

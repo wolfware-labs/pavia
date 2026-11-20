@@ -263,8 +263,8 @@ fn omits_absent_and_default_fields() {
       {"name": "poke", "kind": "notify"}
     ])
   );
-  assert_eq!(json.get("channels"), None);
-  assert_eq!(json.get("datagrams"), None);
+  assert_eq!(json["channels"], json!([]));
+  assert_eq!(json["datagrams"], json!([]));
   assert_eq!(json["types"], json!({}));
   assert_eq!(json["services"][0]["client_methods"], json!([]));
 }
@@ -480,5 +480,95 @@ fn refuses_two_entries_with_one_name() {
       "channel namespace: room",
       "datagram topic: cursor"
     ]
+  );
+}
+
+#[test]
+fn refuses_params_fields_and_variants_with_one_name_or_outside_the_grammar() {
+  let manifest = Manifest::new("app")
+    .service(
+      Service::new("s").server_method(
+        Method::notify("n")
+          .param(Param::new("a", string()))
+          .param(Param::new("a", string()))
+          .param(Param::new("foo-bar", string())),
+      ),
+    )
+    .types(BTreeMap::from([
+      (
+        "Pair".into(),
+        Definition::Struct(Struct::new(vec![Field::new("x", string()), Field::new("x", string())])),
+      ),
+      (
+        "Choice".into(),
+        Definition::Enum(Enum::new(vec![
+          Variant::unit("V"),
+          Variant::unit("V"),
+          Variant::new(
+            "W",
+            Type::Struct(Struct::new(vec![Field::new("y", string()), Field::new("y", string())])),
+          ),
+        ])),
+      ),
+    ]));
+  let found: Vec<String> = errors(&manifest).iter().map(ToString::to_string).collect();
+  assert_eq!(
+    found,
+    [
+      "more than one param of server method `s/n` is named `a`",
+      "param of server method `s/n` name `foo-bar` is not a contract name: names match [A-Za-z_][A-Za-z0-9_]* (spec 12.2)",
+      "more than one variant of type `Choice` is named `V`",
+      "more than one field of variant `W` of type `Choice` is named `y`",
+      "more than one field of type `Pair` is named `x`",
+    ]
+  );
+}
+
+#[test]
+fn refuses_an_optional_field_whose_type_is_not_an_option() {
+  let manifest = Manifest::new("app").types(BTreeMap::from([(
+    "Options".into(),
+    Definition::Struct(Struct::new(vec![
+      Field::new("lang", string()).optional(),
+      Field::new("tz", option(string())).optional(),
+    ])),
+  )]));
+  assert_eq!(
+    errors(&manifest),
+    [ManifestError::OptionalNotOption {
+      at: "field `lang` of type `Options`".into()
+    }]
+  );
+}
+
+#[test]
+fn refuses_an_option_of_an_alias_of_unit_and_an_alias_cycle() {
+  let manifest = Manifest::new("app").types(BTreeMap::from([
+    ("Nothing".into(), Definition::Alias(Primitive::Unit.into())),
+    ("Again".into(), Definition::Alias(reference("Nothing"))),
+    ("Maybe".into(), Definition::Alias(option(reference("Again")))),
+    ("Fine".into(), Definition::Alias(option(reference("Nested")))),
+    ("Nested".into(), Definition::Alias(option(string()))),
+    ("Left".into(), Definition::Alias(reference("Right"))),
+    ("Right".into(), Definition::Alias(reference("Left"))),
+  ]));
+  assert_eq!(
+    errors(&manifest),
+    [
+      ManifestError::OptionOfUnit {
+        at: "type `Maybe`".into()
+      },
+      ManifestError::AliasCycle { name: "Left".into() },
+      ManifestError::AliasCycle { name: "Right".into() },
+    ]
+  );
+}
+
+#[test]
+fn sorts_the_keys_of_every_object() {
+  let value = super::sorted_keys(json!({"b": [{"z": 1, "y": 2}], "a": {"d": 1, "c": 2}}));
+  assert_eq!(
+    serde_json::to_string(&value).unwrap(),
+    r#"{"a":{"c":2,"d":1},"b":[{"y":2,"z":1}]}"#
   );
 }

@@ -41,10 +41,7 @@ fn script(steps: Value) -> Script {
 }
 
 fn both(script: &Script) -> Result<Verdict, Failure> {
-  let in_memory = runner::run(script, Mode::InMemory, endpoint(), &[]);
-  let socket = runner::run(script, Mode::Socket, endpoint(), &[]);
-  assert_eq!(in_memory, socket, "the two modes disagree");
-  in_memory
+  runner::run_in_both_modes(script, endpoint())
 }
 
 fn frame(stream: u64, frame_type: u64, header: Option<&str>, data: Option<&str>) -> Value {

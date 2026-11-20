@@ -1946,7 +1946,8 @@ async fn drops_and_logs_the_detail_of_a_method_that_declares_no_error_type() {
   assert_eq!(answer.header[&7], Value::Text("no such user".into()));
   assert!(answer.data.is_empty());
   assert!(logged.contains("error detail dropped"), "{logged}");
-  assert!(logged.contains("users/peek"), "{logged}");
+  assert!(logged.contains("method=\"users/peek\""), "{logged}");
+  assert!(logged.contains("stream=2"), "{logged}");
 }
 
 #[tokio::test]

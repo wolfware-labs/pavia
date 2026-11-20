@@ -27,11 +27,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 use thiserror::Error;
 
 use crate::name;
 use crate::schema::{Definition, Primitive, Struct, Type};
+use crate::table::{Chain, follow};
 
 /// The manifest format version this crate writes, the top-level `pavia` key.
 pub const FORMAT_VERSION: u64 = 1;
@@ -140,6 +141,11 @@ impl Manifest {
       check.name("type", name);
       check.definition(name, definition);
     }
+    for name in self.types.keys() {
+      if matches!(follow(&self.types, name, &BTreeSet::new()), Chain::Loops) {
+        check.errors.push(ManifestError::AliasCycle { name: name.clone() });
+      }
+    }
     if check.errors.is_empty() { Ok(()) } else { Err(check.errors) }
   }
 
@@ -151,7 +157,7 @@ impl Manifest {
   /// The errors of [`Manifest::validate`]; nothing is written.
   pub fn render(&self) -> Result<String, Vec<ManifestError>> {
     self.validate()?;
-    let mut text = serde_json::to_string_pretty(&self.to_json()).unwrap_or_default();
+    let mut text = serde_json::to_string_pretty(&sorted_keys(self.to_json())).expect("a JSON value with text keys serializes");
     text.push('\n');
     Ok(text)
   }
@@ -167,7 +173,7 @@ impl Manifest {
         .map(Service::to_json)
         .collect(),
     );
-    if !self.channels.is_empty() {
+    {
       manifest.insert(
         "channels".into(),
         sorted(&self.channels, |channel| &channel.namespace)
@@ -175,7 +181,7 @@ impl Manifest {
           .collect(),
       );
     }
-    if !self.datagrams.is_empty() {
+    {
       manifest.insert(
         "datagrams".into(),
         sorted(&self.datagrams, |datagram| &datagram.topic)
@@ -654,16 +660,13 @@ impl Datagram {
   }
 
   fn to_json(&self) -> Value {
-    let mut datagram = json!({
-      "topic": self.topic,
-      "direction": self.direction.name(),
-      "mode": self.mode.name(),
-      "payload": self.payload.to_json(),
-    });
-    if let Value::Object(datagram) = &mut datagram {
-      insert_docs(datagram, self.docs.as_deref());
-    }
-    datagram
+    let mut datagram = Map::new();
+    datagram.insert("topic".into(), Value::from(self.topic.as_str()));
+    insert_docs(&mut datagram, self.docs.as_deref());
+    datagram.insert("direction".into(), Value::from(self.direction.name()));
+    datagram.insert("mode".into(), Value::from(self.mode.name()));
+    datagram.insert("payload".into(), self.payload.to_json());
+    Value::Object(datagram)
   }
 }
 
@@ -686,7 +689,7 @@ pub enum ManifestError {
     namespace: String,
   },
   /// Two entries of one list with one name.
-  #[error("two of the {what} entries are named `{name}`")]
+  #[error("more than one {what} is named `{name}`")]
   Duplicate {
     /// The list: `"service"`, `"server method of service `chat`"`.
     what: String,
@@ -701,11 +704,23 @@ pub enum ManifestError {
     /// Where the reference is: `"param `room` of server method `chat/send`"`.
     at: String,
   },
-  /// An `Option` of `unit`, `{"option": "unit"}`, which §12.1 does not allow.
-  #[error("{at} is `{{\"option\": \"unit\"}}`, which is not allowed (spec 12.1)")]
+  /// An `Option` of `unit`, directly or through aliases: `{"option": "unit"}`, which §12.1 does not allow.
+  #[error("{at} is an `option` of `unit`, directly or through aliases, which is not allowed (spec 12.1)")]
   OptionOfUnit {
     /// Where the type is.
     at: String,
+  },
+  /// A field marked `optional` whose type is not an `option` (§12.1).
+  #[error("{at} is `optional` but its type is not an `option` (spec 12.1)")]
+  OptionalNotOption {
+    /// Where the field is.
+    at: String,
+  },
+  /// A named type that leads back to itself through aliases only, so it never reaches a type.
+  #[error("type `{name}` leads back to itself through aliases only, so it never reaches a type")]
+  AliasCycle {
+    /// The name of an alias on the cycle, or leading to it.
+    name: String,
   },
 }
 
@@ -740,7 +755,12 @@ impl Check<'_> {
   fn method(&mut self, service: &str, side: &str, method: &Method) {
     self.name(&format!("{side} method of service `{service}`"), &method.name);
     let at = format!("{side} method `{service}/{}`", method.name);
+    self.unique(
+      &format!("param of {at}"),
+      method.params.iter().map(|param| param.name.as_str()),
+    );
     for param in &method.params {
+      self.name(&format!("param of {at}"), &param.name);
       self.ty(&param.ty, &format!("param `{}` of {at}", param.name));
     }
     if let Some(call) = &method.call {
@@ -766,6 +786,10 @@ impl Check<'_> {
     match definition {
       Definition::Struct(fields) => self.fields(fields, &at),
       Definition::Enum(variants) => {
+        self.unique(
+          &format!("variant of {at}"),
+          variants.variants().iter().map(|variant| variant.name()),
+        );
         for variant in variants.variants() {
           self.name(&format!("variant of {at}"), variant.name());
           if let Some(ty) = variant.ty() {
@@ -778,9 +802,14 @@ impl Check<'_> {
   }
 
   fn fields(&mut self, fields: &Struct, at: &str) {
+    self.unique(&format!("field of {at}"), fields.fields().iter().map(|field| field.name()));
     for field in fields.fields() {
+      let place = format!("field `{}` of {at}", field.name());
       self.name(&format!("field of {at}"), field.name());
-      self.ty(field.ty(), &format!("field `{}` of {at}", field.name()));
+      if field.is_optional() && !matches!(field.ty(), Type::Option(_)) {
+        self.errors.push(ManifestError::OptionalNotOption { at: place.clone() });
+      }
+      self.ty(field.ty(), &place);
     }
   }
 
@@ -788,7 +817,7 @@ impl Check<'_> {
     match ty {
       Type::Primitive(_) => {}
       Type::Option(inner) => {
-        if **inner == Type::Primitive(Primitive::Unit) {
+        if self.is_unit(inner) {
           self.errors.push(ManifestError::OptionOfUnit { at: at.to_owned() });
         }
         self.ty(inner, at);
@@ -809,6 +838,34 @@ impl Check<'_> {
         }
       }
     }
+  }
+}
+
+impl Check<'_> {
+  /// Whether `ty` is `unit`, directly or through aliases.
+  fn is_unit(&self, ty: &Type) -> bool {
+    match ty {
+      Type::Primitive(Primitive::Unit) => true,
+      Type::Ref(name) => matches!(
+        follow(self.types, name, &BTreeSet::new()),
+        Chain::Ends(Some(Definition::Alias(Type::Primitive(Primitive::Unit))))
+      ),
+      _ => false,
+    }
+  }
+}
+
+/// `value` with the keys of every object in sorted order. A `Map` keeps insertion order when any crate in
+/// the build turns on serde_json's `preserve_order` feature, so the order is set here instead.
+fn sorted_keys(value: Value) -> Value {
+  match value {
+    Value::Object(object) => {
+      let mut entries: Vec<(String, Value)> = object.into_iter().collect();
+      entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+      Value::Object(entries.into_iter().map(|(key, value)| (key, sorted_keys(value))).collect())
+    }
+    Value::Array(items) => Value::Array(items.into_iter().map(sorted_keys).collect()),
+    other => other,
   }
 }
 

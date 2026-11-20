@@ -93,7 +93,7 @@ fn registry(server: Vec<(&str, MethodEntry<Handler>)>, client: Vec<(&str, Method
 }
 
 fn committed() -> PathBuf {
-  PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/manifest/example.json")
+  PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("tests/manifest/example.json")
 }
 
 #[test]
@@ -178,7 +178,9 @@ fn matches_the_services_and_types_of_the_spec_example() {
         {"name": "RoomNotFound"},
         {"name": "TooLong", "type": {"struct": {"fields": [{"name": "max", "type": "u32"}]}}}
       ]}}
-    }
+    },
+    "channels": [],
+    "datagrams": []
   });
   assert_eq!(exported, expected);
   let text = fs::read_to_string(committed()).unwrap();

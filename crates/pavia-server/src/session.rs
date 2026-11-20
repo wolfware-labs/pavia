@@ -57,10 +57,11 @@ type Authenticating<'a> = Pin<Box<dyn Future<Output = Result<Principal, AuthFail
 /// (INVALID_ARGUMENT), and last `authorizer`, on the call's task (UNAUTHENTICATED for an anonymous
 /// session, PERMISSION_DENIED otherwise). A streaming method is answered UNIMPLEMENTED until
 /// streams arrive in M5. A handler's [`StatusError`](crate::methods::StatusError) is answered as
-/// given, with its detail and `meta`. Any other failure (an unexpected handler error, a panic, a
-/// value the codec cannot encode) is answered INTERNAL with the configured generic message, or its
-/// own text cut to `MAX_INTERNAL_ERROR_MESSAGE` bytes in development mode, and logged in full with
-/// `tracing` either way (§8.4, §14).
+/// given, with its `meta`, and with its detail when the method declares an error type; otherwise the
+/// detail is dropped and logged, and ERROR carries an empty data section (§8.4). Any other failure
+/// (an unexpected handler error, a panic, a value the codec cannot encode) is answered INTERNAL
+/// with the configured generic message, or its own text cut to `MAX_INTERNAL_ERROR_MESSAGE` bytes
+/// in development mode, and logged in full with `tracing` either way (§8.4, §14).
 /// A handler made with [`Handler::with_context`] can notify the client through its
 /// [`HandlerContext`] while it runs: each NOTIFY goes out on the control stream in the order the
 /// handler sent it, with nothing ordering it against the call's answer (§8.9, §9.1). The

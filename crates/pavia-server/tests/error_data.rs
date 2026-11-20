@@ -12,7 +12,7 @@ use pavia_server::methods::{Handler, MethodEntry, MethodRegistry, StatusError};
 use pavia_server::session;
 use pavia_server::sessions::Registry;
 use pavia_server::websocket::{Config, Endpoint, Transport};
-use runner::{Mode, Script, Verdict};
+use runner::{Script, Verdict};
 use serde_json::json;
 
 fn not_found() -> Handler {
@@ -53,10 +53,7 @@ fn run(codec: &str, steps: serde_json::Value) -> Verdict {
     "steps": steps,
   }))
   .unwrap();
-  let in_memory = runner::run(&script, Mode::InMemory, endpoint.clone(), &[]);
-  let socket = runner::run(&script, Mode::Socket, endpoint, &[]);
-  assert_eq!(in_memory, socket, "the two modes disagree");
-  in_memory.unwrap()
+  runner::run_in_both_modes(&script, endpoint).unwrap()
 }
 
 fn handshake(codec: &str) -> serde_json::Value {

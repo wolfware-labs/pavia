@@ -1,4 +1,6 @@
 {
+  "channels": [],
+  "datagrams": [],
   "name": "example-app",
   "pavia": 1,
   "services": [

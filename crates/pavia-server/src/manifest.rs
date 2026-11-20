@@ -30,10 +30,10 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-use pavia_contract::manifest::{Call, Manifest, ManifestError, Method, Param, Service};
+use pavia_contract::manifest::{self as contract, Call, Manifest, ManifestError, Method, Param, Service};
 use pavia_contract::schema::{Primitive, Type};
 use pavia_contract::{TypeError, TypeTable};
-use pavia_proto::stream::Shape;
+use pavia_proto::stream::{Shape, Side};
 use thiserror::Error;
 
 use crate::methods::{ContractType, Handler, Kind, MethodEntry, MethodName, MethodRegistry, Signature};
@@ -133,7 +133,7 @@ pub enum ExportError {
 
 /// A method signature that does not fit its method.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
-#[error("{side} method {method}: {problem}")]
+#[error("{} method {method}: {problem}", side_name(*.side))]
 pub struct SignatureError {
   side: Side,
   method: MethodName,
@@ -184,19 +184,11 @@ pub enum Problem {
   },
 }
 
-/// Which side exposes a method.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Side {
-  Server,
-  Client,
-}
-
-impl fmt::Display for Side {
-  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-    formatter.write_str(match self {
-      Self::Server => "server",
-      Self::Client => "client",
-    })
+/// The word for the side that exposes a method, as error messages name it.
+const fn side_name(side: Side) -> &'static str {
+  match side {
+    Side::Server => "server",
+    Side::Client => "client",
   }
 }
 
@@ -255,12 +247,13 @@ fn call(
   table: &mut TypeTable,
   found: &mut Vec<Problem>,
 ) -> Option<Call> {
-  let (name, carried): (&'static str, &[&str]) = match shape {
-    Shape::Unary => ("unary", &["returns", "error"]),
-    Shape::ServerStream => ("server_stream", &["yields", "error"]),
-    Shape::ClientStream => ("client_stream", &["accepts", "returns", "error"]),
-    Shape::Bidirectional => ("bidi", &["accepts", "yields", "error"]),
+  let (manifest_shape, carried): (contract::Shape, &[&str]) = match shape {
+    Shape::Unary => (contract::Shape::Unary, &["returns", "error"]),
+    Shape::ServerStream => (contract::Shape::ServerStream, &["yields", "error"]),
+    Shape::ClientStream => (contract::Shape::ClientStream, &["accepts", "returns", "error"]),
+    Shape::Bidirectional => (contract::Shape::Bidi, &["accepts", "yields", "error"]),
   };
+  let name = manifest_shape.name();
   unused(&format!("{name} call"), signature, carried, found);
   let mut needed = |key: &'static str, ty: Option<ContractType>| {
     if ty.is_none() {
