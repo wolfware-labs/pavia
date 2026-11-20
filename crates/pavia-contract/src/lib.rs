@@ -31,6 +31,7 @@
 //! the server's method names follow too.
 #![forbid(unsafe_code)]
 
+pub mod manifest;
 mod mapping;
 pub mod name;
 mod scalar;
