@@ -18,9 +18,10 @@ mod json;
 /// Limits a data-section decoder enforces on input from the peer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DecodeLimits {
-  /// How deep a value may nest (§12.3, the same limit as headers in §5.4.1). The outermost array,
-  /// map or tag has depth 1 and every one inside it adds one; other items add nothing. Tags count
-  /// so that a chain of them cannot recurse without bound.
+  /// How deep a value may nest (§12.3, the same limit as headers in §5.4.1). The outermost array
+  /// or map has depth 1 and every one inside it adds one; other items, tags included, add nothing.
+  /// A run of tags directly around one item is read in a loop and holds at most this many tags, so
+  /// it cannot recurse without bound either.
   pub max_depth: usize,
 }
 

@@ -232,6 +232,14 @@ fn limits_nesting_depth_in_both_codecs() {
   let mut tags = vec![0xc1; MAX_DEPTH + 1];
   tags.push(0x00);
   assert_eq!(decode(&tags, Codec::Cbor), Err(DecodeError::TooDeep));
+  assert_eq!(decode(&tags[1..], Codec::Cbor).map(|_| ()), Ok(()));
+  let mut tagged = vec![0x81; MAX_DEPTH];
+  tagged.extend([0xc1, 0x00]);
+  let mut expected = Value::Tag(1, Box::new(Value::Unsigned(0)));
+  for _ in 0..MAX_DEPTH {
+    expected = Value::Array(vec![expected]);
+  }
+  assert_eq!(decode(&tagged, Codec::Cbor), Ok(expected));
   assert_eq!(decode(&vec![0x81; 100_000], Codec::Cbor), Err(DecodeError::TooDeep));
   assert_eq!(decode("[".repeat(100_000).as_bytes(), Codec::Json), Err(DecodeError::TooDeep));
 }

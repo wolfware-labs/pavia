@@ -14,6 +14,7 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 pavia-proto = { path = "crates/pavia-proto", version = "0.1.0-alpha.0" }
 pavia-contract = { path = "crates/pavia-contract", version = "0.1.0-alpha.0" }
+pavia-codec = { path = "crates/pavia-codec", version = "0.1.0-alpha.0" }
 pavia-contract-derive = { path = "crates/pavia-contract-derive", version = "0.1.0-alpha.0" }
 pavia-server = { path = "crates/pavia-server", version = "0.1.0-alpha.0" }
 pavia-axum = { path = "crates/pavia-axum", version = "0.1.0-alpha.0" }

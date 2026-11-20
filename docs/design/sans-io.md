@@ -5,7 +5,7 @@ Decision record for roadmap C0.7 (#2). Status: accepted, 2026-09-21. Amended 202
 ## Decisions
 
 1. The protocol crate is sans-IO and exposes one driver loop: `handle_input(input, now)` then `poll_output()` until it returns `None`.
-2. The Rust workspace has seven library crates plus the proc-macro crates (`pavia-contract-derive` today, `pavia-macros` planned in #218); dependency rules are enforced by Cargo and checked in CI.
+2. The Rust workspace has eight library crates plus the proc-macro crates (`pavia-contract-derive` today, `pavia-macros` planned in #218); dependency rules are enforced by Cargo and checked in CI.
 3. The TypeScript generator is a Rust crate, driven from the `pavia` binary.
 
 ## Why sans-IO
@@ -20,7 +20,8 @@ Everything that parses bytes or holds protocol state lives in a crate with no so
 
 ```
 pavia-proto            wire, streams, session state machine, sequencing      no tokio, hyper, axum, quinn
-pavia-contract         type system, manifest, fingerprint, typed codecs      no pavia-proto, no IO
+pavia-contract         type system, manifest, fingerprint                    no pavia-proto, no IO
+pavia-codec            typed codecs: contract values in cbor and json        pavia-proto + pavia-contract; no IO
 pavia-contract-derive  #[derive] for contract types (proc-macro)            depends on nothing else here
 pavia-macros           #[service], #[client], error mapping (proc-macro)    planned (#218); re-exported by pavia-server
 pavia-server           tokio session tasks, registry, targeting, hooks,      no axum
@@ -39,7 +40,8 @@ Rules:
 - `pavia-proto` and `pavia-contract` carry `#![forbid(unsafe_code)]`.
 - CI asserts the graph: `cargo tree -p pavia-proto -e normal` contains no `tokio`, `hyper`, `axum` or `quinn`; `cargo tree -p pavia-contract` contains no `pavia-proto`; `cargo tree -p pavia-client` contains no `pavia-server`.
 - One workspace version; all crates release together.
-- `pavia-server` depends on `pavia-proto` and `pavia-contract`; the typed layer sits on top of the untyped session, never inside it.
+- `pavia-server` depends on `pavia-proto`, `pavia-contract` and `pavia-codec`; the typed layer sits on top of the untyped session, never inside it.
+- `pavia-codec` holds the typed codecs (#66): a contract type from `pavia-contract` drives the untyped data-section codec of `pavia-proto`. It is its own crate so `pavia-contract`, and with it codegen and the CLI, stays free of `pavia-proto`.
 - `pavia-webtransport` is a transport, not protocol: it knows nothing about Pavia frames. `pavia-server` and `pavia-client` drive `pavia-proto` over it (decision #120: own HTTP/3 layer so the port also serves ordinary HTTP/3).
 
 Rejected: four crates (contract types inside proto; client inside server) because the CLI and the client would link the server, and splitting after 1.0 is a breaking reshuffle. One crate with feature flags because additive features cannot enforce "no runtime in the core".

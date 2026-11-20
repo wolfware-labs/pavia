@@ -1,6 +1,6 @@
 # pavia-contract
 
-The contract type system (spec section 12), manifest export and validation, the fingerprint, and the typed `cbor` and `json` mappings.
+The contract type system (spec section 12), manifest export and validation, and the fingerprint. The typed `cbor` and `json` mappings live in `pavia-codec`.
 
 Rules: Must not depend on `pavia-proto` or on any IO crate. The typed layer sits on top of the untyped session, never inside it.
 

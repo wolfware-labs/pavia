@@ -45,6 +45,22 @@ fn write(out: &mut String, ty: &Json, v: &Value, types: &Map<String, Json>) -> R
       out.push(']');
       Ok(())
     }
+    "tuple" => {
+      let elements = arg.as_array().ok_or("tuple needs element types")?;
+      let items = v
+        .as_array()
+        .filter(|items| items.len() == elements.len())
+        .ok_or("tuple length")?;
+      out.push('[');
+      for (i, (element, item)) in elements.iter().zip(items).enumerate() {
+        if i > 0 {
+          out.push(',');
+        }
+        write(out, element, item, types)?;
+      }
+      out.push(']');
+      Ok(())
+    }
     "map" => {
       let entries = v.as_map().ok_or("map expects a map")?;
       let mut sorted: Vec<(&str, &Value)> = entries
@@ -116,6 +132,7 @@ fn write(out: &mut String, ty: &Json, v: &Value, types: &Map<String, Json>) -> R
 fn primitive(out: &mut String, name: &str, v: &Value) -> Result<(), String> {
   match (name, v) {
     ("unit", Value::Null) => out.push_str("null"),
+    ("any", v) => untyped(out, v)?,
     ("bool", Value::Bool(b)) => out.push_str(if *b { "true" } else { "false" }),
     ("u8" | "u16" | "u32" | "i8" | "i16" | "i32", Value::Integer(i)) => {
       out.push_str(&i128::from(*i).to_string());
@@ -157,6 +174,41 @@ fn primitive(out: &mut String, name: &str, v: &Value) -> Result<(), String> {
       out.push('"');
     }
     _ => return Err(format!("{name} does not accept {v:?}")),
+  }
+  Ok(())
+}
+
+/// An `any` value as received: JSON's own forms only, map entries in the order given.
+fn untyped(out: &mut String, v: &Value) -> Result<(), String> {
+  match v {
+    Value::Null => out.push_str("null"),
+    Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+    Value::Integer(i) => out.push_str(&i128::from(*i).to_string()),
+    Value::Float(f) => out.push_str(&number(*f)?),
+    Value::Text(s) => string(out, s),
+    Value::Array(items) => {
+      out.push('[');
+      for (i, item) in items.iter().enumerate() {
+        if i > 0 {
+          out.push(',');
+        }
+        untyped(out, item)?;
+      }
+      out.push(']');
+    }
+    Value::Map(entries) => {
+      out.push('{');
+      for (i, (k, val)) in entries.iter().enumerate() {
+        if i > 0 {
+          out.push(',');
+        }
+        string(out, k.as_text().ok_or("json object keys are text")?);
+        out.push(':');
+        untyped(out, val)?;
+      }
+      out.push('}');
+    }
+    _ => return Err(format!("{v:?} has no json form")),
   }
   Ok(())
 }

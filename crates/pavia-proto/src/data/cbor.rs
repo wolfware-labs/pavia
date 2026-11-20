@@ -91,9 +91,20 @@ fn item(decoder: &mut Decoder<'_>, parent: usize, max_depth: usize) -> Result<Va
       Ok(Value::Map(entries))
     }
     Type::Tag => {
-      let depth = nested(parent, max_depth)?;
-      let tag = decoder.tag().map_err(malformed)?;
-      Ok(Value::Tag(tag.as_u64(), Box::new(item(decoder, depth, max_depth)?)))
+      let mut tags = Vec::new();
+      while decoder.datatype().map_err(malformed)? == Type::Tag {
+        if tags.len() == max_depth {
+          return Err(DecodeError::TooDeep);
+        }
+        tags.push(decoder.tag().map_err(malformed)?.as_u64());
+      }
+      let content = item(decoder, parent, max_depth)?;
+      Ok(
+        tags
+          .into_iter()
+          .rev()
+          .fold(content, |content, tag| Value::Tag(tag, Box::new(content))),
+      )
     }
     Type::Break | Type::Unknown(_) => Err(DecodeError::Malformed),
   }
