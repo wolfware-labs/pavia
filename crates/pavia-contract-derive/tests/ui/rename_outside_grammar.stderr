@@ -1,0 +1,5 @@
+error: `foo-bar` is not a contract name: names match [A-Za-z_][A-Za-z0-9_]* (spec 12.2)
+ --> tests/ui/rename_outside_grammar.rs:5:20
+  |
+5 |   #[pavia(rename = "foo-bar")]
+  |                    ^^^^^^^^^

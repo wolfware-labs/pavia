@@ -10,3 +10,6 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
+pavia-contract-derive.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

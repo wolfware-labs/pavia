@@ -1,0 +1,24 @@
+error[E0277]: map keys must be strings: `u32` cannot key a contract map (spec 12.1)
+ --> tests/ui/map_key.rs:7:14
+  |
+7 |   by_player: HashMap<u32, String>,
+  |              -------^^^^^^^^^^^^^
+  |              |
+  |              not a string key
+  |              required by a bound introduced by this call
+  |
+  = help: the trait `MapKey` is not implemented for `u32`
+  = note: key the map by `String`
+help: the trait `MapKey` is implemented for `std::string::String`
+ --> $WORKSPACE/crates/pavia-contract/src/mapping.rs
+  |
+  | impl MapKey for String {}
+  | ^^^^^^^^^^^^^^^^^^^^^^
+  = note: required for `HashMap<u32, std::string::String>` to implement `Contract`
+note: required by a bound in `TypeTable::add`
+ --> $WORKSPACE/crates/pavia-contract/src/table.rs
+  |
+  | impl TypeTable {
+...
+  |   pub fn add<T: Contract>(&mut self) -> Type {
+  |                 ^^^^^^^^ required by this bound in `TypeTable::add`

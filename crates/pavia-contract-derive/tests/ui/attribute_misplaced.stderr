@@ -1,0 +1,41 @@
+error: `open` applies to an enum, not to a struct
+ --> tests/ui/attribute_misplaced.rs:4:9
+  |
+4 | #[pavia(open)]
+  |         ^^^^
+
+error: `optional` applies to a named field of type `Option<T>`, not to a variant
+  --> tests/ui/attribute_misplaced.rs:11:11
+   |
+11 |   #[pavia(optional)]
+   |           ^^^^^^^^
+
+error: `rename` applies to a named field: a tuple field has no name
+  --> tests/ui/attribute_misplaced.rs:16:33
+   |
+16 | struct Wrapped(#[pavia(rename = "inner")] u32);
+   |                                 ^^^^^^^
+
+error: `crate` applies to the type, not to a field
+  --> tests/ui/attribute_misplaced.rs:20:19
+   |
+20 |   #[pavia(crate = "pavia_contract")]
+   |                   ^^^^^^^^^^^^^^^^
+
+error: `crate` applies to the type, not to a variant
+  --> tests/ui/attribute_misplaced.rs:26:19
+   |
+26 |   #[pavia(crate = "pavia_contract")]
+   |                   ^^^^^^^^^^^^^^^^
+
+error: `crate` applies to the type, not to a field
+  --> tests/ui/attribute_misplaced.rs:31:32
+   |
+31 | struct Carried(#[pavia(crate = "pavia_contract")] u32);
+   |                                ^^^^^^^^^^^^^^^^
+
+error: unknown `pavia` attribute: expected `rename`, `optional`, `open` or `crate`
+  --> tests/ui/attribute_misplaced.rs:34:9
+   |
+34 | #[pavia(sorted)]
+   |         ^^^^^^

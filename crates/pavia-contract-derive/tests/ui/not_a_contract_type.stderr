@@ -1,0 +1,25 @@
+error[E0277]: `Duration` has no contract type (spec 12.1)
+ --> tests/ui/not_a_contract_type.rs:7:10
+  |
+7 |   after: Duration,
+  |          ^^^^^^^^ not a contract type
+  |
+  = help: the trait `Contract` is not implemented for `Duration`
+  = note: derive `pavia_contract::Contract` for it, or use a type of spec 12.1
+  = help: the following other types implement trait `Contract`:
+            ()
+            (A,)
+            (A, B)
+            (A, B, C)
+            (A, B, C, D)
+            (A, B, C, D, E)
+            (A, B, C, D, E, F)
+            (A, B, C, D, E, F, G)
+          and $N others
+note: required by a bound in `TypeTable::add`
+ --> $WORKSPACE/crates/pavia-contract/src/table.rs
+  |
+  | impl TypeTable {
+...
+  |   pub fn add<T: Contract>(&mut self) -> Type {
+  |                 ^^^^^^^^ required by this bound in `TypeTable::add`

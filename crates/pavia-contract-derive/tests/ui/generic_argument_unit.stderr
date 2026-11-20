@@ -1,0 +1,27 @@
+error[E0277]: `()` cannot be an `Option` value or a type argument of a derived contract type: `{"option": "unit"}` is not allowed (spec 12.1)
+ --> tests/ui/generic_argument_unit.rs:9:26
+  |
+9 |   TypeTable::new().add::<Page<()>>();
+  |                    ---   ^^^^^^^^ `unit` here
+  |                    |
+  |                    required by a bound introduced by this call
+  |
+  = help: the trait `OptionValue` is not implemented for `()`
+  = help: the following other types implement trait `OptionValue`:
+            (T₁, T₂, …, Tₙ) for tuples of arity 1 up to and including 8
+note: required for `Page<()>` to implement `Contract`
+ --> tests/ui/generic_argument_unit.rs:4:8
+  |
+3 | #[derive(Contract)]
+  |          -------- type parameter would need to implement `Contract`
+4 | struct Page<T> {
+  |        ^^^^^^^
+  = help: consider manually implementing `Contract` to avoid undesired bounds caused by "imperfect derives"
+  = note: to learn more, visit <https://github.com/rust-lang/rust/issues/26925>
+note: required by a bound in `TypeTable::add`
+ --> $WORKSPACE/crates/pavia-contract/src/table.rs
+  |
+  | impl TypeTable {
+...
+  |   pub fn add<T: Contract>(&mut self) -> Type {
+  |                 ^^^^^^^^ required by this bound in `TypeTable::add`

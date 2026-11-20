@@ -1,0 +1,17 @@
+error: `rename` is given twice
+ --> tests/ui/repeated_attribute.rs:5:30
+  |
+5 |   #[pavia(rename = "handle", rename = "nick")]
+  |                              ^^^^^^^^^^^^^^^
+
+error: `open` is given twice
+  --> tests/ui/repeated_attribute.rs:11:9
+   |
+11 | #[pavia(open)]
+   |         ^^^^
+
+error: `optional` is given twice
+  --> tests/ui/repeated_attribute.rs:18:21
+   |
+18 |   #[pavia(optional, optional)]
+   |                     ^^^^^^^^
