@@ -1,0 +1,30 @@
+[package]
+name = "pavia-codec-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+
+[dependencies.pavia-codec]
+path = ".."
+
+[dependencies.pavia-contract]
+path = "../../pavia-contract"
+
+[dependencies.pavia-proto]
+path = "../../pavia-proto"
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "typed_decode"
+path = "fuzz_targets/typed_decode.rs"
+test = false
+doc = false
+bench = false

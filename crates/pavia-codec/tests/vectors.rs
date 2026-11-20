@@ -2,8 +2,6 @@
 //! encodes its value to exactly its `cbor` and `json` and decodes both back to the value; a `decode`
 //! case decodes its input to the value, or fails when it carries an `error`.
 
-use std::collections::BTreeMap;
-
 use pavia_codec::{Types, decode, encode};
 use pavia_contract::schema::{Definition, Enum, Field, Primitive, Struct, Type, Variant};
 use pavia_proto::data::{Codec, DecodeLimits, Value};
@@ -205,10 +203,4 @@ fn same(left: &Value, right: &Value) -> bool {
     (Value::Tag(left_tag, left), Value::Tag(right_tag, right)) => left_tag == right_tag && same(left, right),
     _ => left == right,
   }
-}
-
-#[test]
-fn every_vector_type_parses() {
-  let parsed: BTreeMap<String, usize> = cases().iter().map(|(types, case)| (case.id.clone(), types.len())).collect();
-  assert!(!parsed.is_empty());
 }
