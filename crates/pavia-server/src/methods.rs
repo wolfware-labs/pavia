@@ -137,8 +137,9 @@ pub enum Kind {
 /// contract types the manifest lists for it (§12.2).
 ///
 /// A signature is declared with [`param`](Self::param), [`returns`](Self::returns),
-/// [`yields`](Self::yields), [`accepts`](Self::accepts) and [`error`](Self::error); the manifest export
-/// checks it against the shape and the handler (#67). The handler still takes and returns dynamic values
+/// [`yields`](Self::yields), [`accepts`](Self::accepts) and [`error`](Self::error);
+/// [`manifest::render`](crate::manifest::render) checks it against the kind, the shape and the handler.
+/// The handler still takes and returns dynamic values
 /// until the typed codec mapping (#66).
 ///
 /// ```
@@ -190,7 +191,7 @@ pub(crate) struct ContractType {
 }
 
 impl ContractType {
-  fn of<T: Contract + 'static>() -> Self {
+  fn of<T: Contract>() -> Self {
     Self {
       id: TypeId::of::<T>(),
       name: any::type_name::<T>(),
@@ -263,7 +264,7 @@ impl<H> MethodEntry<H> {
   /// The same method with a parameter named `name` of `T`'s contract type, after its other parameters.
   /// Arguments are encoded in parameter order (§8.2).
   #[must_use]
-  pub fn param<T: Contract + 'static>(mut self, name: impl Into<String>) -> Self {
+  pub fn param<T: Contract>(mut self, name: impl Into<String>) -> Self {
     self.signature.params.push((name.into(), ContractType::of::<T>()));
     self
   }
@@ -271,21 +272,21 @@ impl<H> MethodEntry<H> {
   /// The same method, returning `T`: the RESULT value of a `unary` or `client_stream` call. A call that
   /// declares none returns `unit`.
   #[must_use]
-  pub fn returns<T: Contract + 'static>(mut self) -> Self {
+  pub fn returns<T: Contract>(mut self) -> Self {
     self.signature.returns = Some(ContractType::of::<T>());
     self
   }
 
   /// The same method, whose callee streams items of `T`: a `server_stream` or `bidi` call.
   #[must_use]
-  pub fn yields<T: Contract + 'static>(mut self) -> Self {
+  pub fn yields<T: Contract>(mut self) -> Self {
     self.signature.yields = Some(ContractType::of::<T>());
     self
   }
 
   /// The same method, whose caller streams items of `T`: a `client_stream` or `bidi` call.
   #[must_use]
-  pub fn accepts<T: Contract + 'static>(mut self) -> Self {
+  pub fn accepts<T: Contract>(mut self) -> Self {
     self.signature.accepts = Some(ContractType::of::<T>());
     self
   }
@@ -293,7 +294,7 @@ impl<H> MethodEntry<H> {
   /// The same method, whose ERROR may carry a detail of `T` (§8.4). A call that declares none sends
   /// every ERROR with an empty data section.
   #[must_use]
-  pub fn error<T: Contract + 'static>(mut self) -> Self {
+  pub fn error<T: Contract>(mut self) -> Self {
     self.signature.error = Some(ContractType::of::<T>());
     self
   }

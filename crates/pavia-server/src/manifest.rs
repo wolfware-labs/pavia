@@ -307,3 +307,6 @@ fn unused(what: &str, signature: &Signature, carried: &[&str], found: &mut Vec<P
 fn lines(errors: &[impl fmt::Display]) -> String {
   errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n")
 }
+
+#[cfg(test)]
+mod tests;

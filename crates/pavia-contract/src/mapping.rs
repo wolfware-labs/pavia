@@ -44,7 +44,7 @@ pub trait Contract: 'static {
 /// A named type that is `unit` through aliases, such as `struct Nothing(())`, implements it as well, and
 /// [`TypeTable::finish`](crate::TypeTable::finish) reports an `Option` of it. These checks cover the
 /// `Option<T>` mapping only: a hand-written impl that builds a `schema::Type::Option` itself is checked
-/// when the manifest is validated (#67).
+/// by [`Manifest::validate`](crate::manifest::Manifest::validate).
 #[diagnostic::on_unimplemented(
   message = "`{Self}` cannot be an `Option` value or a type argument of a derived contract type: \
              `{{\"option\": \"unit\"}}` is not allowed (spec 12.1)",
