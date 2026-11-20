@@ -1,10 +1,8 @@
-use std::collections::BTreeMap;
-
-use pavia_contract::schema::{Definition, Enum, Field, Primitive, Struct, Type, Variant};
+use pavia_contract::schema::{Definition, Enum, Field, Primitive, Struct, Type, Types, Variant};
 use pavia_proto::data::{Codec, DecodeError, DecodeLimits, EncodeError, Value};
 use proptest::prelude::*;
 
-use super::{Problem, Types, decode, encode, scalar};
+use super::{Problem, cbor_order, decode, encode, scalar};
 
 fn primitive(primitive: Primitive) -> Type {
   Type::from(primitive)
@@ -23,7 +21,7 @@ fn map(entries: &[(&str, Value)]) -> Value {
 }
 
 fn types() -> Types {
-  BTreeMap::from([
+  Types::from([
     (
       "Message".into(),
       Definition::Struct(Struct::new(vec![
@@ -41,11 +39,15 @@ fn types() -> Types {
     ),
     ("Loop".into(), Definition::Alias(reference("Again"))),
     ("Again".into(), Definition::Alias(reference("Loop"))),
+    (
+      "Nested".into(),
+      Definition::Alias(Type::Option(Box::new(reference("Nested")))),
+    ),
   ])
 }
 
 fn problem_of(ty: &Type, value: &Value, codec: Codec) -> (String, Problem) {
-  let error = encode(ty, &types(), value, codec).unwrap_err();
+  let error = encode(ty, &types(), value, codec, &DecodeLimits::default()).unwrap_err();
   (error.at().to_owned(), error.problem().clone())
 }
 
@@ -187,7 +189,7 @@ fn refuses_scalars_outside_their_type() {
 fn passes_any_through_and_refuses_it_where_the_codec_has_no_form() {
   let any = Type::from(Primitive::Any);
   let tagged = Value::Map(vec![(Value::Unsigned(1), Value::Tag(2, Box::new(Value::Bytes(vec![1]))))]);
-  let cbor = encode(&any, &types(), &tagged, Codec::Cbor).unwrap();
+  let cbor = encode(&any, &types(), &tagged, Codec::Cbor, &DecodeLimits::default()).unwrap();
   assert_eq!(
     decode(&any, &types(), &cbor, Codec::Cbor, &DecodeLimits::default()),
     Ok(tagged.clone())
@@ -252,6 +254,31 @@ fn reports_where_a_decoded_value_does_not_fit() {
 }
 
 #[test]
+fn refuses_a_type_that_loops_through_options_without_reading_the_value() {
+  let nested = reference("Nested");
+  let refused = ("$".to_owned(), Problem::UnknownType("Nested".into()));
+  for codec in [Codec::Cbor, Codec::Json] {
+    assert_eq!(problem_of(&nested, &Value::Unsigned(1), codec), refused, "{codec:?}");
+    assert_eq!(
+      encode(&nested, &types(), &Value::Null, codec, &DecodeLimits::default()).map(|_| ()),
+      Ok(()),
+      "{codec:?}"
+    );
+  }
+  assert_eq!(decode_problem(&nested, &[0x01], Codec::Cbor), refused);
+  assert_eq!(decode_problem(&nested, b"1", Codec::Json), refused);
+  assert_eq!(
+    decode(&nested, &types(), &[0xf6], Codec::Cbor, &DecodeLimits::default()),
+    Ok(Value::Null)
+  );
+  let doubled = Type::Option(Box::new(Type::Option(Box::new(primitive(Primitive::U8)))));
+  assert_eq!(
+    decode(&doubled, &types(), b"7", Codec::Json, &DecodeLimits::default()),
+    Ok(Value::Unsigned(7))
+  );
+}
+
+#[test]
 fn reads_a_json_integer_as_a_float_and_rounds_f32() {
   let limits = DecodeLimits::default();
   assert_eq!(
@@ -299,7 +326,7 @@ fn rich() -> (Type, Types) {
     Type::Tuple(vec![primitive(Primitive::U8), primitive(Primitive::String)]),
   ));
   fields.push(Field::new("status", reference("Status")));
-  let types = BTreeMap::from([
+  let types = Types::from([
     ("Rich".into(), Definition::Struct(Struct::new(fields))),
     (
       "Status".into(),
@@ -347,7 +374,7 @@ fn rich_value() -> impl Strategy<Value = Value> {
       (f32, f64, string, bytes, millis, uuid, maybe, list, entries, (first, second), busy),
     )| {
       let mut entries: Vec<(String, bool)> = entries.into_iter().collect();
-      entries.sort_by(|(left, _), (right, _)| (left.len(), left).cmp(&(right.len(), right)));
+      entries.sort_by(|(left, _), (right, _)| cbor_order(left, right));
       let mut fields = vec![
         ("unit", Value::Null),
         ("bool", Value::Bool(flag)),
@@ -400,10 +427,84 @@ proptest! {
   fn every_type_round_trips_in_both_codecs(value in rich_value()) {
     let (ty, types) = rich();
     for codec in [Codec::Cbor, Codec::Json] {
-      let encoded = encode(&ty, &types, &value, codec).unwrap();
+      let encoded = encode(&ty, &types, &value, codec, &DecodeLimits::default()).unwrap();
       let decoded = decode(&ty, &types, &encoded, codec, &DecodeLimits::default()).unwrap();
       prop_assert_eq!(&decoded, &value);
-      prop_assert_eq!(encode(&ty, &types, &decoded, codec).unwrap(), encoded);
+      prop_assert_eq!(encode(&ty, &types, &decoded, codec, &DecodeLimits::default()).unwrap(), encoded);
     }
   }
+}
+
+#[test]
+fn refuses_to_encode_a_value_deeper_than_the_receiver_takes() {
+  let tree = Types::from([(
+    "Tree".into(),
+    Definition::Struct(Struct::new(vec![Field::new("kids", Type::List(Box::new(reference("Tree"))))])),
+  )]);
+  let mut value = map(&[("kids", Value::Array(vec![]))]);
+  for _ in 0..7 {
+    value = map(&[("kids", Value::Array(vec![value]))]);
+  }
+  let limits = DecodeLimits::default();
+  for codec in [Codec::Cbor, Codec::Json] {
+    let encoded = encode(&reference("Tree"), &tree, &value, codec, &limits).unwrap();
+    assert_eq!(decode(&reference("Tree"), &tree, &encoded, codec, &limits), Ok(value.clone()));
+    let deeper = map(&[("kids", Value::Array(vec![value.clone()]))]);
+    let error = encode(&reference("Tree"), &tree, &deeper, codec, &limits).unwrap_err();
+    assert_eq!((error.at(), error.problem()), ("$", &Problem::TooDeep));
+    let tagged = Value::Array(vec![Value::Tag(1, Box::new(Value::Unsigned(0)))]);
+    let list = Type::List(Box::new(primitive(Primitive::Timestamp)));
+    assert!(encode(&list, &tree, &tagged, codec, &DecodeLimits { max_depth: 1 }).is_ok());
+  }
+}
+
+#[test]
+fn names_what_the_container_needs_in_both_directions() {
+  let list = Type::List(Box::new(primitive(Primitive::U8)));
+  let pair = Type::Tuple(vec![primitive(Primitive::U8)]);
+  let by_name = Type::Map(Box::new(primitive(Primitive::U8)));
+  assert_eq!(
+    problem_of(&list, &Value::Null, Codec::Cbor),
+    ("$".into(), Problem::Expected("an array"))
+  );
+  assert_eq!(
+    problem_of(&pair, &Value::Null, Codec::Cbor),
+    ("$".into(), Problem::Expected("an array"))
+  );
+  assert_eq!(
+    problem_of(&by_name, &map(&[("a", text("x"))]), Codec::Json),
+    ("$[\"a\"]".into(), Problem::Expected("u8"))
+  );
+  assert_eq!(
+    decode_problem(&list, b"{}", Codec::Json),
+    ("$".into(), Problem::Expected("an array"))
+  );
+  assert_eq!(
+    decode_problem(&list, b"[1,\"x\"]", Codec::Json),
+    ("$[1]".into(), Problem::Expected("u8"))
+  );
+  assert_eq!(
+    decode_problem(&by_name, br#"{"a":"x"}"#, Codec::Json),
+    ("$[\"a\"]".into(), Problem::Expected("u8"))
+  );
+  assert_eq!(
+    decode_problem(&pair, b"[\"x\"]", Codec::Json),
+    ("$[0]".into(), Problem::Expected("u8"))
+  );
+  assert_eq!(
+    decode_problem(&reference("Message"), b"[]", Codec::Json),
+    ("$".into(), Problem::Expected("a map"))
+  );
+  assert_eq!(
+    decode_problem(&reference("Status"), &[0x01], Codec::Cbor),
+    ("$".into(), Problem::Expected("a variant name or a one-entry map"))
+  );
+  assert_eq!(
+    decode_problem(&primitive(Primitive::Bool), &[0x01], Codec::Cbor),
+    ("$".into(), Problem::Expected("bool"))
+  );
+  assert_eq!(
+    decode_problem(&primitive(Primitive::Bytes), b"1", Codec::Json),
+    ("$".into(), Problem::Expected("bytes"))
+  );
 }

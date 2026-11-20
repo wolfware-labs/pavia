@@ -56,13 +56,14 @@ fn writes_whole_seconds_as_integers_and_others_as_the_narrowest_exact_float() {
   assert_eq!(epoch_seconds(123), Value::Float(half::f16::from_f64(0.123).to_f64()));
   assert_eq!(epoch_seconds(100_100), Value::Float(f64::from(100.1_f32)));
   assert_eq!(epoch_seconds(1_758_499_200_123), Value::Float(1_758_499_200.123));
+  assert_eq!(epoch_seconds(-127_938), Value::Float(f64::from(-127.938_f32)));
 }
 
 #[test]
 fn reads_epoch_seconds_within_the_rfc3339_range() {
   assert_eq!(millis_of_epoch_seconds(&Value::Unsigned(1)), Some(1000));
   assert_eq!(millis_of_epoch_seconds(&Value::Negative(0)), Some(-1000));
-  assert_eq!(millis_of_epoch_seconds(&Value::Float(0.0005)), Some(1));
+  assert_eq!(millis_of_epoch_seconds(&Value::Float(0.0006)), Some(1));
   assert_eq!(millis_of_epoch_seconds(&Value::Float(-0.25)), Some(-250));
   let last = Value::Unsigned(u64::try_from(MAX_MILLIS / 1000).unwrap());
   assert_eq!(millis_of_epoch_seconds(&last), Some(MAX_MILLIS - 999));
@@ -147,5 +148,15 @@ proptest! {
   fn every_instant_round_trips_through_both_forms(millis in MIN_MILLIS..=MAX_MILLIS) {
     prop_assert_eq!(millis_of_rfc3339(&rfc3339(millis)), Some(millis));
     prop_assert_eq!(millis_of_epoch_seconds(&epoch_seconds(millis)), Some(millis));
+    prop_assert!(!is_tie(millis));
   }
+}
+
+fn is_tie(millis: i64) -> bool {
+  matches!(epoch_seconds(millis), Value::Float(seconds) if (seconds * 1000.0 - millis as f64).abs() >= 0.5)
+}
+
+#[test]
+fn writes_no_float_half_a_millisecond_away_where_half_and_single_floats_are_dense() {
+  assert!((-300_000..300_000).all(|millis| !is_tie(millis)));
 }

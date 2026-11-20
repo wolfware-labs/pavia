@@ -95,7 +95,7 @@ describe("frame vectors", () => {
 describe("codec vectors", () => {
   for (const { ctx, c, types } of cases("codecs")) {
     it(ctx, () => {
-      if (typeof c.json === "string") expect(() => JSON.parse(c.json as string)).not.toThrow();
+      if (typeof c.json === "string" && c.error === undefined) expect(() => JSON.parse(c.json as string)).not.toThrow();
       if (typeof c.value !== "string" || typeof c.cbor !== "string") return;
       const expected = parse(c.value);
       const bytes = hexToBytes(c.cbor);
@@ -105,7 +105,7 @@ describe("codec vectors", () => {
           expect(render(c.type as string | Json, expected, types), "json is not the canonical form of value").toBe(c.json);
         }
       }
-      expect(same(decode(bytes), expected)).toBe(true);
+      if (c.direction === "both" || c.normalizes !== true) expect(same(decode(bytes), expected)).toBe(true);
     });
   }
 });

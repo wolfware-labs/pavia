@@ -2,35 +2,15 @@
 //! encodes its value to exactly its `cbor` and `json` and decodes both back to the value; a `decode`
 //! case decodes its input to the value, or fails when it carries an `error`.
 
-use pavia_codec::{Types, decode, encode};
-use pavia_contract::schema::{Definition, Enum, Field, Primitive, Struct, Type, Variant};
+use pavia_codec::{decode, encode};
+use pavia_contract::schema::{Definition, Enum, Field, Primitive, Struct, Type, Types, Variant};
 use pavia_proto::data::{Codec, DecodeLimits, Value};
 use pavia_vectors::diag::{self, Diag};
 use serde_json::Value as Json;
 
-const PRIMITIVES: [Primitive; 17] = [
-  Primitive::Unit,
-  Primitive::Bool,
-  Primitive::I8,
-  Primitive::I16,
-  Primitive::I32,
-  Primitive::I64,
-  Primitive::U8,
-  Primitive::U16,
-  Primitive::U32,
-  Primitive::U64,
-  Primitive::F32,
-  Primitive::F64,
-  Primitive::String,
-  Primitive::Bytes,
-  Primitive::Timestamp,
-  Primitive::Uuid,
-  Primitive::Any,
-];
-
 fn ty(json: &Json) -> Type {
   if let Some(name) = json.as_str() {
-    let primitive = PRIMITIVES.into_iter().find(|primitive| primitive.name() == name);
+    let primitive = Primitive::ALL.into_iter().find(|primitive| primitive.name() == name);
     return Type::from(primitive.unwrap_or_else(|| panic!("unknown primitive {name}")));
   }
   let (key, inner) = json
@@ -178,7 +158,8 @@ fn runs_every_codec_vector() {
         continue;
       };
       if case.both {
-        let encoded = encode(&case.ty, types, value, codec).unwrap_or_else(|error| panic!("{id}: {error}"));
+        let encoded =
+          encode(&case.ty, types, value, codec, &DecodeLimits::default()).unwrap_or_else(|error| panic!("{id}: {error}"));
         assert_eq!(encoded, input, "{id}: {} encoding", codec.name());
       }
       let back = decoded(case, types, codec, &input).unwrap_or_else(|error| panic!("{id}: {} {error}", codec.name()));

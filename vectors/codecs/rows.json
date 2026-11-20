@@ -303,6 +303,7 @@
       "note": "A whole second written as a double: decoders accept it.",
       "type": "timestamp",
       "direction": "decode",
+      "normalizes": true,
       "value": "1(1758499200)",
       "cbor": "c1 fb 41 da 34 24 60 00 00 00"
     },
@@ -316,6 +317,18 @@
       "direction": "decode",
       "value": "1(0.5)",
       "cbor": "c1 fa 3f 00 00 00"
+    },
+    {
+      "id": "timestamp-next-to-a-tie",
+      "spec": [
+        "12.3"
+      ],
+      "note": "-127.938 s: the half float -127.9375 is exactly half a millisecond away, a tie that decoders could round either way, so the encoder writes the single float, which is closer than half a millisecond.",
+      "type": "timestamp",
+      "direction": "both",
+      "value": "1(-127.93800354003906)",
+      "cbor": "c1 fa c2 ff e0 42",
+      "json": "\"1969-12-31T23:57:52.062Z\""
     },
     {
       "id": "uuid-direct",
@@ -482,6 +495,7 @@
         "ref": "Options"
       },
       "direction": "decode",
+      "normalizes": true,
       "value": "{}",
       "cbor": "a1 64 6c 61 6e 67 f6",
       "json": "{\"lang\":null}"

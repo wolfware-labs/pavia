@@ -12,7 +12,9 @@ pub const MAX_MILLIS: i64 = 253_402_300_799_999;
 const MILLIS_PER_DAY: i64 = 86_400_000;
 
 /// The tag 1 content for `millis`: whole seconds as an integer, otherwise the narrowest float, half,
-/// single or double, whose value rounds back to the same millisecond (§12.3).
+/// single or double, whose value lies less than half a millisecond from `millis` (§12.3). A float
+/// exactly half a millisecond away is a tie that decoders could round either way, so it is never
+/// chosen; a narrower float times 1000 is exact in `f64`, so the comparison is too.
 pub fn epoch_seconds(millis: i64) -> Value {
   if millis % 1000 == 0 {
     return integer(i128::from(millis / 1000));
@@ -22,7 +24,7 @@ pub fn epoch_seconds(millis: i64) -> Value {
   let single = f64::from(seconds as f32);
   let narrowest = [half, single]
     .into_iter()
-    .find(|candidate| to_millis(*candidate) == Some(millis))
+    .find(|candidate| (candidate * 1000.0 - millis as f64).abs() < 0.5)
     .unwrap_or(seconds);
   Value::Float(narrowest)
 }
@@ -139,7 +141,7 @@ pub fn integer_of(value: &Value) -> Option<i128> {
 pub fn integer(number: i128) -> Value {
   match u64::try_from(number) {
     Ok(unsigned) => Value::Unsigned(unsigned),
-    Err(_) => Value::Negative(u64::try_from(-1 - number).unwrap_or(u64::MAX)),
+    Err(_) => Value::Negative(u64::try_from(-1 - number).expect("contract integers lie in −2^64..2^64")),
   }
 }
 

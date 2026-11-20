@@ -37,6 +37,7 @@
         "note": {"type": "string", "minLength": 1},
         "type": {"$ref": "#/$defs/type"},
         "direction": {"enum": ["both", "decode"]},
+        "normalizes": {"const": true},
         "value": {"type": "string", "minLength": 1},
         "cbor": {"$ref": "#/$defs/hex"},
         "json": {"type": "string"},

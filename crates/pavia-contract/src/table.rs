@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::Contract;
 use crate::name;
-use crate::schema::{Definition, Primitive, Type};
+use crate::schema::{Definition, Primitive, Type, Types};
 
 /// The named types collected so far, keyed by their manifest name (§12.2 `types`).
 ///
@@ -23,7 +23,7 @@ use crate::schema::{Definition, Primitive, Type};
 pub struct TypeTable {
   seen: BTreeSet<TypeId>,
   kinds: BTreeMap<String, NameKind>,
-  definitions: BTreeMap<String, Definition>,
+  definitions: Types,
   shared: Vec<(String, Definition)>,
   wrapped: BTreeSet<String>,
   errors: Vec<TypeError>,
@@ -109,7 +109,7 @@ impl TypeTable {
   /// [`TypeError::AliasCycle`] for an alias that leads back to itself through aliases only. The last two
   /// are not checked through a name with a collision, whose types the table cannot tell apart; they show
   /// once the collision is fixed.
-  pub fn finish(mut self) -> Result<BTreeMap<String, Definition>, Vec<TypeError>> {
+  pub fn finish(mut self) -> Result<Types, Vec<TypeError>> {
     for (name, definition) in std::mem::take(&mut self.shared) {
       if self.definitions.get(&name) != Some(&definition) {
         self.report(TypeError::Collision { name });
@@ -162,11 +162,7 @@ enum NameKind {
 
 /// Where `name`'s chain of aliases through `definitions` leads. A chain through a name in `collided` ends
 /// there unknown: that name has several definitions, and the table keeps only the first.
-pub(crate) fn follow<'a>(
-  definitions: &'a BTreeMap<String, Definition>,
-  name: &'a str,
-  collided: &BTreeSet<String>,
-) -> Chain<'a> {
+pub(crate) fn follow<'a>(definitions: &'a Types, name: &'a str, collided: &BTreeSet<String>) -> Chain<'a> {
   let mut visited = BTreeSet::new();
   let mut name = name;
   while visited.insert(name) {

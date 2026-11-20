@@ -26,13 +26,13 @@
 //! assert_eq!(json["services"][0]["server_methods"][0]["returns"], "u64");
 //! ```
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use serde_json::{Map, Value};
 use thiserror::Error;
 
 use crate::name;
-use crate::schema::{Definition, Primitive, Struct, Type};
+use crate::schema::{Definition, Primitive, Struct, Type, Types};
 use crate::table::{Chain, follow};
 
 /// The manifest format version this crate writes, the top-level `pavia` key.
@@ -46,7 +46,7 @@ pub struct Manifest {
   services: Vec<Service>,
   channels: Vec<Channel>,
   datagrams: Vec<Datagram>,
-  types: BTreeMap<String, Definition>,
+  types: Types,
 }
 
 impl Manifest {
@@ -60,7 +60,7 @@ impl Manifest {
       services: Vec::new(),
       channels: Vec::new(),
       datagrams: Vec::new(),
-      types: BTreeMap::new(),
+      types: Types::new(),
     }
   }
 
@@ -95,7 +95,7 @@ impl Manifest {
   /// The same manifest with `types` as its `types` table, such as the one a
   /// [`TypeTable`](crate::TypeTable) collects.
   #[must_use]
-  pub fn types(mut self, types: BTreeMap<String, Definition>) -> Self {
+  pub fn types(mut self, types: Types) -> Self {
     self.types = types;
     self
   }
@@ -724,7 +724,7 @@ pub enum ManifestError {
 }
 
 struct Check<'a> {
-  types: &'a BTreeMap<String, Definition>,
+  types: &'a Types,
   errors: Vec<ManifestError>,
 }
 

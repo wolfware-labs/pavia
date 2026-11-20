@@ -35,15 +35,7 @@ fn write(out: &mut String, ty: &Json, v: &Value, types: &Map<String, Json>) -> R
     },
     "list" => {
       let items = v.as_array().ok_or("list expects an array")?;
-      out.push('[');
-      for (i, item) in items.iter().enumerate() {
-        if i > 0 {
-          out.push(',');
-        }
-        write(out, arg, item, types)?;
-      }
-      out.push(']');
-      Ok(())
+      joined(out, ['[', ']'], items, |out, item| write(out, arg, item, types))
     }
     "tuple" => {
       let elements = arg.as_array().ok_or("tuple needs element types")?;
@@ -51,15 +43,9 @@ fn write(out: &mut String, ty: &Json, v: &Value, types: &Map<String, Json>) -> R
         .as_array()
         .filter(|items| items.len() == elements.len())
         .ok_or("tuple length")?;
-      out.push('[');
-      for (i, (element, item)) in elements.iter().zip(items).enumerate() {
-        if i > 0 {
-          out.push(',');
-        }
-        write(out, element, item, types)?;
-      }
-      out.push(']');
-      Ok(())
+      joined(out, ['[', ']'], elements.iter().zip(items), |out, (element, item)| {
+        write(out, element, item, types)
+      })
     }
     "map" => {
       let entries = v.as_map().ok_or("map expects a map")?;
@@ -68,17 +54,11 @@ fn write(out: &mut String, ty: &Json, v: &Value, types: &Map<String, Json>) -> R
         .map(|(k, val)| Ok((k.as_text().ok_or("map keys are text")?, val)))
         .collect::<Result<_, String>>()?;
       sorted.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
-      out.push('{');
-      for (i, (k, val)) in sorted.iter().enumerate() {
-        if i > 0 {
-          out.push(',');
-        }
+      joined(out, ['{', '}'], sorted, |out, (k, val)| {
         string(out, k);
         out.push(':');
-        write(out, arg, val, types)?;
-      }
-      out.push('}');
-      Ok(())
+        write(out, arg, val, types)
+      })
     }
     "struct" => {
       let fields = arg["fields"].as_array().ok_or("struct needs fields")?;
@@ -186,30 +166,32 @@ fn untyped(out: &mut String, v: &Value) -> Result<(), String> {
     Value::Integer(i) => out.push_str(&i128::from(*i).to_string()),
     Value::Float(f) => out.push_str(&number(*f)?),
     Value::Text(s) => string(out, s),
-    Value::Array(items) => {
-      out.push('[');
-      for (i, item) in items.iter().enumerate() {
-        if i > 0 {
-          out.push(',');
-        }
-        untyped(out, item)?;
-      }
-      out.push(']');
-    }
-    Value::Map(entries) => {
-      out.push('{');
-      for (i, (k, val)) in entries.iter().enumerate() {
-        if i > 0 {
-          out.push(',');
-        }
-        string(out, k.as_text().ok_or("json object keys are text")?);
-        out.push(':');
-        untyped(out, val)?;
-      }
-      out.push('}');
-    }
+    Value::Array(items) => joined(out, ['[', ']'], items, untyped)?,
+    Value::Map(entries) => joined(out, ['{', '}'], entries, |out, (k, val)| {
+      string(out, k.as_text().ok_or("json object keys are text")?);
+      out.push(':');
+      untyped(out, val)
+    })?,
     _ => return Err(format!("{v:?} has no json form")),
   }
+  Ok(())
+}
+
+/// Writes `items` with `each`, separated by commas, between the two `brackets`.
+fn joined<T>(
+  out: &mut String,
+  brackets: [char; 2],
+  items: impl IntoIterator<Item = T>,
+  mut each: impl FnMut(&mut String, T) -> Result<(), String>,
+) -> Result<(), String> {
+  out.push(brackets[0]);
+  for (i, item) in items.into_iter().enumerate() {
+    if i > 0 {
+      out.push(',');
+    }
+    each(out, item)?;
+  }
+  out.push(brackets[1]);
   Ok(())
 }
 

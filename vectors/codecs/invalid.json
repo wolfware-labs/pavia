@@ -252,6 +252,36 @@
       "cbor": "81 c5 01"
     },
     {
+      "id": "undeclared-tag-in-struct-field",
+      "spec": [
+        "12.3"
+      ],
+      "note": "Tag 5 around the f64 field y of Point.",
+      "type": {
+        "ref": "Point"
+      },
+      "direction": "decode",
+      "error": {
+        "codec": "cbor",
+        "reason": "tag 5"
+      },
+      "cbor": "a2 61 79 c5 f9 3c 00 61 78 f9 3c 00"
+    },
+    {
+      "id": "bytes-nonzero-trailing-bits",
+      "spec": [
+        "12.3"
+      ],
+      "note": "\"AB\" leaves the low bits of its last character set: one byte has one base64url form, \"AA\".",
+      "type": "bytes",
+      "direction": "decode",
+      "error": {
+        "codec": "json",
+        "reason": "trailing bits"
+      },
+      "json": "\"AB\""
+    },
+    {
       "id": "u8-300-cbor",
       "spec": [
         "12.3"

@@ -59,6 +59,7 @@ A file may define named types in `types`, in the form of the manifest's `types` 
 | `cbor` | with `value` | The `cbor` encoding, as hex |
 | `json` | with `value`, or with `error` | The `json` encoding as text, compared byte for byte: compact, no insignificant whitespace |
 | `error` | one of | `{codec, reason?}`: decoding the given `cbor` or `json` input MUST fail. Error cases are always `decode` |
+| `normalizes` | no | `true` on a `decode` case whose input decodes to another form of the value than the untyped item, such as a whole-second timestamp written as a float or an optional field written as `null`. Untyped checkers skip comparing the item with `value`; typed decoders still return `value` |
 
 Every value has one encoding ([spec 12.3](../spec/pavia-protocol.md#123-codec-mapping), draft 0.9): struct fields in manifest declaration order, `map` keys sorted, shortest integer and float forms, compact `json`. Codec vectors are therefore `both` unless the input is one that encoders never produce, such as fields out of order.
 

@@ -53,6 +53,11 @@ export function render(ty: Type, value: Diag, types: Types): string {
     case "list":
       if (value.kind !== "array") throw new Error("list expects an array");
       return `[${value.items.map((i) => render(arg as Type, i, types)).join(",")}]`;
+    case "tuple": {
+      const elements = arg as Type[];
+      if (value.kind !== "array" || value.items.length !== elements.length) throw new Error("tuple length");
+      return `[${value.items.map((item, i) => render(elements[i] as Type, item, types)).join(",")}]`;
+    }
     case "map": {
       if (value.kind !== "map") throw new Error("map expects a map");
       const members = value.entries
@@ -85,8 +90,32 @@ export function render(ty: Type, value: Diag, types: Types): string {
   }
 }
 
+/** An `any` value as received: json's own forms only, map members in the order given. */
+function untyped(v: Diag): string {
+  switch (v.kind) {
+    case "null":
+      return "null";
+    case "bool":
+      return String(v.value);
+    case "uint":
+    case "nint":
+    case "float":
+      return JSON.stringify(number(v));
+    case "text":
+      return JSON.stringify(v.value);
+    case "array":
+      return `[${v.items.map(untyped).join(",")}]`;
+    case "map":
+      return `{${v.entries.map(([k, item]) => `${JSON.stringify(textOf(k))}:${untyped(item)}`).join(",")}}`;
+    default:
+      throw new Error(`${v.kind} has no json form`);
+  }
+}
+
 function primitive(name: string, v: Diag): string {
   switch (name) {
+    case "any":
+      return untyped(v);
     case "unit":
       return "null";
     case "bool":

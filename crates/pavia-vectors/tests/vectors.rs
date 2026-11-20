@@ -164,6 +164,8 @@ fn codec_vectors_match_their_cbor_and_json() {
           let rendered = pavia_vectors::json::render(&case["type"], &expected, types).unwrap_or_else(|e| panic!("{ctx}: {e}"));
           assert_eq!(rendered, json, "{ctx}: json is not the canonical form of value");
         }
+      }
+      if case["direction"] == "both" || case["normalizes"] != true {
         assert!(same(&decode(&bytes), &expected), "{ctx}: cbor does not decode to value");
       }
     }

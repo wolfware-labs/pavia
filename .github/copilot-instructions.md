@@ -6,7 +6,7 @@ Pavia is a real-time RPC and messaging protocol (spec in `spec/pavia-protocol.md
 
 - `spec/`: editor's draft plus one frozen copy per version under `spec/versions/`. `spec/README.md` has the rules.
 - `vectors/`: frame, codec, varint and script vectors shared by every implementation; `vectors/README.md` defines the formats, `vectors/schema/` validates their structure, and `crates/pavia-vectors` and `clients/typescript/packages/vectors` (test only, unpublished) check their content.
-- `crates/`: Rust workspace members (`pavia-proto` sans-IO core, `pavia-contract`, `pavia-contract-derive`, `pavia-server`, `pavia-axum`, `pavia-webtransport`, `pavia-codegen`, `pavia-cli`; `pavia-macros` is planned in #218).
+- `crates/`: Rust workspace members (`pavia-proto` sans-IO core, `pavia-contract`, `pavia-codec`, `pavia-contract-derive`, `pavia-server`, `pavia-axum`, `pavia-webtransport`, `pavia-codegen`, `pavia-cli`; `pavia-macros` is planned in #218).
 - `clients/rust/`: the `pavia-client` crate. `clients/typescript/`: pnpm workspace with `@pavia/client`.
 - `docs/design/`: decision records (`sans-io.md` for crates and layering, `spec-review-2026-10.md` for the draft 0.8 and 0.9 protocol decisions). `ROADMAP.md`: milestones and capability IDs (`C4.7`) that issues and commits reference.
 - User guides live in the separate `wolfware-labs/pavia-docs` repository.
@@ -22,7 +22,7 @@ Pavia is a real-time RPC and messaging protocol (spec in `spec/pavia-protocol.md
 
 1. Spec first. A behavior change lands in `spec/pavia-protocol.md` and `vectors/` in the same PR as the code, or before it. Code that decides behavior the spec leaves open is a defect; flag it.
 2. Spec versioning. Any edit to `spec/pavia-protocol.md` adds one byte-identical copy under `spec/versions/<version>/`, bumps the `**Version:**` line, adds a changelog entry and a row in `spec/README.md`. Files already under `spec/versions/` are never modified, renamed or deleted.
-3. Crate boundaries. `pavia-proto` and `pavia-contract` have no IO, no async runtime, no `tokio`, `hyper`, `axum` or `quinn`; `pavia-contract` does not depend on `pavia-proto`; `pavia-webtransport` does not depend on `pavia-proto`; `pavia-client` does not depend on `pavia-server`; only `pavia-axum` exposes axum types; `pavia-contract-derive` generates code against `pavia-contract` only, and server-side macros belong in `pavia-macros`. Both core crates carry `#![forbid(unsafe_code)]`.
+3. Crate boundaries. `pavia-proto`, `pavia-contract` and `pavia-codec` have no IO, no async runtime, no `tokio`, `hyper`, `axum` or `quinn`; `pavia-contract` does not depend on `pavia-proto`, and the typed codecs that need both live in `pavia-codec`; `pavia-webtransport` does not depend on `pavia-proto`; `pavia-client` does not depend on `pavia-server`; only `pavia-axum` exposes axum types; `pavia-contract-derive` generates code against `pavia-contract` only, and server-side macros belong in `pavia-macros`. The three carry `#![forbid(unsafe_code)]`.
 4. The `pavia` CLI works on manifest files and URLs; it never links application code (#67).
 5. Commits use Conventional Commits (`feat(proto): ...`, `docs(spec): ...`, `chore: ...`) and reference the capability ID or issue they implement.
 

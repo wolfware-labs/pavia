@@ -23,6 +23,7 @@ fn names_every_primitive_as_the_spec_does() {
     (Primitive::Uuid, "uuid"),
     (Primitive::Any, "any"),
   ];
+  assert_eq!(names.map(|(primitive, _)| primitive), Primitive::ALL);
   for (primitive, name) in names {
     assert_eq!(primitive.name(), name);
     assert_eq!(Type::from(primitive).to_json(), json!(name));
