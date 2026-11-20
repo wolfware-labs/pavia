@@ -5,8 +5,9 @@
 //! model leaves out what §12.2 forbids instead of checking for it: a notification has no shape or result
 //! types, an absent optional field has no `null` to write, and a field equal to its default (`"returns":
 //! "unit"`, `"idempotent": false`, `"history": false`, an empty `params`) is never written. What the
-//! model can hold but §12.2 forbids, [`Manifest::validate`] reports: a name outside the grammar, a `ref`
-//! to no named type, an `Option` of `unit`, and two entries with one name.
+//! model can hold but §12.1 and §12.2 forbid, [`Manifest::validate`] reports: a name outside the grammar,
+//! a `ref` to no named type, an `Option` of `unit` (directly or through aliases), an `optional` field whose
+//! type is not an `option`, an alias that leads back to itself, and two entries of one list with one name.
 //!
 //! The output depends only on the manifest's content: services, methods, channels and datagram topics
 //! are sorted by name in byte order, while params, struct fields and enum variants keep the order they
@@ -157,7 +158,9 @@ impl Manifest {
   /// The errors of [`Manifest::validate`]; nothing is written.
   pub fn render(&self) -> Result<String, Vec<ManifestError>> {
     self.validate()?;
-    let mut text = serde_json::to_string_pretty(&sorted_keys(self.to_json())).expect("a JSON value with text keys serializes");
+    let mut json = self.to_json();
+    json.sort_all_objects();
+    let mut text = serde_json::to_string_pretty(&json).expect("a JSON value with text keys serializes");
     text.push('\n');
     Ok(text)
   }
@@ -173,22 +176,18 @@ impl Manifest {
         .map(Service::to_json)
         .collect(),
     );
-    {
-      manifest.insert(
-        "channels".into(),
-        sorted(&self.channels, |channel| &channel.namespace)
-          .map(Channel::to_json)
-          .collect(),
-      );
-    }
-    {
-      manifest.insert(
-        "datagrams".into(),
-        sorted(&self.datagrams, |datagram| &datagram.topic)
-          .map(Datagram::to_json)
-          .collect(),
-      );
-    }
+    manifest.insert(
+      "channels".into(),
+      sorted(&self.channels, |channel| &channel.namespace)
+        .map(Channel::to_json)
+        .collect(),
+    );
+    manifest.insert(
+      "datagrams".into(),
+      sorted(&self.datagrams, |datagram| &datagram.topic)
+        .map(Datagram::to_json)
+        .collect(),
+    );
     manifest.insert(
       "types".into(),
       self
@@ -839,33 +838,14 @@ impl Check<'_> {
       }
     }
   }
-}
 
-impl Check<'_> {
   /// Whether `ty` is `unit`, directly or through aliases.
   fn is_unit(&self, ty: &Type) -> bool {
     match ty {
       Type::Primitive(Primitive::Unit) => true,
-      Type::Ref(name) => matches!(
-        follow(self.types, name, &BTreeSet::new()),
-        Chain::Ends(Some(Definition::Alias(Type::Primitive(Primitive::Unit))))
-      ),
+      Type::Ref(name) => follow(self.types, name, &BTreeSet::new()).ends_in_unit(),
       _ => false,
     }
-  }
-}
-
-/// `value` with the keys of every object in sorted order. A `Map` keeps insertion order when any crate in
-/// the build turns on serde_json's `preserve_order` feature, so the order is set here instead.
-fn sorted_keys(value: Value) -> Value {
-  match value {
-    Value::Object(object) => {
-      let mut entries: Vec<(String, Value)> = object.into_iter().collect();
-      entries.sort_by(|(left, _), (right, _)| left.cmp(right));
-      Value::Object(entries.into_iter().map(|(key, value)| (key, sorted_keys(value))).collect())
-    }
-    Value::Array(items) => Value::Array(items.into_iter().map(sorted_keys).collect()),
-    other => other,
   }
 }
 

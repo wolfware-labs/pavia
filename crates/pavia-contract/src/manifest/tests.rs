@@ -563,12 +563,3 @@ fn refuses_an_option_of_an_alias_of_unit_and_an_alias_cycle() {
     ]
   );
 }
-
-#[test]
-fn sorts_the_keys_of_every_object() {
-  let value = super::sorted_keys(json!({"b": [{"z": 1, "y": 2}], "a": {"d": 1, "c": 2}}));
-  assert_eq!(
-    serde_json::to_string(&value).unwrap(),
-    r#"{"a":{"c":2,"d":1},"b":[{"y":2,"z":1}]}"#
-  );
-}

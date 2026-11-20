@@ -124,10 +124,7 @@ impl TypeTable {
       })
       .collect();
     for name in std::mem::take(&mut self.wrapped) {
-      if matches!(
-        follow(&self.definitions, &name, &collided),
-        Chain::Ends(Some(Definition::Alias(Type::Primitive(Primitive::Unit))))
-      ) {
+      if follow(&self.definitions, &name, &collided).ends_in_unit() {
         self.report(TypeError::OptionOfUnit { name });
       }
     }
@@ -190,6 +187,13 @@ pub(crate) enum Chain<'a> {
   Ends(Option<&'a Definition>),
   /// Back to a name it passed, never reaching a type.
   Loops,
+}
+
+impl Chain<'_> {
+  /// Whether the chain ends at an alias of `unit`.
+  pub(crate) fn ends_in_unit(&self) -> bool {
+    matches!(self, Chain::Ends(Some(Definition::Alias(Type::Primitive(Primitive::Unit)))))
+  }
 }
 
 /// What keeps the collected types from being a valid `types` table.
