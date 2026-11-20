@@ -16,6 +16,7 @@
 //!  CALL from the server "ui/alert"     ─▶ client_method("ui/alert")
 //! ```
 
+use std::any::{self, TypeId};
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -27,6 +28,8 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use bytes::{Bytes, BytesMut};
+use pavia_contract::schema::Type;
+use pavia_contract::{Contract, TypeTable};
 use pavia_proto::data::{self, Codec, EncodeError, Value};
 use pavia_proto::error::ErrorStatus;
 use pavia_proto::frame::Meta;
@@ -130,7 +133,22 @@ pub enum Kind {
   Notify,
 }
 
-/// One registered method: its handler and the facts about it the session reads.
+/// One registered method: its handler, the facts about it the session reads, and its signature, the
+/// contract types the manifest lists for it (§12.2).
+///
+/// A signature is declared with [`param`](Self::param), [`returns`](Self::returns),
+/// [`yields`](Self::yields), [`accepts`](Self::accepts) and [`error`](Self::error);
+/// [`manifest::render`](crate::manifest::render) checks it against the kind, the shape and the handler.
+/// The handler still takes and returns dynamic values
+/// until the typed codec mapping (#66).
+///
+/// ```
+/// use pavia_proto::stream::Shape;
+/// use pavia_server::methods::MethodEntry;
+///
+/// let history = MethodEntry::call(()).with_shape(Shape::ServerStream).param::<String>("room").yields::<String>();
+/// assert!(!history.declares_error());
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct MethodEntry<H> {
@@ -138,6 +156,66 @@ pub struct MethodEntry<H> {
   pub handler: H,
   /// CALL, with its shape and idempotence, or NOTIFY.
   pub kind: Kind,
+  signature: Signature,
+}
+
+/// The contract types of a method's parameters, result, streams and error, and its docs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Signature {
+  pub(crate) params: Vec<(String, ContractType)>,
+  pub(crate) returns: Option<ContractType>,
+  pub(crate) yields: Option<ContractType>,
+  pub(crate) accepts: Option<ContractType>,
+  pub(crate) error: Option<ContractType>,
+  pub(crate) docs: Option<String>,
+}
+
+impl Signature {
+  const EMPTY: Self = Self {
+    params: Vec::new(),
+    returns: None,
+    yields: None,
+    accepts: None,
+    error: None,
+    docs: None,
+  };
+}
+
+/// A Rust type that stands for a contract type in a signature, added to a [`TypeTable`] when the manifest
+/// is exported. Two are equal when they stand for the same Rust type.
+#[derive(Clone, Copy)]
+pub(crate) struct ContractType {
+  id: TypeId,
+  name: &'static str,
+  add: fn(&mut TypeTable) -> Type,
+}
+
+impl ContractType {
+  fn of<T: Contract>() -> Self {
+    Self {
+      id: TypeId::of::<T>(),
+      name: any::type_name::<T>(),
+      add: TypeTable::add::<T>,
+    }
+  }
+
+  pub(crate) fn add(self, table: &mut TypeTable) -> Type {
+    (self.add)(table)
+  }
+}
+
+impl PartialEq for ContractType {
+  fn eq(&self, other: &Self) -> bool {
+    self.id == other.id
+  }
+}
+
+impl Eq for ContractType {}
+
+impl fmt::Debug for ContractType {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    formatter.write_str(self.name)
+  }
 }
 
 impl<H> MethodEntry<H> {
@@ -150,6 +228,7 @@ impl<H> MethodEntry<H> {
         shape: Shape::Unary,
         idempotent: false,
       },
+      signature: Signature::EMPTY,
     }
   }
 
@@ -159,6 +238,7 @@ impl<H> MethodEntry<H> {
     Self {
       handler,
       kind: Kind::Notify,
+      signature: Signature::EMPTY,
     }
   }
 
@@ -179,6 +259,61 @@ impl<H> MethodEntry<H> {
       self.kind = Kind::Call { shape, idempotent: true };
     }
     self
+  }
+
+  /// The same method with a parameter named `name` of `T`'s contract type, after its other parameters.
+  /// Arguments are encoded in parameter order (§8.2).
+  #[must_use]
+  pub fn param<T: Contract>(mut self, name: impl Into<String>) -> Self {
+    self.signature.params.push((name.into(), ContractType::of::<T>()));
+    self
+  }
+
+  /// The same method, returning `T`: the RESULT value of a `unary` or `client_stream` call. A call that
+  /// declares none returns `unit`.
+  #[must_use]
+  pub fn returns<T: Contract>(mut self) -> Self {
+    self.signature.returns = Some(ContractType::of::<T>());
+    self
+  }
+
+  /// The same method, whose callee streams items of `T`: a `server_stream` or `bidi` call.
+  #[must_use]
+  pub fn yields<T: Contract>(mut self) -> Self {
+    self.signature.yields = Some(ContractType::of::<T>());
+    self
+  }
+
+  /// The same method, whose caller streams items of `T`: a `client_stream` or `bidi` call.
+  #[must_use]
+  pub fn accepts<T: Contract>(mut self) -> Self {
+    self.signature.accepts = Some(ContractType::of::<T>());
+    self
+  }
+
+  /// The same method, whose ERROR may carry a detail of `T` (§8.4). A call that declares none sends
+  /// every ERROR with an empty data section.
+  #[must_use]
+  pub fn error<T: Contract>(mut self) -> Self {
+    self.signature.error = Some(ContractType::of::<T>());
+    self
+  }
+
+  /// The same method, documented in the manifest.
+  #[must_use]
+  pub fn docs(mut self, docs: impl Into<String>) -> Self {
+    self.signature.docs = Some(docs.into());
+    self
+  }
+
+  /// Whether the method declares an error type, so that its ERROR may carry a detail (§8.4).
+  #[must_use]
+  pub const fn declares_error(&self) -> bool {
+    self.signature.error.is_some()
+  }
+
+  pub(crate) const fn signature(&self) -> &Signature {
+    &self.signature
   }
 }
 
@@ -342,8 +477,8 @@ impl From<StatusError> for HandlerError {
 }
 
 /// A deliberate error: a status that is never OK, a message, and optionally a typed detail and
-/// `meta` trailers (§8.4). A method whose contract declares no error type sends no detail; #67
-/// enforces that once the contract exists.
+/// `meta` trailers (§8.4). The detail of a method that declares no error type
+/// ([`MethodEntry::error`]) is dropped and logged: its ERROR carries an empty data section.
 ///
 /// ```
 /// use pavia_proto::error::ErrorStatus;

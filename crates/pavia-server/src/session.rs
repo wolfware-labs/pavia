@@ -27,7 +27,7 @@ use tokio::task::{self, AbortHandle, JoinError, JoinSet};
 use tokio::time::{Instant, sleep_until};
 
 use crate::auth::{AuthFailure, Authenticator, Authorizer, Principal};
-use crate::methods::{Handler, HandlerContext, HandlerError, Kind, MethodName, MethodRegistry, encode};
+use crate::methods::{Handler, HandlerContext, HandlerError, Kind, MethodEntry, MethodName, MethodRegistry, encode};
 use crate::session_id;
 use crate::sessions::{Handle, Inbox, Registration, Registry};
 use crate::websocket::{Received, Transport, TransportError};
@@ -57,10 +57,11 @@ type Authenticating<'a> = Pin<Box<dyn Future<Output = Result<Principal, AuthFail
 /// (INVALID_ARGUMENT), and last `authorizer`, on the call's task (UNAUTHENTICATED for an anonymous
 /// session, PERMISSION_DENIED otherwise). A streaming method is answered UNIMPLEMENTED until
 /// streams arrive in M5. A handler's [`StatusError`](crate::methods::StatusError) is answered as
-/// given, with its detail and `meta`. Any other failure (an unexpected handler error, a panic, a
-/// value the codec cannot encode) is answered INTERNAL with the configured generic message, or its
-/// own text cut to `MAX_INTERNAL_ERROR_MESSAGE` bytes in development mode, and logged in full with
-/// `tracing` either way (§8.4, §14).
+/// given, with its `meta`, and with its detail when the method declares an error type; otherwise the
+/// detail is dropped and logged, and ERROR carries an empty data section (§8.4). Any other failure
+/// (an unexpected handler error, a panic, a value the codec cannot encode) is answered INTERNAL
+/// with the configured generic message, or its own text cut to `MAX_INTERNAL_ERROR_MESSAGE` bytes
+/// in development mode, and logged in full with `tracing` either way (§8.4, §14).
 /// A handler made with [`Handler::with_context`] can notify the client through its
 /// [`HandlerContext`] while it runs: each NOTIFY goes out on the control stream in the order the
 /// handler sent it, with nothing ordering it against the call's answer (§8.9, §9.1). The
@@ -241,6 +242,7 @@ struct Calls<'a, Z> {
 struct RunningCall {
   stream: u64,
   method: MethodName,
+  declares_error: bool,
   cancelled: bool,
 }
 
@@ -315,7 +317,7 @@ fn validate_call<'m>(
   methods: &'m MethodRegistry<Handler>,
   codec: Codec,
   idempotency: bool,
-) -> Result<(&'m MethodName, &'m Handler, Vec<Value>), Refusal> {
+) -> Result<(&'m MethodName, &'m MethodEntry<Handler>, Vec<Value>), Refusal> {
   let Some((name, method)) = methods.server_entry(&call.method) else {
     return Err(Refusal::new(StatusCode::Unimplemented, "unknown method"));
   };
@@ -332,7 +334,7 @@ fn validate_call<'m>(
   if idempotency && idempotency_key_length(call).is_some_and(|length| length > MAX_IDEMPOTENCY_KEY) {
     return Err(Refusal::new(StatusCode::InvalidArgument, "idempotency key above 128 bytes"));
   }
-  Ok((name, &method.handler, arguments))
+  Ok((name, method, arguments))
 }
 
 fn arguments(data: &Bytes, codec: Codec, handler: &Handler) -> Result<Vec<Value>, Refusal> {
@@ -369,11 +371,11 @@ impl<Z: Authorizer + 'static> Calls<'_, Z> {
     let idempotency = session
       .negotiated()
       .is_some_and(|negotiated| negotiated.caps.contains(Capability::Idempotency));
-    let (name, handler, arguments) = match validate_call(call, self.methods, codec(session), idempotency) {
+    let (name, entry, arguments) = match validate_call(call, self.methods, codec(session), idempotency) {
       Ok(approved) => approved,
       Err(refusal) => return Some(refusal.answering(stream)),
     };
-    let (method, handler) = (name.clone(), handler.clone());
+    let (method, handler) = (name.clone(), entry.handler.clone());
     let (authorizer, principal) = (Arc::clone(&self.authorizer), Arc::clone(&self.principal));
     let context = self.context(session);
     let task = self.running.spawn(async move {
@@ -386,6 +388,7 @@ impl<Z: Authorizer + 'static> Calls<'_, Z> {
     let running = RunningCall {
       stream,
       method: name.clone(),
+      declares_error: entry.declares_error(),
       cancelled: false,
     };
     self.streams.insert(task.id(), running);
@@ -412,6 +415,7 @@ impl<Z: Authorizer + 'static> Calls<'_, Z> {
     let RunningCall {
       stream,
       method,
+      declares_error,
       cancelled,
     } = self.streams.remove(&id).expect("every running call has a stream");
     self.tasks.remove(&stream);
@@ -423,7 +427,15 @@ impl<Z: Authorizer + 'static> Calls<'_, Z> {
       },
       Ok(Err(Failed::Refused(refusal))) => refusal.answering(stream),
       Ok(Err(Failed::Handler(HandlerError::Status(status)))) => {
-        let (code, msg, detail, meta) = status.into_parts();
+        let (code, msg, mut detail, meta) = status.into_parts();
+        if detail.is_some() && !declares_error {
+          tracing::warn!(
+            stream,
+            method = method.as_str(),
+            "error detail dropped: the method declares no error type"
+          );
+          detail = None;
+        }
         match detail.map_or(Ok(Bytes::new()), |detail| encode(&detail, codec)) {
           Ok(detail) => Command::Error {
             stream,

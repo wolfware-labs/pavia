@@ -1,0 +1,149 @@
+{
+  "channels": [],
+  "datagrams": [],
+  "name": "example-app",
+  "pavia": 1,
+  "services": [
+    {
+      "client_methods": [
+        {
+          "kind": "call",
+          "name": "confirm",
+          "params": [
+            {
+              "name": "prompt",
+              "type": "string"
+            }
+          ],
+          "returns": "bool",
+          "shape": "unary"
+        },
+        {
+          "kind": "notify",
+          "name": "systemNotice",
+          "params": [
+            {
+              "name": "text",
+              "type": "string"
+            }
+          ]
+        }
+      ],
+      "name": "chat",
+      "server_methods": [
+        {
+          "kind": "call",
+          "name": "history",
+          "params": [
+            {
+              "name": "room",
+              "type": {
+                "ref": "RoomId"
+              }
+            }
+          ],
+          "shape": "server_stream",
+          "yields": {
+            "ref": "Message"
+          }
+        },
+        {
+          "error": {
+            "ref": "SendError"
+          },
+          "kind": "call",
+          "name": "send",
+          "params": [
+            {
+              "name": "room",
+              "type": {
+                "ref": "RoomId"
+              }
+            },
+            {
+              "name": "text",
+              "type": "string"
+            }
+          ],
+          "returns": {
+            "ref": "MessageId"
+          },
+          "shape": "unary"
+        },
+        {
+          "kind": "notify",
+          "name": "typing",
+          "params": [
+            {
+              "name": "room",
+              "type": {
+                "ref": "RoomId"
+              }
+            }
+          ]
+        },
+        {
+          "accepts": "bytes",
+          "kind": "call",
+          "name": "upload",
+          "returns": "u64",
+          "shape": "client_stream"
+        }
+      ]
+    }
+  ],
+  "types": {
+    "Message": {
+      "struct": {
+        "fields": [
+          {
+            "name": "id",
+            "type": {
+              "ref": "MessageId"
+            }
+          },
+          {
+            "name": "author",
+            "type": "string"
+          },
+          {
+            "name": "text",
+            "type": "string"
+          },
+          {
+            "name": "sent_at",
+            "type": "timestamp"
+          }
+        ]
+      }
+    },
+    "MessageId": {
+      "alias": "uuid"
+    },
+    "RoomId": {
+      "alias": "string"
+    },
+    "SendError": {
+      "enum": {
+        "variants": [
+          {
+            "name": "RoomNotFound"
+          },
+          {
+            "name": "TooLong",
+            "type": {
+              "struct": {
+                "fields": [
+                  {
+                    "name": "max",
+                    "type": "u32"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

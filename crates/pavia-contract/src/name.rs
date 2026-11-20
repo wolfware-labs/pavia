@@ -17,5 +17,23 @@ pub fn is_valid(name: &str) -> bool {
     && bytes.all(|byte| byte == b'_' || byte.is_ascii_alphanumeric())
 }
 
+/// Whether `namespace` is a channel namespace (§12.2): 1 to 255 bytes of the channel name characters of
+/// §10.1, `[A-Za-z0-9_\-./@]`, without the `:` that separates a namespace from the rest of a channel name.
+///
+/// ```
+/// use pavia_contract::name::is_valid_namespace;
+///
+/// assert!(is_valid_namespace("room"));
+/// assert!(is_valid_namespace("team.ops-1@eu"));
+/// assert!(!is_valid_namespace("room:x"));
+/// ```
+#[must_use]
+pub fn is_valid_namespace(namespace: &str) -> bool {
+  (1..=255).contains(&namespace.len())
+    && namespace
+      .bytes()
+      .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b'/' | b'@'))
+}
+
 #[cfg(test)]
 mod tests;

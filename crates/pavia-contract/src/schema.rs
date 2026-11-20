@@ -79,7 +79,7 @@ pub enum Type {
   /// A primitive: `"u32"`, `"string"`.
   Primitive(Primitive),
   /// `{"option": T}`: `T`, or absent. `T` is never `unit` (§12.1); the `Option<T>` mapping checks it, and
-  /// a type built by hand is checked when the manifest is validated (#67).
+  /// a type built by hand is checked by [`Manifest::validate`](crate::manifest::Manifest::validate).
   Option(Box<Type>),
   /// `{"list": T}`.
   List(Box<Type>),

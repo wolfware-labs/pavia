@@ -258,3 +258,22 @@ async fn refuses_arguments_the_session_codec_cannot_encode_and_sends_nothing() {
   assert!(context.notify(&progress(), vec![Value::Simple(25)]).await.is_err());
   assert!(commands.try_recv().is_err());
 }
+
+#[test]
+fn compares_signatures_by_their_rust_types_and_names() {
+  let entry = || MethodEntry::call(1).param::<u8>("a").returns::<String>();
+  assert_eq!(entry(), entry());
+  assert_ne!(entry(), MethodEntry::call(1).param::<u16>("a").returns::<String>());
+  assert_ne!(entry(), MethodEntry::call(1).param::<u8>("b").returns::<String>());
+  assert_ne!(entry(), entry().docs("Gets."));
+  assert_ne!(entry(), entry().yields::<u8>());
+  assert_ne!(entry(), entry().accepts::<u8>());
+  assert!(format!("{:?}", entry()).contains("alloc::string::String"));
+}
+
+#[test]
+fn says_whether_a_method_declares_an_error_type() {
+  assert!(!MethodEntry::call(1).declares_error());
+  assert!(MethodEntry::call(1).error::<String>().declares_error());
+  assert!(MethodEntry::notify(1).error::<String>().declares_error());
+}

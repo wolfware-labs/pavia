@@ -124,17 +124,14 @@ impl TypeTable {
       })
       .collect();
     for name in std::mem::take(&mut self.wrapped) {
-      if matches!(
-        self.follow(&name, &collided),
-        Chain::Ends(Some(Definition::Alias(Type::Primitive(Primitive::Unit))))
-      ) {
+      if follow(&self.definitions, &name, &collided).ends_in_unit() {
         self.report(TypeError::OptionOfUnit { name });
       }
     }
     let cycles: Vec<String> = self
       .definitions
       .keys()
-      .filter(|name| matches!(self.follow(name, &collided), Chain::Loops))
+      .filter(|name| matches!(follow(&self.definitions, name, &collided), Chain::Loops))
       .cloned()
       .collect();
     for name in cycles {
@@ -145,23 +142,6 @@ impl TypeTable {
     } else {
       Err(self.errors)
     }
-  }
-
-  /// Where `name`'s chain of aliases leads. A chain through a name in `collided` ends there unknown: that
-  /// name has several definitions, and the table keeps only the first.
-  fn follow<'a>(&'a self, name: &'a str, collided: &BTreeSet<String>) -> Chain<'a> {
-    let mut visited = BTreeSet::new();
-    let mut name = name;
-    while visited.insert(name) {
-      if collided.contains(name) {
-        return Chain::Ends(None);
-      }
-      match self.definitions.get(name) {
-        Some(Definition::Alias(Type::Ref(target))) => name = target,
-        definition => return Chain::Ends(definition),
-      }
-    }
-    Chain::Loops
   }
 
   fn report(&mut self, error: TypeError) {
@@ -180,12 +160,40 @@ enum NameKind {
   Generated,
 }
 
+/// Where `name`'s chain of aliases through `definitions` leads. A chain through a name in `collided` ends
+/// there unknown: that name has several definitions, and the table keeps only the first.
+pub(crate) fn follow<'a>(
+  definitions: &'a BTreeMap<String, Definition>,
+  name: &'a str,
+  collided: &BTreeSet<String>,
+) -> Chain<'a> {
+  let mut visited = BTreeSet::new();
+  let mut name = name;
+  while visited.insert(name) {
+    if collided.contains(name) {
+      return Chain::Ends(None);
+    }
+    match definitions.get(name) {
+      Some(Definition::Alias(Type::Ref(target))) => name = target,
+      definition => return Chain::Ends(definition),
+    }
+  }
+  Chain::Loops
+}
+
 /// Where a chain of `Alias(Ref)` definitions leads.
-enum Chain<'a> {
+pub(crate) enum Chain<'a> {
   /// To a definition that is not an alias of a reference, or to a name whose definition is not known.
   Ends(Option<&'a Definition>),
   /// Back to a name it passed, never reaching a type.
   Loops,
+}
+
+impl Chain<'_> {
+  /// Whether the chain ends at an alias of `unit`.
+  pub(crate) fn ends_in_unit(&self) -> bool {
+    matches!(self, Chain::Ends(Some(Definition::Alias(Type::Primitive(Primitive::Unit)))))
+  }
 }
 
 /// What keeps the collected types from being a valid `types` table.

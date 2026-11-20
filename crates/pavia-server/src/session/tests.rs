@@ -1845,6 +1845,20 @@ fn failing() -> Arc<MethodRegistry<Handler>> {
             .with_meta(reason.into_iter().collect())
             .into(),
         )
+      }))
+      .error::<BTreeMap<String, String>>(),
+    )
+    .unwrap();
+  methods
+    .register_server_method(
+      "users/peek",
+      MethodEntry::call(Handler::fallible(0, |_| async {
+        let not_found = ErrorStatus::try_from(StatusCode::NotFound).unwrap();
+        Err(
+          StatusError::new(not_found, "no such user")
+            .with_detail(Arg::Simple(25))
+            .into(),
+        )
       })),
     )
     .unwrap();
@@ -1878,7 +1892,8 @@ fn failing() -> Arc<MethodRegistry<Handler>> {
       MethodEntry::call(Handler::fallible(0, |_| async {
         let invalid = ErrorStatus::try_from(StatusCode::InvalidArgument).unwrap();
         Err(StatusError::new(invalid, "odd detail").with_detail(Arg::Simple(25)).into())
-      })),
+      }))
+      .error::<u32>(),
     )
     .unwrap();
   Arc::new(methods)
@@ -1922,6 +1937,17 @@ fn assert_hidden(answer: &Answer) {
     BTreeMap::from([(6, Value::from(13)), (7, Value::Text("internal error".into()))])
   );
   assert!(answer.data.is_empty());
+}
+
+#[tokio::test]
+async fn drops_and_logs_the_detail_of_a_method_that_declares_no_error_type() {
+  let (answer, logged) = logged_answer("users/peek").await;
+  assert_error(&answer, 2, 5);
+  assert_eq!(answer.header[&7], Value::Text("no such user".into()));
+  assert!(answer.data.is_empty());
+  assert!(logged.contains("error detail dropped"), "{logged}");
+  assert!(logged.contains("method=\"users/peek\""), "{logged}");
+  assert!(logged.contains("stream=2"), "{logged}");
 }
 
 #[tokio::test]
@@ -2128,6 +2154,7 @@ async fn cancelled_after_it_finished(outcome: Result<Arg, Failed>) -> Command {
   let running = RunningCall {
     stream: 2,
     method: MethodName::parse("chat/done").unwrap(),
+    declares_error: false,
     cancelled: false,
   };
   calls.streams.insert(task.id(), running);
