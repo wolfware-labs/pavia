@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ByteWriter,
   CloseCode,
   closeCodeFromWire,
   decodeFrame,
@@ -20,6 +21,7 @@ import {
   StreamFrameDecoder,
   takeFrame,
   toRawFrame,
+  writeRawFrame,
 } from "../src/index.js";
 import { concat, encodeError, hexToBytes, protocolError } from "./support.js";
 
@@ -170,6 +172,16 @@ describe("WebSocket messages", () => {
       expect(encodeError(() => encodeMessages([{ stream: 0, frame }])).kind).toBe("out_of_range");
     }
     expect([...encodeRawFrame({ ...raw(0xff, undefined), flags: 0xff })].slice(0, 2)).toEqual([0xff, 0xff]);
+    expect(encodeError(() => encodeRawFrame({ ...raw(0x04, undefined), type: 0x100 })).message).toBe(
+      "frame type 256 is not a byte",
+    );
+    expect(encodeError(() => encodeRawFrame({ ...raw(0x04, undefined), flags: -1 })).message).toBe(
+      "frame flags -1 is not a byte",
+    );
+    const out = new ByteWriter(16);
+    out.byte(7);
+    encodeError(() => writeRawFrame(out, { ...raw(0x04, undefined), flags: 0x100 }));
+    expect([...out.finish()]).toEqual([7]);
   });
 
   it("batches frames and splits above 2 x max_frame", () => {
@@ -356,7 +368,9 @@ describe("typed frames", () => {
 
   it("refuses values the decoder would refuse on encode", () => {
     const extension: Frame = { type: "EXTENSION", frameType: 0x01, header: new Uint8Array(0), data: new Uint8Array(0) };
-    expect(encodeError(() => encodeFrame(extension)).kind).toBe("not_an_extension_type");
+    for (const frameType of [0x01, 0x7f, 0x100, 128.5]) {
+      expect(encodeError(() => encodeFrame({ ...extension, frameType } as Frame)).kind).toBe("not_an_extension_type");
+    }
     expect(encodeError(() => encodeFrame({ type: "PING", data: new Uint8Array(9) })).kind).toBe("invalid_field");
     expect(encodeError(() => encodeFrame({ type: "END", meta: new Map([["Trace", "x"]]) })).kind).toBe("invalid_field");
     expect(encodeError(() => encodeFrame({ type: "CREDIT", credit: -1n })).kind).toBe("invalid_field");
