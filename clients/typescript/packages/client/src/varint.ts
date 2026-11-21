@@ -1,4 +1,4 @@
-import type { ByteWriter } from "./bytes.js";
+import { ByteWriter } from "./bytes.js";
 import { EncodeError } from "./errors.js";
 
 /** The largest value a varint holds, 2^62 - 1 (spec 5.1). */
@@ -78,7 +78,10 @@ export function varintLength(value: bigint | number): 1 | 2 | 4 | 8 {
  * @throws {@link EncodeError} `out_of_range` for a value above 2^62 - 1; nothing is written then.
  */
 export function writeVarint(out: ByteWriter, value: bigint | number): void {
-  out.bytes(encodeVarint(value));
+  const n = checked(value);
+  const length = varintLength(n);
+  out.byte(Number(n >> BigInt(8 * (length - 1))) + (PREFIX[length] as number));
+  for (let i = length - 2; i >= 0; i--) out.byte(Number((n >> BigInt(8 * i)) & 0xffn));
 }
 
 /**
@@ -87,15 +90,9 @@ export function writeVarint(out: ByteWriter, value: bigint | number): void {
  * @throws {@link EncodeError} `out_of_range` for a value above 2^62 - 1.
  */
 export function encodeVarint(value: bigint | number): Uint8Array {
-  const n = checked(value);
-  const out = new Uint8Array(varintLength(n));
-  let rest = n;
-  for (let i = out.length - 1; i >= 0; i--) {
-    out[i] = Number(rest % 256n);
-    rest /= 256n;
-  }
-  out[0] = (out[0] as number) + (PREFIX[out.length] as number);
-  return out;
+  const out = new ByteWriter(8);
+  writeVarint(out, value);
+  return out.finish();
 }
 
 function checked(value: bigint | number): bigint {

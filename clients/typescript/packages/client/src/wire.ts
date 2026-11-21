@@ -156,16 +156,15 @@ export function encodeMessages(frames: readonly WsFrame[], peerMaxFrame: number 
     if (!Number.isSafeInteger(stream) || stream < 0) {
       throw new EncodeError("stream_id_out_of_range", `stream ID ${stream} is not a non-negative safe integer`);
     }
-    const next = new ByteWriter();
-    writeVarint(next, stream);
-    writeRawFrame(next, frame);
-    const bytes = next.finish();
-    if (current.length > 0 && current.length + bytes.length > limit) {
+    const length = payloadLength(frame);
+    const size = varintLength(stream) + 2 + varintLength(length) + length;
+    if (size > limit) throw new EncodeError("frame_too_large", "WsFrame above 2 x max_frame");
+    if (current.length > 0 && current.length + size > limit) {
       messages.push(current.finish());
       current = new ByteWriter();
     }
-    if (bytes.length > limit) throw new EncodeError("frame_too_large", "WsFrame above 2 x max_frame");
-    current.bytes(bytes);
+    writeVarint(current, stream);
+    writeRawFrame(current, frame);
   }
   if (current.length > 0) messages.push(current.finish());
   return messages;

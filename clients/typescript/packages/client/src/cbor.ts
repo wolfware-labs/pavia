@@ -115,6 +115,7 @@ function writeValue(out: ByteWriter, value: HeaderValue): void {
 }
 
 function writeMap(out: ByteWriter, entries: HeaderMap): void {
+  if (entries.every(([key]) => key.kind === "uint")) return writeUintKeyedMap(out, entries);
   const encoded = entries.map(([key, value]) => ({ key: encodeHeaderValue(key), value }));
   encoded.sort((a, b) => compareBytes(a.key, b.key));
   for (let i = 1; i < encoded.length; i++) {
@@ -125,6 +126,23 @@ function writeMap(out: ByteWriter, entries: HeaderMap): void {
   writeHead(out, MAP, BigInt(encoded.length));
   for (const { key, value } of encoded) {
     out.bytes(key);
+    writeValue(out, value);
+  }
+}
+
+function writeUintKeyedMap(out: ByteWriter, entries: HeaderMap): void {
+  const sorted = [...entries].sort(([a], [b]) => {
+    const x = (a as { value: bigint }).value;
+    const y = (b as { value: bigint }).value;
+    return x < y ? -1 : x > y ? 1 : 0;
+  });
+  writeHead(out, MAP, BigInt(sorted.length));
+  let previous: bigint | undefined;
+  for (const [key, value] of sorted) {
+    const n = (key as { value: bigint }).value;
+    if (n === previous) throw new EncodeError("duplicate_key", "header map has a duplicate key");
+    previous = n;
+    writeHead(out, UNSIGNED, n);
     writeValue(out, value);
   }
 }

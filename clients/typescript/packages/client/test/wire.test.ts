@@ -217,6 +217,12 @@ describe("header sections", () => {
     }
   });
 
+  it("orders unsigned keys of every head width as their encoded bytes", () => {
+    const keys = [65536n, 256n, 24n, 23n, 0n, 255n];
+    const header = encodeHeader(keys.map((key) => [u(key), u(0)]));
+    expect([...header]).toEqual([...hexToBytes("a6 00 00 17 00 18 18 00 18 ff 00 19 01 00 00 1a 00 01 00 00 00")]);
+  });
+
   it("refuses duplicate keys and reserved simple values on encode", () => {
     expect(encodeError(() => encodeHeader([[u(1), u(0)], [u(1), u(1)]])).kind).toBe("duplicate_key");
     expect(encodeError(() => encodeHeader([[u(1), { kind: "simple", value: 24 }]])).kind).toBe("reserved_simple_value");
