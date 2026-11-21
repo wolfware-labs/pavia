@@ -71,6 +71,8 @@ export function encodeHeaderValue(value: HeaderValue): Uint8Array {
 }
 
 const LONE_SURROGATE = /\p{Surrogate}/u;
+const UTF8 = new TextEncoder();
+const SCRATCH = new DataView(new ArrayBuffer(8));
 
 function writeValue(out: ByteWriter, value: HeaderValue): void {
   switch (value.kind) {
@@ -85,7 +87,7 @@ function writeValue(out: ByteWriter, value: HeaderValue): void {
       if (LONE_SURROGATE.test(value.value)) {
         throw new EncodeError("lone_surrogate", "text holds a lone UTF-16 surrogate, which has no UTF-8 form");
       }
-      const utf8 = new TextEncoder().encode(value.value);
+      const utf8 = UTF8.encode(value.value);
       writeHead(out, TEXT, BigInt(utf8.length));
       return out.bytes(utf8);
     }
@@ -159,32 +161,30 @@ function writeHead(out: ByteWriter, major: number, argument: bigint): void {
 }
 
 function writeFloat(out: ByteWriter, x: number): void {
-  if (Number.isNaN(x)) {
-    out.bytes(new Uint8Array([0xf9, 0x7e, 0x00]));
-    return;
-  }
-  const half = halfBits(x);
-  const view = new DataView(new ArrayBuffer(9));
+  const half = Number.isNaN(x) ? 0x7e00 : halfBits(x);
   if (half !== undefined) {
-    view.setUint8(0, 0xf9);
-    view.setUint16(1, half);
-    out.bytes(new Uint8Array(view.buffer, 0, 3));
+    out.byte(0xf9);
+    out.byte(half >>> 8);
+    out.byte(half & 0xff);
   } else if (Math.fround(x) === x) {
-    view.setUint8(0, 0xfa);
-    view.setFloat32(1, x);
-    out.bytes(new Uint8Array(view.buffer, 0, 5));
+    out.byte(0xfa);
+    SCRATCH.setFloat32(0, x);
+    writeScratch(out, 4);
   } else {
-    view.setUint8(0, 0xfb);
-    view.setFloat64(1, x);
-    out.bytes(new Uint8Array(view.buffer, 0, 9));
+    out.byte(0xfb);
+    SCRATCH.setFloat64(0, x);
+    writeScratch(out, 8);
   }
+}
+
+function writeScratch(out: ByteWriter, length: number): void {
+  for (let i = 0; i < length; i++) out.byte(SCRATCH.getUint8(i));
 }
 
 function halfBits(x: number): number | undefined {
   if (Math.fround(x) !== x) return undefined;
-  const view = new DataView(new ArrayBuffer(4));
-  view.setFloat32(0, x);
-  const bits = view.getUint32(0);
+  SCRATCH.setFloat32(0, x);
+  const bits = SCRATCH.getUint32(0);
   const sign = bits >>> 31 ? 0x8000 : 0;
   const exponent = (bits >>> 23) & 0xff;
   const mantissa = bits & 0x7f_ffff;
