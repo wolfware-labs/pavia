@@ -29,11 +29,14 @@ function base64url(bytes: Uint8Array): string {
   return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
+function integer(d: Diag): bigint {
+  if (d.kind === "uint") return d.value;
+  if (d.kind === "nint") return -1n - d.value;
+  throw new Error(`expected an integer, got ${d.kind}`);
+}
+
 function number(d: Diag): number {
-  if (d.kind === "float") return d.value;
-  if (d.kind === "uint") return Number(d.value);
-  if (d.kind === "nint") return -1 - Number(d.value);
-  throw new Error(`expected a number, got ${d.kind}`);
+  return d.kind === "float" ? d.value : Number(integer(d));
 }
 
 /** Renders `value`, whose contract type is `ty`, as canonical `json` text. */
@@ -98,9 +101,8 @@ function untyped(v: Diag): string {
     case "bool":
       return String(v.value);
     case "uint":
-      return String(v.value);
     case "nint":
-      return String(-1n - v.value);
+      return String(integer(v));
     case "float":
       return JSON.stringify(number(v));
     case "text":
@@ -132,9 +134,7 @@ function primitive(name: string, v: Diag): string {
       return String(number(v));
     case "u64":
     case "i64":
-      if (v.kind === "uint") return `"${v.value}"`;
-      if (v.kind === "nint") return `"${-1n - v.value}"`;
-      throw new Error("integer expected");
+      return `"${integer(v)}"`;
     case "f32":
     case "f64": {
       const x = number(v);

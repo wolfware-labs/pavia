@@ -531,3 +531,32 @@ fn refuses_a_deep_value_before_walking_it() {
     assert_eq!((error.at(), error.problem()), ("$", &Problem::TooDeep));
   }
 }
+
+#[test]
+fn counts_a_tag_only_in_the_codec_that_writes_it() {
+  let none = DecodeLimits { max_depth: 0 };
+  let timestamp = Value::Tag(1, Box::new(Value::Unsigned(0)));
+  let uuid = Value::Tag(37, Box::new(Value::Bytes(vec![0; 16])));
+  for (ty, value) in [(Primitive::Timestamp, &timestamp), (Primitive::Uuid, &uuid)] {
+    let json = encode(&primitive(ty), &types(), value, Codec::Json, &none).unwrap();
+    assert_eq!(
+      decode(&primitive(ty), &types(), &json, Codec::Json, &none).as_ref(),
+      Ok(value)
+    );
+    let error = encode(&primitive(ty), &types(), value, Codec::Cbor, &none).unwrap_err();
+    assert_eq!((error.at(), error.problem()), ("$", &Problem::TooDeep));
+  }
+}
+
+#[test]
+fn reports_a_wrong_item_first_unless_the_value_is_far_too_deep() {
+  let list = Type::List(Box::new(primitive(Primitive::Any)));
+  let pair = Type::Tuple(vec![primitive(Primitive::U8), list]);
+  let limits = DecodeLimits::default();
+  let nested = |depth: usize| (0..depth).fold(Value::Null, |item, _| Value::Array(vec![item]));
+  let value = |depth: usize| Value::Array(vec![text("x"), Value::Array(vec![nested(depth)])]);
+  let error = encode(&pair, &types(), &value(limits.max_depth - 1), Codec::Cbor, &limits).unwrap_err();
+  assert_eq!((error.at(), error.problem()), ("$[0]", &Problem::Expected("u8")));
+  let error = encode(&pair, &types(), &value(limits.max_depth + 4), Codec::Cbor, &limits).unwrap_err();
+  assert_eq!((error.at(), error.problem()), ("$", &Problem::TooDeep));
+}

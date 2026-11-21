@@ -51,14 +51,24 @@ const UUID_TAG: u64 = 37;
 /// [`TypedError`] for a value that does not fit `ty`, a type that refers to a name `types` does not
 /// have, an `any` value with no form in `codec`, or a value that `limits` do not admit
 /// ([`Problem::TooDeep`]): every receiver would refuse it, so it is refused here, before anything is
-/// written. The depth is checked on `value` before the walk, so a value nested too deep never
-/// reaches it; the walk only makes items shallower (`json` writes a tag as text), so a value that
-/// passes encodes within `limits`.
+/// written.
+///
+/// The depth is checked twice. Before the walk, `value` may be one level past `limits`, so a value
+/// nested much deeper never reaches the walk and its recursion stays bounded; such a value is
+/// refused with `TooDeep` even when an item inside it has the wrong type. The walk never makes an
+/// item deeper, and in `json` it writes a `timestamp` or `uuid` tag as text, which can take the value
+/// back within `limits`: the encoded value is checked against `limits` exactly.
 pub fn encode(ty: &Type, types: &Types, value: &Value, codec: Codec, limits: &DecodeLimits) -> Result<Vec<u8>, TypedError> {
-  if !limits.admits(value) {
+  let slack = DecodeLimits {
+    max_depth: limits.max_depth.saturating_add(1),
+  };
+  if !slack.admits(value) {
     return Err(TypedError::new(Problem::TooDeep));
   }
   let wire = Walk { types, codec }.wire_of(ty, value)?;
+  if !limits.admits(&wire) {
+    return Err(TypedError::new(Problem::TooDeep));
+  }
   let mut out = Vec::new();
   data::encode(&wire, codec, &mut out).map_err(|error| TypedError::new(Problem::Encode(error)))?;
   Ok(out)
