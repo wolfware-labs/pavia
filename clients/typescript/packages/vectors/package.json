@@ -5,6 +5,9 @@
   "description": "Test support: reads the vectors under vectors/ and checks them with an independent CBOR codec",
   "license": "MIT OR Apache-2.0",
   "type": "module",
+  "exports": {
+    "./diag": "./src/diag.ts"
+  },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
