@@ -522,3 +522,12 @@ fn refuses_a_variant_map_whose_key_is_not_a_name() {
     );
   }
 }
+
+#[test]
+fn refuses_a_deep_value_before_walking_it() {
+  let deep = (0..5000).fold(Value::Null, |item, _| Value::Array(vec![item]));
+  for ty in [primitive(Primitive::Any), Type::List(Box::new(primitive(Primitive::Any)))] {
+    let error = encode(&ty, &types(), &deep, Codec::Cbor, &DecodeLimits::default()).unwrap_err();
+    assert_eq!((error.at(), error.problem()), ("$", &Problem::TooDeep));
+  }
+}

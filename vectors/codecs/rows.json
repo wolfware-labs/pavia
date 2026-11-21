@@ -529,6 +529,18 @@
       "json": "{\"Busy\":7}"
     },
     {
+      "id": "any-big-integer",
+      "spec": [
+        "12.3"
+      ],
+      "note": "any holding 2^53 + 1, past the integers a JavaScript number holds: both codecs write every digit.",
+      "type": "any",
+      "direction": "both",
+      "value": "9007199254740993",
+      "cbor": "1b 00 20 00 00 00 00 00 01",
+      "json": "9007199254740993"
+    },
+    {
       "id": "any-passes-through",
       "spec": [
         "12.3"

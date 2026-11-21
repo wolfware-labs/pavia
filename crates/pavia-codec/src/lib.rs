@@ -51,12 +51,14 @@ const UUID_TAG: u64 = 37;
 /// [`TypedError`] for a value that does not fit `ty`, a type that refers to a name `types` does not
 /// have, an `any` value with no form in `codec`, or a value that `limits` do not admit
 /// ([`Problem::TooDeep`]): every receiver would refuse it, so it is refused here, before anything is
-/// written.
+/// written. The depth is checked on `value` before the walk, so a value nested too deep never
+/// reaches it; the walk only makes items shallower (`json` writes a tag as text), so a value that
+/// passes encodes within `limits`.
 pub fn encode(ty: &Type, types: &Types, value: &Value, codec: Codec, limits: &DecodeLimits) -> Result<Vec<u8>, TypedError> {
-  let wire = Walk { types, codec }.wire_of(ty, value)?;
-  if !limits.admits(&wire) {
+  if !limits.admits(value) {
     return Err(TypedError::new(Problem::TooDeep));
   }
+  let wire = Walk { types, codec }.wire_of(ty, value)?;
   let mut out = Vec::new();
   data::encode(&wire, codec, &mut out).map_err(|error| TypedError::new(Problem::Encode(error)))?;
   Ok(out)

@@ -98,7 +98,9 @@ function untyped(v: Diag): string {
     case "bool":
       return String(v.value);
     case "uint":
+      return String(v.value);
     case "nint":
+      return String(-1n - v.value);
     case "float":
       return JSON.stringify(number(v));
     case "text":
