@@ -167,11 +167,18 @@ fn untyped(out: &mut String, v: &Value) -> Result<(), String> {
     Value::Float(f) => out.push_str(&number(*f)?),
     Value::Text(s) => string(out, s),
     Value::Array(items) => joined(out, ['[', ']'], items, untyped)?,
-    Value::Map(entries) => joined(out, ['{', '}'], entries, |out, (k, val)| {
-      string(out, k.as_text().ok_or("json object keys are text")?);
-      out.push(':');
-      untyped(out, val)
-    })?,
+    Value::Map(entries) => {
+      let mut seen = std::collections::BTreeSet::new();
+      joined(out, ['{', '}'], entries, |out, (k, val)| {
+        let key = k.as_text().ok_or("json object keys are text")?;
+        if !seen.insert(key) {
+          return Err(format!("json object key {key:?} appears twice"));
+        }
+        string(out, key);
+        out.push(':');
+        untyped(out, val)
+      })?;
+    }
     _ => return Err(format!("{v:?} has no json form")),
   }
   Ok(())
@@ -282,6 +289,17 @@ mod tests {
     ] {
       assert_eq!(number(x).unwrap(), s, "{x}");
     }
+  }
+
+  #[test]
+  fn any_refuses_what_json_cannot_hold() {
+    let key = || Value::Text("a".into());
+    let twice = Value::Map(vec![(key(), Value::Null), (key(), Value::Null)]);
+    let types = Map::new();
+    assert!(render(&Json::from("any"), &twice, &types).unwrap_err().contains("twice"));
+    assert!(render(&Json::from("any"), &Value::Float(f64::NAN), &types).is_err());
+    let once = Value::Map(vec![(key(), Value::Integer(1.into()))]);
+    assert_eq!(render(&Json::from("any"), &once, &types).unwrap(), r#"{"a":1}"#);
   }
 
   #[test]

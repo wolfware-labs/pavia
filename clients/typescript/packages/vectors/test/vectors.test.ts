@@ -337,3 +337,11 @@ describe("diagnostic notation parser", () => {
     expect([...encode(parse("-18446744073709551616"))]).toEqual([0x3b, ...Array(8).fill(0xff)]);
   });
 });
+
+describe("json oracle for any", () => {
+  it("refuses what json cannot hold", () => {
+    expect(() => render("any", parse('{"a": null, "a": null}'), {})).toThrow("twice");
+    expect(() => render("any", parse("NaN"), {})).toThrow("no json form");
+    expect(render("any", parse('{"a": 1}'), {})).toBe('{"a":1}');
+  });
+});

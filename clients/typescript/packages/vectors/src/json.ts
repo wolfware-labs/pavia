@@ -104,13 +104,22 @@ function untyped(v: Diag): string {
     case "nint":
       return String(integer(v));
     case "float":
-      return JSON.stringify(number(v));
+      if (!Number.isFinite(v.value)) throw new Error("NaN and infinities have no json form");
+      return JSON.stringify(v.value);
     case "text":
       return JSON.stringify(v.value);
     case "array":
       return `[${v.items.map(untyped).join(",")}]`;
-    case "map":
-      return `{${v.entries.map(([k, item]) => `${JSON.stringify(textOf(k))}:${untyped(item)}`).join(",")}}`;
+    case "map": {
+      const seen = new Set<string>();
+      const members = v.entries.map(([k, item]) => {
+        const key = textOf(k);
+        if (seen.has(key)) throw new Error(`json object key ${JSON.stringify(key)} appears twice`);
+        seen.add(key);
+        return `${JSON.stringify(key)}:${untyped(item)}`;
+      });
+      return `{${members.join(",")}}`;
+    }
     default:
       throw new Error(`${v.kind} has no json form`);
   }
