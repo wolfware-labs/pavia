@@ -2294,14 +2294,70 @@ fn never_reports_a_mismatch_from_a_server_without_a_fingerprint() {
   }
 }
 
-#[test]
-fn refuses_the_strict_contract_policy_until_it_is_supported() {
-  let config = Config {
-    contract: Some(Fingerprint::new([0; 32])),
+fn strict(contract: Option<[u8; 32]>) -> Config {
+  Config {
+    contract: contract.map(Fingerprint::new),
     contract_policy: ContractPolicy::Strict,
     ..Config::default()
-  };
-  let error = config.validate().unwrap_err();
-  assert_eq!(error, ConfigError::Unsupported("contract_policy strict"));
-  assert_eq!(error.to_string(), "contract_policy strict is not supported yet");
+  }
+}
+
+fn hello_with(client: Option<[u8; 32]>) -> Hello {
+  Hello {
+    contract: client,
+    ..hello()
+  }
+}
+
+#[test]
+fn rejects_a_mismatching_or_missing_fingerprint_under_strict_before_authenticating() {
+  for client in [Some([0xff; 32]), None] {
+    let mut session = Session::server(&strict(Some([0; 32])).validate().unwrap(), Instant::now());
+    session.feed(Input::Message(message(&[(0, Frame::Hello(hello_with(client)))])));
+    let outputs = drain(&mut session);
+    let [Output::Transmit(sent), close_transport, ended] = outputs.as_slice() else {
+      panic!("{client:?}: {outputs:?}");
+    };
+    assert_eq!(
+      frames(sent),
+      [(
+        0,
+        Frame::Reject(Reject {
+          code: 13,
+          msg: "contract mismatch".into(),
+          retry: None
+        })
+      )]
+    );
+    assert_eq!(
+      *close_transport,
+      Output::CloseTransport {
+        code: CloseCode::ContractMismatch,
+        reason: "contract mismatch".into()
+      }
+    );
+    assert!(matches!(
+      ended,
+      Output::Ended(Ending::Rejected {
+        code: CloseCode::ContractMismatch,
+        ..
+      })
+    ));
+  }
+}
+
+#[test]
+fn welcomes_a_matching_fingerprint_under_strict() {
+  let outputs = welcomed_under(strict(Some([7; 32])), hello_with(Some([7; 32])), None).1;
+  assert!(mismatches(&outputs).is_empty());
+  assert_eq!(welcome_contract(&outputs), Some([7; 32]));
+}
+
+#[test]
+fn welcomes_any_fingerprint_under_strict_without_a_server_fingerprint() {
+  for client in [None, Some([0xff; 32])] {
+    let outputs = welcomed_under(strict(None), hello_with(client), None).1;
+    assert!(mismatches(&outputs).is_empty(), "{client:?}");
+    assert_eq!(welcome_contract(&outputs), None);
+  }
 }

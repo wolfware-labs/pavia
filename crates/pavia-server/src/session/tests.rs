@@ -2986,3 +2986,26 @@ async fn registers_a_session_whose_contract_fingerprint_differs_or_is_missing() 
     eventually(|| registry.get(&id).is_some(), "the session to be registered after WELCOME").await;
   }
 }
+
+#[tokio::test]
+async fn logs_mismatches_at_counts_that_are_powers_of_two() {
+  let (log, _logging) = capture_log();
+  let registry = Registry::new();
+  let mut config = SessionConfig::default();
+  config.contract = Some(Fingerprint::new([0; 32]));
+  let mut sockets = Vec::new();
+  for _ in 0..5 {
+    let methods = Arc::new(MethodRegistry::new());
+    sockets.push(welcoming(registry.clone(), methods, config.clone(), hello_with_contract(0xff)).await);
+  }
+  eventually(
+    || lines_naming(&log, "differs") == 3,
+    "the 1st, 2nd and 4th mismatch to be logged",
+  )
+  .await;
+  let text = log.text();
+  for count in ["mismatches=1", "mismatches=2", "mismatches=4"] {
+    assert!(text.contains(count), "{text}");
+  }
+  assert!(!text.contains("mismatches=3") && !text.contains("mismatches=5"), "{text}");
+}

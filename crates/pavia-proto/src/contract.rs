@@ -51,8 +51,12 @@ pub enum ContractPolicy {
   /// Report the mismatch and go on with the session. The default.
   #[default]
   Warn,
-  /// Refuse the session with REJECT CONTRACT_MISMATCH. Not supported yet (#68): a configuration
-  /// that asks for it does not validate.
+  /// Refuse a HELLO whose fingerprint differs, or that carries none, with REJECT CONTRACT_MISMATCH,
+  /// before the session is authenticated. A server without a fingerprint never refuses on it.
+  ///
+  /// This is a compatibility check, not access control: the fingerprint is public (it ships in every
+  /// generated client, in WELCOME and at the well-known contract URL), so any peer can send the right
+  /// one. The REJECT carries no fingerprint and no detail beyond its code.
   Strict,
 }
 

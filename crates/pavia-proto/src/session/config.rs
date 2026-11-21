@@ -147,9 +147,6 @@ impl Config {
     if self.codecs.is_empty() {
       return Err(ConfigError::Empty("codecs"));
     }
-    if self.contract_policy == ContractPolicy::Strict {
-      return Err(ConfigError::Unsupported("contract_policy strict"));
-    }
     if self.internal_error_message.is_empty() {
       return Err(ConfigError::Empty("internal_error_message"));
     }
@@ -230,9 +227,6 @@ pub enum ConfigError {
   /// An `internal_error_message` above [`Config::MAX_INTERNAL_ERROR_MESSAGE`] bytes.
   #[error("{0} must be at most {max} bytes", max = Config::MAX_INTERNAL_ERROR_MESSAGE)]
   TooLarge(&'static str),
-  /// A setting this version does not support yet: [`ContractPolicy::Strict`] (#68).
-  #[error("{0} is not supported yet")]
-  Unsupported(&'static str),
 }
 
 pub(super) fn millis(duration: Duration) -> u64 {
