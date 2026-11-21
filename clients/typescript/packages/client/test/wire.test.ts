@@ -236,9 +236,10 @@ describe("header sections", () => {
     expect([...header]).toEqual([...hexToBytes("a6 00 00 17 00 18 18 00 18 ff 00 19 01 00 00 1a 00 01 00 00 00")]);
   });
 
-  it("refuses duplicate keys and reserved simple values on encode", () => {
+  it("refuses duplicate keys and reserved or out-of-range simple values on encode", () => {
     expect(encodeError(() => encodeHeader([[u(1), u(0)], [u(1), u(1)]])).kind).toBe("duplicate_key");
     expect(encodeError(() => encodeHeader([[u(1), { kind: "simple", value: 24 }]])).kind).toBe("reserved_simple_value");
+    expect(encodeError(() => encodeHeader([[u(1), { kind: "simple", value: 256 }]])).kind).toBe("out_of_range");
   });
 
   it("treats non-integer duplicate keys by their encoded bytes", () => {

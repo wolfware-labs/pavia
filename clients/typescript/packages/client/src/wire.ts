@@ -1,4 +1,4 @@
-import { ByteWriter } from "./bytes.js";
+import { ByteWriter, isByte } from "./bytes.js";
 import { EncodeError, ProtocolError } from "./errors.js";
 import { decodeVarint, MAX_VARINT, varintLength, writeVarint } from "./varint.js";
 
@@ -47,7 +47,7 @@ export function payloadLength(frame: RawFrame): number {
 }
 
 function checkByte(value: number, field: string): void {
-  if (!Number.isInteger(value) || value < 0 || value > 0xff) {
+  if (!isByte(value)) {
     throw new EncodeError("out_of_range", `frame ${field} ${value} is not a byte`);
   }
 }
@@ -153,8 +153,9 @@ export function decodeMessage(message: Uint8Array | ArrayBuffer | string, maxFra
  * Batches frames into as few WebSocket messages as fit under `2 x max_frame` of the peer, never
  * splitting a frame (spec 4.3). Before WELCOME, pass no `peerMaxFrame`: the 64 KiB floor applies.
  *
- * @throws {@link EncodeError} `frame_too_large` for a frame above the peer's `max_frame`, and
- * `stream_id_out_of_range` for a stream ID that is not a non-negative safe integer.
+ * @throws {@link EncodeError} `frame_too_large` for a frame above the peer's `max_frame`,
+ * `stream_id_out_of_range` for a stream ID that is not a non-negative safe integer, and what
+ * {@link writeRawFrame} throws.
  */
 export function encodeMessages(frames: readonly WsFrame[], peerMaxFrame: number = MAX_FRAME_FLOOR): Uint8Array[] {
   const limit = messageLimit(peerMaxFrame);

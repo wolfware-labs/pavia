@@ -39,6 +39,11 @@ export class ByteWriter {
   }
 }
 
+/** Whether `value` is an integer from 0 to 255, so a `Uint8Array` stores it unchanged. */
+export function isByte(value: number): boolean {
+  return Number.isInteger(value) && value >= 0 && value <= 0xff;
+}
+
 /** Orders byte arrays bytewise, a shorter prefix first. */
 export function compareBytes(a: Uint8Array, b: Uint8Array): number {
   const n = Math.min(a.length, b.length);

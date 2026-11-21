@@ -1,3 +1,4 @@
+import { isByte } from "./bytes.js";
 import {
   DEFAULT_HEADER_LIMITS,
   decodeHeader,
@@ -1108,7 +1109,7 @@ function frameData(frame: Frame): Uint8Array {
 
 function check(frame: Frame): void {
   if (frame.type === "EXTENSION") {
-    if (!Number.isInteger(frame.frameType) || frame.frameType < 0x80 || frame.frameType > 0xff) {
+    if (!isByte(frame.frameType) || frame.frameType < 0x80) {
       throw new EncodeError("not_an_extension_type", `extension frame type ${frame.frameType} is outside 0x80 to 0xff`);
     }
   } else if (frame.type === "HELLO" || frame.type === "WELCOME") {

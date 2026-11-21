@@ -1,4 +1,4 @@
-import { ByteWriter, compareBytes } from "./bytes.js";
+import { ByteWriter, compareBytes, isByte } from "./bytes.js";
 import { EncodeError, type HeaderErrorReason, ProtocolError } from "./errors.js";
 
 /**
@@ -102,7 +102,7 @@ function writeValue(out: ByteWriter, value: HeaderValue): void {
     case "undefined":
       return out.byte(0xf7);
     case "simple":
-      if (!Number.isInteger(value.value) || value.value < 0 || value.value > 255) {
+      if (!isByte(value.value)) {
         throw new EncodeError("out_of_range", `simple value ${value.value} is outside 0 to 255`);
       }
       if (value.value >= 24 && value.value < 32) {
