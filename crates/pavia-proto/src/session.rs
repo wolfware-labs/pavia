@@ -258,9 +258,9 @@ pub enum Output {
     limit: u64,
   },
   /// The client's HELLO carries a contract fingerprint other than this server's, or none, and
-  /// the policy is [`ContractPolicy::Warn`]: the session
-  /// goes on and the driver reports it (§7.2). Never emitted by a server without a fingerprint.
-  /// Comes between [`Output::Established`] and the WELCOME's [`Output::Transmit`].
+  /// the policy is [`ContractPolicy::Warn`]: the session goes on and the driver reports it (§7.2).
+  /// Never emitted by a server without a fingerprint. Comes between [`Output::Established`] and
+  /// the WELCOME's [`Output::Transmit`].
   ContractMismatch {
     /// The client's fingerprint, or `None` when its HELLO has none.
     client: Option<Fingerprint>,

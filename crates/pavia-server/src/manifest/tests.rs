@@ -207,7 +207,7 @@ fn reports_what_the_manifest_validation_finds() {
 }
 
 #[test]
-fn has_no_fingerprint_for_a_manifest_that_does_not_validate() {
+fn fingerprints_only_a_valid_manifest_whatever_its_name() {
   let dangling = server(vec![("s/get", call(Shape::Unary).returns::<Dangling>())]);
   assert!(matches!(fingerprint("app", &dangling), Err(ExportError::Manifest(_))));
   let unfinished = server(vec![("s/feed", call(Shape::ServerStream))]);

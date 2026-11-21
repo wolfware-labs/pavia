@@ -44,7 +44,7 @@ pub fn canonical(manifest: &Value) -> Result<String, FingerprintError> {
   let Value::Object(top) = manifest else {
     return Err(FingerprintError::NotAnObject);
   };
-  check(manifest, &mut "$".to_owned())?;
+  check(manifest)?;
   for (array, key) in SORTED_TOP {
     sorted(top.get(array), key, &format!("$.{array}"))?;
   }
@@ -55,12 +55,8 @@ pub fn canonical(manifest: &Value) -> Result<String, FingerprintError> {
       }
     }
   }
-  let mut stripped = strip_docs(manifest);
-  if let Value::Object(top) = &mut stripped {
-    top.remove("name");
-  }
   let mut out = String::new();
-  jcs(&stripped, &mut out);
+  jcs(&normative(top), &mut out);
   Ok(out)
 }
 
@@ -84,6 +80,13 @@ pub enum FingerprintError {
     /// Where it is.
     at: String,
   },
+  /// A number that is not a finite IEEE-754 double, which RFC 8785 cannot write. serde_json refuses
+  /// one when it parses, unless a crate in the build turns on its `arbitrary_precision` feature.
+  #[error("{at} is not a finite double, which RFC 8785 cannot write")]
+  NotADouble {
+    /// Where it is.
+    at: String,
+  },
   /// An array of named entries out of byte order by name, or with one name twice.
   #[error("{at} is not sorted by {key} in byte order (spec 12.2)")]
   Unsorted {
@@ -94,32 +97,39 @@ pub enum FingerprintError {
   },
 }
 
-/// Refuses a `null`, and an optional field equal to its default, anywhere in `value`.
-fn check(value: &Value, at: &mut String) -> Result<(), FingerprintError> {
-  match value {
-    Value::Null => Err(FingerprintError::Null { at: at.clone() }),
-    Value::Array(items) => items
-      .iter()
-      .enumerate()
-      .try_for_each(|(index, item)| within(at, &format!("[{index}]"), |at| check(item, at))),
-    Value::Object(members) => members.iter().try_for_each(|(key, member)| {
-      within(at, &format!(".{key}"), |at| {
-        if is_default(key, member) {
-          return Err(FingerprintError::Default { at: at.clone() });
-        }
-        check(member, at)
-      })
-    }),
-    _ => Ok(()),
+impl FingerprintError {
+  /// The same problem, one `step` further from the root: [`check`] adds each step on its way back up, so
+  /// a manifest in canonical form never pays for a location.
+  fn under(mut self, step: &str) -> Self {
+    if let Self::Null { at } | Self::Default { at } | Self::NotADouble { at } | Self::Unsorted { at, .. } = &mut self {
+      at.insert_str(1, step);
+    }
+    self
   }
 }
 
-fn within<T>(at: &mut String, step: &str, walk: impl FnOnce(&mut String) -> T) -> T {
-  let length = at.len();
-  at.push_str(step);
-  let result = walk(at);
-  at.truncate(length);
-  result
+/// Refuses a `null`, a number that is not a finite double, and an optional field equal to its default,
+/// anywhere in `value`.
+fn check(value: &Value) -> Result<(), FingerprintError> {
+  match value {
+    Value::Null => Err(FingerprintError::Null { at: "$".to_owned() }),
+    Value::Number(number) if !number.as_f64().is_some_and(f64::is_finite) => {
+      Err(FingerprintError::NotADouble { at: "$".to_owned() })
+    }
+    Value::Array(items) => items
+      .iter()
+      .enumerate()
+      .try_for_each(|(index, item)| check(item).map_err(|error| error.under(&format!("[{index}]")))),
+    Value::Object(members) => members.iter().try_for_each(|(key, member)| {
+      if is_default(key, member) {
+        Err(FingerprintError::Default { at: "$".to_owned() })
+      } else {
+        check(member)
+      }
+      .map_err(|error| error.under(&format!(".{key}")))
+    }),
+    _ => Ok(()),
+  }
 }
 
 /// Whether `value` is the default of the optional field `key` (§12.2).
@@ -148,6 +158,30 @@ fn sorted(array: Option<&Value>, key: &'static str, at: &str) -> Result<(), Fing
   Ok(())
 }
 
+/// The manifest without what §12.5 leaves out of the fingerprint: its top-level `name` and every `docs`
+/// field. The keys of `types` are type names, not fields, so a type named `docs` stays.
+fn normative(top: &Map<String, Value>) -> Value {
+  Value::Object(
+    top
+      .iter()
+      .filter(|(key, _)| !matches!(key.as_str(), "name" | "docs"))
+      .map(|(key, member)| {
+        let member = match member {
+          Value::Object(types) if key == "types" => Value::Object(
+            types
+              .iter()
+              .map(|(name, definition)| (name.clone(), strip_docs(definition)))
+              .collect(),
+          ),
+          other => strip_docs(other),
+        };
+        (key.clone(), member)
+      })
+      .collect(),
+  )
+}
+
+/// `value` without the `docs` member of any object in it.
 fn strip_docs(value: &Value) -> Value {
   match value {
     Value::Array(items) => Value::Array(items.iter().map(strip_docs).collect()),
@@ -197,31 +231,18 @@ fn jcs(value: &Value, out: &mut String) {
   }
 }
 
+/// A number as ECMAScript writes it, through its `f64`: an integer beyond 2^53 reads as the nearest
+/// `f64`, as it does in ECMAScript. A number with no `f64` (only with serde_json's
+/// `arbitrary_precision`, which an application may turn on) keeps its own text.
+/// A number as ECMAScript writes it. [`check`] has refused every number that is not a finite double.
 fn number_text(number: &Number, out: &mut String) {
-  match (number.as_u64(), number.as_i64(), number.as_f64()) {
-    (Some(unsigned), _, _) if unsigned <= 1 << 53 => out.push_str(&unsigned.to_string()),
-    (_, Some(signed), _) if signed.unsigned_abs() <= 1 << 53 => out.push_str(&signed.to_string()),
-    (_, _, Some(float)) => out.push_str(ryu_js::Buffer::new().format_finite(float)),
-    _ => out.push('0'),
-  }
+  out.push_str(ryu_js::Buffer::new().format_finite(number.as_f64().unwrap_or_default()));
 }
 
+/// A string as RFC 8785 writes it, which is how serde_json escapes one: `"`, `\\` and the control
+/// characters, with `\b \f \n \r \t` and lowercase `\u00xx` for the others.
 fn string(text: &str, out: &mut String) {
-  out.push('"');
-  for char in text.chars() {
-    match char {
-      '"' => out.push_str("\\\""),
-      '\\' => out.push_str("\\\\"),
-      '\u{8}' => out.push_str("\\b"),
-      '\u{c}' => out.push_str("\\f"),
-      '\n' => out.push_str("\\n"),
-      '\r' => out.push_str("\\r"),
-      '\t' => out.push_str("\\t"),
-      control if u32::from(control) < 0x20 => out.push_str(&format!("\\u{:04x}", u32::from(control))),
-      other => out.push(other),
-    }
-  }
-  out.push('"');
+  out.push_str(&serde_json::to_string(text).expect("a string always serializes"));
 }
 
 #[cfg(test)]

@@ -17,10 +17,6 @@ use serde_json::{Value, json};
 
 const SERVER: [u8; 32] = [0xab; 32];
 
-fn hex(bytes: &[u8]) -> String {
-  bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
 fn run(contract: Option<[u8; 32]>, policy: ContractPolicy, steps: Value) -> Verdict {
   let mut config = SessionConfig::default();
   config.contract = contract.map(Fingerprint::new);
@@ -47,7 +43,7 @@ fn hello(contract: Option<&str>) -> Value {
 }
 
 fn bytes(fingerprint: &[u8]) -> String {
-  format!("h'{}'", hex(fingerprint))
+  format!("h'{}'", runner::wire::hex(fingerprint))
 }
 
 fn welcome_with_server_fingerprint() -> Value {

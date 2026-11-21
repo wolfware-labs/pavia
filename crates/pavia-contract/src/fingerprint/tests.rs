@@ -14,7 +14,7 @@ fn spec_example() -> Value {
   serde_json::from_str(&block[..block.find("```").expect("the example's end")]).expect("the example parses")
 }
 
-fn hex(bytes: [u8; 32]) -> String {
+pub(crate) fn hex(bytes: [u8; 32]) -> String {
   bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
@@ -102,6 +102,19 @@ fn leaves_out_docs_and_the_top_level_name() {
 }
 
 #[test]
+fn keeps_a_type_named_docs_and_leaves_out_its_docs() {
+  let named_docs = |definition: Value| json!({"pavia": 1, "services": [], "types": {"docs": definition}});
+  assert_eq!(
+    canonical(&named_docs(json!({"alias": "string", "docs": "A name."}))).unwrap(),
+    r#"{"pavia":1,"services":[],"types":{"docs":{"alias":"string"}}}"#
+  );
+  assert_ne!(
+    fingerprint(&named_docs(json!({"alias": "string"}))),
+    fingerprint(&named_docs(json!({"alias": "u32"})))
+  );
+}
+
+#[test]
 fn refuses_null_and_default_values() {
   let mut example = spec_example();
   example["services"][0]["server_methods"][1]["idempotent"] = json!(false);
@@ -174,4 +187,14 @@ fn refuses_named_entries_out_of_byte_order_and_keeps_params_in_theirs() {
     );
   }
   assert!(fingerprint(&json!({"services": [{"name": "B"}, {"name": "a"}]})).is_ok());
+}
+
+#[test]
+fn writes_control_characters_with_their_short_escapes() {
+  assert_eq!(written(&json!("\u{8}\u{c}\t\n\r\u{1}")), r#""\b\f\t\n\r\u0001""#);
+}
+
+#[test]
+fn fingerprints_a_manifest_without_named_arrays() {
+  assert_eq!(canonical(&json!({"pavia": 1, "name": "app"})).unwrap(), r#"{"pavia":1}"#);
 }

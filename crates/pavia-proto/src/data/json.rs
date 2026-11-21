@@ -190,25 +190,24 @@ fn write(value: &Value, out: &mut impl Text) -> Result<(), EncodeError> {
   Ok(())
 }
 
+/// Writes `text` as RFC 8785 does, which is how serde_json escapes a string: `"`, `\\` and the control
+/// characters, with `\b \f \n \r \t` and lowercase `\u00xx` for the others.
 fn write_string(text: &str, out: &mut impl Text) {
-  out.put(b"\"");
-  for c in text.chars() {
-    match c {
-      '"' => out.put(b"\\\""),
-      '\\' => out.put(b"\\\\"),
-      '\u{08}' => out.put(b"\\b"),
-      '\u{09}' => out.put(b"\\t"),
-      '\u{0a}' => out.put(b"\\n"),
-      '\u{0c}' => out.put(b"\\f"),
-      '\u{0d}' => out.put(b"\\r"),
-      '\u{00}'..='\u{1f}' => out.put(format!("\\u{:04x}", u32::from(c)).as_bytes()),
-      _ => {
-        let mut buffer = [0; 4];
-        out.put(c.encode_utf8(&mut buffer).as_bytes());
-      }
-    }
+  serde_json::to_writer(TextWriter(out), text).expect("a Text takes every write");
+}
+
+/// A [`Text`] as an [`io::Write`](std::io::Write), for serde_json's string writer.
+struct TextWriter<'t, T: Text>(&'t mut T);
+
+impl<T: Text> std::io::Write for TextWriter<'_, T> {
+  fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+    self.0.put(bytes);
+    Ok(bytes.len())
   }
-  out.put(b"\"");
+
+  fn flush(&mut self) -> std::io::Result<()> {
+    Ok(())
+  }
 }
 
 #[cfg(test)]

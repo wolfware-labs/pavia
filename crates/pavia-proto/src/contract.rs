@@ -2,7 +2,8 @@
 //!
 //! The fingerprint is the SHA-256 of the contract manifest in canonical form. HELLO and WELCOME
 //! carry it in `contract` (key 24). It names one exact contract version and says nothing about
-//! compatibility, so a mismatch under [`ContractPolicy::Warn`] is only reported.
+//! compatibility, so a mismatch under [`ContractPolicy::Warn`] is only reported, and
+//! [`ContractPolicy::Strict`] refuses it before authentication.
 
 use std::fmt;
 

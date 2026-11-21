@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use serde_json::{Value, json};
 
 use super::{Call, Channel, Datagram, Direction, Manifest, ManifestError, Method, Mode, Param, Service, Shape};
+use crate::fingerprint::tests::{SPEC_EXAMPLE, hex};
 use crate::schema::{Definition, Enum, Field, Primitive, Struct, Type, Types, Variant};
 
 fn reference(name: &str) -> Type {
@@ -565,14 +566,9 @@ fn refuses_an_option_of_an_alias_of_unit_and_an_alias_cycle() {
 }
 
 #[test]
-fn fingerprints_the_example_as_spec_12_5_defines() {
-  let hex: String = spec_example()
-    .fingerprint()
-    .unwrap()
-    .iter()
-    .map(|byte| format!("{byte:02x}"))
-    .collect();
-  assert_eq!(hex, crate::fingerprint::tests::SPEC_EXAMPLE);
+fn fingerprints_only_a_valid_manifest_and_leaves_out_its_name_and_docs() {
+  let example = spec_example().fingerprint().unwrap();
+  assert_eq!(hex(example), SPEC_EXAMPLE);
   let renamed = Manifest::new("another-name").docs("Docs.");
   let plain = Manifest::new("app");
   assert_eq!(renamed.fingerprint(), plain.fingerprint());
