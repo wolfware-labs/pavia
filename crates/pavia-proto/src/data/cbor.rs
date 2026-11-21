@@ -145,7 +145,7 @@ fn capacity_for(decoder: &Decoder<'_>, length: Option<u64>, bytes_per_item: u64)
   Ok(usize::try_from(length.min(MAX_PREALLOCATED)).unwrap_or(0))
 }
 
-fn check(value: &Value) -> Result<(), EncodeError> {
+pub(super) fn check(value: &Value) -> Result<(), EncodeError> {
   match value {
     Value::Simple(20..=31) => Err(EncodeError::ReservedSimpleValue),
     Value::Array(items) => items.iter().try_for_each(check),

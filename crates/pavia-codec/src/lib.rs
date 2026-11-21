@@ -316,7 +316,7 @@ impl<'t> Walk<'t> {
         Ok(value.clone())
       }
       (Primitive::Any, _) if json => {
-        data::encode(value, Codec::Json, &mut Vec::new()).map_err(|error| TypedError::new(Problem::Encode(error)))?;
+        data::check(value, Codec::Json).map_err(|error| TypedError::new(Problem::Encode(error)))?;
         Ok(value.clone())
       }
       (Primitive::Any, _) => Ok(value.clone()),

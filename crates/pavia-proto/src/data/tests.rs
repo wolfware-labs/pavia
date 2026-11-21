@@ -1,6 +1,6 @@
 use proptest::prelude::*;
 
-use super::{Codec, DecodeError, DecodeLimits, EncodeError, Value, encode};
+use super::{Codec, DecodeError, DecodeLimits, EncodeError, Value, check, encode};
 use crate::error::{DataSection, ErrorStatus, Outcome, ProtocolError};
 use crate::registry::StatusCode;
 
@@ -200,14 +200,19 @@ fn refuses_values_a_codec_cannot_carry() {
   ] {
     let mut out = Vec::new();
     assert_eq!(encode(&value, Codec::Json, &mut out), Err(EncodeError::NotJson), "{value:?}");
+    assert_eq!(check(&value, Codec::Json), Err(EncodeError::NotJson), "{value:?}");
     assert!(out.is_empty());
   }
   for simple in 20..=31 {
     let mut out = Vec::new();
     let nested = Value::Array(vec![Value::Simple(simple)]);
     assert_eq!(encode(&nested, Codec::Cbor, &mut out), Err(EncodeError::ReservedSimpleValue));
+    assert_eq!(check(&nested, Codec::Cbor), Err(EncodeError::ReservedSimpleValue));
     assert!(out.is_empty());
   }
+  let fine = Value::Map(vec![(text("a"), Value::Array(vec![Value::Unsigned(1)]))]);
+  assert_eq!(check(&fine, Codec::Json), Ok(()));
+  assert_eq!(check(&fine, Codec::Cbor), Ok(()));
 }
 
 fn nested_cbor(depth: usize) -> Vec<u8> {

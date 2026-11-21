@@ -169,6 +169,18 @@ pub fn decode(data: &[u8], codec: Codec, limits: &DecodeLimits) -> Result<Value,
   }
 }
 
+/// Whether `value` has a form in `codec`, as [`encode`] would find it, without writing anything.
+///
+/// # Errors
+///
+/// The errors of [`encode`].
+pub fn check(value: &Value, codec: Codec) -> Result<(), EncodeError> {
+  match codec {
+    Codec::Cbor => cbor::check(value),
+    Codec::Json => json::check(value),
+  }
+}
+
 /// Encodes `value` as a data section in `codec`.
 ///
 /// # Errors
