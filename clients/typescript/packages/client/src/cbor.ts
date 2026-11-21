@@ -39,7 +39,8 @@ const TEXT = 3;
 const ARRAY = 4;
 const MAP = 5;
 const SIMPLE = 7;
-const MAX_U64 = (1n << 64n) - 1n;
+/** The largest CBOR integer argument, 2^64 - 1. */
+export const MAX_U64 = (1n << 64n) - 1n;
 const ARGUMENT_WIDTH: Readonly<Record<number, number>> = { 24: 1, 25: 2, 26: 4, 27: 8 };
 const WIDTH_INFO: Readonly<Record<number, number>> = { 1: 24, 2: 25, 4: 26, 8: 27 };
 
@@ -69,6 +70,8 @@ export function encodeHeaderValue(value: HeaderValue): Uint8Array {
   return out.finish();
 }
 
+const LONE_SURROGATE = /\p{Surrogate}/u;
+
 function writeValue(out: ByteWriter, value: HeaderValue): void {
   switch (value.kind) {
     case "uint":
@@ -79,6 +82,9 @@ function writeValue(out: ByteWriter, value: HeaderValue): void {
       writeHead(out, BYTES, BigInt(value.value.length));
       return out.bytes(value.value);
     case "text": {
+      if (LONE_SURROGATE.test(value.value)) {
+        throw new EncodeError("lone_surrogate", "text holds a lone UTF-16 surrogate, which has no UTF-8 form");
+      }
       const utf8 = new TextEncoder().encode(value.value);
       writeHead(out, TEXT, BigInt(utf8.length));
       return out.bytes(utf8);

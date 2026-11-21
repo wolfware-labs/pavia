@@ -1,4 +1,3 @@
-import { ByteWriter } from "./bytes.js";
 import {
   DEFAULT_HEADER_LIMITS,
   decodeHeader,
@@ -6,9 +5,10 @@ import {
   type HeaderLimits,
   type HeaderMap,
   type HeaderValue,
+  MAX_U64,
 } from "./cbor.js";
 import { EncodeError, type FieldProblem, ProtocolError } from "./errors.js";
-import { type RawFrame, writeRawFrame } from "./frame.js";
+import { encodeRawFrame, MAX_FRAME_FLOOR, type RawFrame } from "./wire.js";
 
 /** Header keys (spec 5.7). */
 export const Key = {
@@ -119,8 +119,14 @@ const CARRIES_DATA: ReadonlySet<FrameTypeName> = new Set<FrameTypeName>([
   "DATAGRAM",
 ]);
 
+const CONTROL_REQUESTS: ReadonlySet<FrameTypeName> = new Set<FrameTypeName>([
+  "AUTH_REFRESH",
+  "SUBSCRIBE",
+  "UNSUBSCRIBE",
+]);
+
 /** The lowest `max_frame` and `window` either peer may advertise in HELLO or WELCOME (spec 4.1). */
-export const LIMITS_FLOOR = 65_536n;
+export const LIMITS_FLOOR = BigInt(MAX_FRAME_FLOOR);
 
 /** The longest data section of a PING or PONG (spec 7.4). */
 export const MAX_HEARTBEAT = 8;
@@ -604,8 +610,12 @@ const client = nested<ClientInfo>((f) => ({
 
 const since = nested<Since>((f) => ({ epoch: f.required(Key.EPOCH, text), offset: f.required(Key.OFFSET, uint) }));
 
+function belowFloor(value: bigint | undefined): boolean {
+  return value !== undefined && value < LIMITS_FLOOR;
+}
+
 function checkFloor(value: bigint | undefined): void {
-  if (value !== undefined && value < LIMITS_FLOOR) throw new Bad(Key.LIMITS, "out_of_range");
+  if (belowFloor(value)) throw new Bad(Key.LIMITS, "out_of_range");
 }
 
 function sequencing(f: Fields): Sequencing {
@@ -637,7 +647,8 @@ export function decodeFrame(raw: RawFrame, headerLimits: HeaderLimits = DEFAULT_
   } catch (error) {
     if (!(error instanceof Bad)) throw error;
     const rid = fields.maybe(Key.RID, uint);
-    throw ProtocolError.field({ frameType: raw.type, key: error.key, problem: error.problem, rid });
+    const field = { frameType: raw.type, key: error.key, problem: error.problem, rid };
+    throw ProtocolError.field(field, CONTROL_REQUESTS.has(name));
   }
 }
 
@@ -832,9 +843,7 @@ function typed(name: FrameTypeName, f: Fields, data: Uint8Array): Frame {
 
 type Entries = [number, HeaderValue | undefined][];
 
-const MAX_U64 = (1n << 64n) - 1n;
-
-function u(value: bigint | undefined): HeaderValue | undefined {
+function uintValue(value: bigint | undefined): HeaderValue | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "bigint" || value < 0n || value > MAX_U64) {
     throw new EncodeError("invalid_field", `${String(value)} is not an unsigned 64-bit integer`);
@@ -842,34 +851,34 @@ function u(value: bigint | undefined): HeaderValue | undefined {
   return { kind: "uint", value };
 }
 
-function t(value: string | undefined): HeaderValue | undefined {
+function textValue(value: string | undefined): HeaderValue | undefined {
   return value === undefined ? undefined : { kind: "text", value };
 }
 
-function b(value: boolean | undefined): HeaderValue | undefined {
+function boolValue(value: boolean | undefined): HeaderValue | undefined {
   return value === undefined ? undefined : { kind: "bool", value };
 }
 
-function tok(value: Token | undefined): HeaderValue | undefined {
+function tokenValue(value: Token | undefined): HeaderValue | undefined {
   if (value === undefined) return undefined;
   return typeof value === "string" ? { kind: "text", value } : { kind: "bytes", value };
 }
 
-function fp(value: Uint8Array | undefined): HeaderValue | undefined {
+function fingerprintValue(value: Uint8Array | undefined): HeaderValue | undefined {
   if (value === undefined) return undefined;
   if (value.length !== 32) throw new EncodeError("invalid_field", "contract fingerprint is not 32 bytes");
   return { kind: "bytes", value };
 }
 
-function uints(values: readonly bigint[] | undefined): HeaderValue | undefined {
-  return values === undefined ? undefined : { kind: "array", items: values.map((v) => u(v) as HeaderValue) };
+function uintArrayValue(values: readonly bigint[] | undefined): HeaderValue | undefined {
+  return values === undefined ? undefined : { kind: "array", items: values.map((v) => uintValue(v) as HeaderValue) };
 }
 
-function texts(values: readonly string[] | undefined): HeaderValue | undefined {
+function textArrayValue(values: readonly string[] | undefined): HeaderValue | undefined {
   return values === undefined ? undefined : { kind: "array", items: values.map((v) => ({ kind: "text", value: v })) };
 }
 
-function map(entries: Entries): HeaderValue {
+function nestedValue(entries: Entries): HeaderValue {
   return { kind: "map", entries: toMap(entries) };
 }
 
@@ -879,9 +888,10 @@ function toMap(entries: Entries): HeaderMap {
   return out;
 }
 
-function acks(value: AckMap | undefined): HeaderValue | undefined {
+function ackMapValue(value: AckMap | undefined): HeaderValue | undefined {
   if (value === undefined) return undefined;
-  return { kind: "map", entries: [...value].map(([lane, seq]) => [u(lane) as HeaderValue, u(seq) as HeaderValue]) };
+  const entries = [...value].map(([lane, seq]) => [uintValue(lane), uintValue(seq)] as [HeaderValue, HeaderValue]);
+  return { kind: "map", entries };
 }
 
 function metaValue(value: Meta | undefined): HeaderValue | undefined {
@@ -899,27 +909,27 @@ function metaValue(value: Meta | undefined): HeaderValue | undefined {
 
 function limitsValue(value: Limits | ServerLimits | undefined): HeaderValue | undefined {
   if (value === undefined) return undefined;
-  return map([
-    [Key.WINDOW, u(value.window)],
-    [Key.MAX_CALLS, u(value.maxCalls)],
-    [Key.MAX_FRAME, u(value.maxFrame)],
-    [Key.MAX_SUBS, u(value.maxSubs)],
-    [Key.MAX_DGRAM, u(value.maxDgram)],
+  return nestedValue([
+    [Key.WINDOW, uintValue(value.window)],
+    [Key.MAX_CALLS, uintValue(value.maxCalls)],
+    [Key.MAX_FRAME, uintValue(value.maxFrame)],
+    [Key.MAX_SUBS, uintValue(value.maxSubs)],
+    [Key.MAX_DGRAM, uintValue(value.maxDgram)],
   ]);
 }
 
 function authValue(value: Auth | undefined): HeaderValue | undefined {
   if (value === undefined) return undefined;
-  return map([
-    [Key.TOKEN, tok(value.token)],
-    [Key.SCHEME, t(value.scheme)],
+  return nestedValue([
+    [Key.TOKEN, tokenValue(value.token)],
+    [Key.SCHEME, textValue(value.scheme)],
   ]);
 }
 
-function seq(frame: Sequencing): Entries {
+function sequencingEntries(frame: Sequencing): Entries {
   return [
-    [Key.SEQ, u(frame.seq)],
-    [Key.ACK, acks(frame.ack)],
+    [Key.SEQ, uintValue(frame.seq)],
+    [Key.ACK, ackMapValue(frame.ack)],
   ];
 }
 
@@ -927,85 +937,95 @@ function headerEntries(frame: Exclude<Frame, Extension>): Entries {
   switch (frame.type) {
     case "HELLO":
       return [
-        [Key.VERSIONS, uints(frame.versions)],
-        [Key.CODECS, texts(frame.codecs)],
-        [Key.CAPS, texts(frame.caps)],
+        [Key.VERSIONS, uintArrayValue(frame.versions)],
+        [Key.CODECS, textArrayValue(frame.codecs)],
+        [Key.CAPS, textArrayValue(frame.caps)],
         [Key.LIMITS, limitsValue(frame.limits)],
-        [Key.CONTRACT, fp(frame.contract)],
+        [Key.CONTRACT, fingerprintValue(frame.contract)],
         [Key.AUTH, authValue(frame.auth)],
         [
           Key.RESUME,
           frame.resume &&
-            map([
-              [Key.TOKEN, tok(frame.resume.token)],
-              [Key.SESSION, t(frame.resume.session)],
-              [Key.ACK, acks(frame.resume.ack)],
-              [Key.LOST, uints(frame.resume.lost)],
+            nestedValue([
+              [Key.TOKEN, tokenValue(frame.resume.token)],
+              [Key.SESSION, textValue(frame.resume.session)],
+              [Key.ACK, ackMapValue(frame.resume.ack)],
+              [Key.LOST, uintArrayValue(frame.resume.lost)],
             ]),
         ],
         [
           Key.CLIENT,
           frame.client &&
-            map([
-              [Key.NAME, t(frame.client.name)],
-              [Key.CLIENT_VERSION, t(frame.client.version)],
+            nestedValue([
+              [Key.NAME, textValue(frame.client.name)],
+              [Key.CLIENT_VERSION, textValue(frame.client.version)],
             ]),
         ],
       ];
     case "WELCOME":
       return [
-        [Key.VERSION, u(frame.version)],
-        [Key.CODEC, t(frame.codec)],
-        [Key.CAPS, texts(frame.caps)],
-        [Key.SESSION, t(frame.session)],
-        [Key.TOKEN, tok(frame.token)],
+        [Key.VERSION, uintValue(frame.version)],
+        [Key.CODEC, textValue(frame.codec)],
+        [Key.CAPS, textArrayValue(frame.caps)],
+        [Key.SESSION, textValue(frame.session)],
+        [Key.TOKEN, tokenValue(frame.token)],
         [Key.LIMITS, limitsValue(frame.limits)],
-        [Key.HB, u(frame.hb)],
-        [Key.IDLE, u(frame.idle)],
-        [Key.RESUME_WINDOW, u(frame.resumeWindow)],
-        [Key.CONTRACT, fp(frame.contract)],
-        [Key.USER, t(frame.user)],
-        [Key.RESUMED, b(frame.resumed)],
-        [Key.ACK, acks(frame.ack)],
-        [Key.LOST, uints(frame.lost)],
-        [Key.TRANSPORTS, texts(frame.transports)],
+        [Key.HB, uintValue(frame.hb)],
+        [Key.IDLE, uintValue(frame.idle)],
+        [Key.RESUME_WINDOW, uintValue(frame.resumeWindow)],
+        [Key.CONTRACT, fingerprintValue(frame.contract)],
+        [Key.USER, textValue(frame.user)],
+        [Key.RESUMED, boolValue(frame.resumed)],
+        [Key.ACK, ackMapValue(frame.ack)],
+        [Key.LOST, uintArrayValue(frame.lost)],
+        [Key.TRANSPORTS, textArrayValue(frame.transports)],
       ];
     case "REJECT":
       return [
-        [Key.CODE, u(frame.code)],
-        [Key.MSG, t(frame.msg)],
-        [Key.RETRY, u(frame.retry)],
+        [Key.CODE, uintValue(frame.code)],
+        [Key.MSG, textValue(frame.msg)],
+        [Key.RETRY, uintValue(frame.retry)],
       ];
     case "PING":
     case "PONG":
       return [];
     case "GOAWAY":
       return [
-        [Key.CODE, u(frame.code)],
-        [Key.MSG, t(frame.msg)],
-        [Key.URL, t(frame.url)],
-        [Key.RETRY, u(frame.retry)],
+        [Key.CODE, uintValue(frame.code)],
+        [Key.MSG, textValue(frame.msg)],
+        [Key.URL, textValue(frame.url)],
+        [Key.RETRY, uintValue(frame.retry)],
       ];
     case "CLOSE":
       return [
-        [Key.CODE, u(frame.code)],
-        [Key.MSG, t(frame.msg)],
+        [Key.CODE, uintValue(frame.code)],
+        [Key.MSG, textValue(frame.msg)],
       ];
     case "AUTH_REFRESH":
-      return [[Key.RID, u(frame.rid)], [Key.AUTH, authValue(frame.auth)], ...seq(frame)];
+      return [[Key.RID, uintValue(frame.rid)], [Key.AUTH, authValue(frame.auth)], ...sequencingEntries(frame)];
     case "AUTH_RESULT":
-      return [[Key.RID, u(frame.rid)], [Key.CODE, u(frame.code)], [Key.EXPIRES, u(frame.expires)], ...seq(frame)];
+      return [
+        [Key.RID, uintValue(frame.rid)],
+        [Key.CODE, uintValue(frame.code)],
+        [Key.EXPIRES, uintValue(frame.expires)],
+        ...sequencingEntries(frame),
+      ];
     case "ACK":
-      return [[Key.ACK, acks(frame.ack)]];
+      return [[Key.ACK, ackMapValue(frame.ack)]];
     case "AUTH_EXPIRING":
-      return [[Key.EXPIRES, u(frame.expires)], ...seq(frame)];
+      return [[Key.EXPIRES, uintValue(frame.expires)], ...sequencingEntries(frame)];
     case "REQUEST_ERROR":
-      return [[Key.RID, u(frame.rid)], [Key.CODE, u(frame.code)], [Key.MSG, t(frame.msg)], ...seq(frame)];
+      return [
+        [Key.RID, uintValue(frame.rid)],
+        [Key.CODE, uintValue(frame.code)],
+        [Key.MSG, textValue(frame.msg)],
+        ...sequencingEntries(frame),
+      ];
     case "CALL":
       return [
-        [Key.METHOD, t(frame.method)],
-        [Key.SHAPE, u(frame.shape)],
-        [Key.DEADLINE, u(frame.deadline)],
+        [Key.METHOD, textValue(frame.method)],
+        [Key.SHAPE, uintValue(frame.shape)],
+        [Key.DEADLINE, uintValue(frame.deadline)],
         [Key.META, metaValue(frame.meta)],
       ];
     case "ITEM":
@@ -1014,67 +1034,71 @@ function headerEntries(frame: Exclude<Frame, Extension>): Entries {
       return [[Key.META, metaValue(frame.meta)]];
     case "ERROR":
       return [
-        [Key.CODE, u(frame.code)],
-        [Key.MSG, t(frame.msg)],
-        [Key.NX, b(frame.nx)],
+        [Key.CODE, uintValue(frame.code)],
+        [Key.MSG, textValue(frame.msg)],
+        [Key.NX, boolValue(frame.nx)],
         [Key.META, metaValue(frame.meta)],
       ];
     case "CANCEL":
-      return [[Key.MSG, t(frame.msg)]];
+      return [[Key.MSG, textValue(frame.msg)]];
     case "CREDIT":
-      return [[Key.CREDIT, u(frame.credit)]];
+      return [[Key.CREDIT, uintValue(frame.credit)]];
     case "NOTIFY":
-      return [[Key.METHOD, t(frame.method)], [Key.META, metaValue(frame.meta)], ...seq(frame)];
+      return [[Key.METHOD, textValue(frame.method)], [Key.META, metaValue(frame.meta)], ...sequencingEntries(frame)];
     case "LANE_OPEN":
-      return [[Key.LANE, u(frame.lane)]];
+      return [[Key.LANE, uintValue(frame.lane)]];
     case "SUBSCRIBE":
       return [
-        [Key.RID, u(frame.rid)],
-        [Key.CHANNEL, t(frame.channel)],
+        [Key.RID, uintValue(frame.rid)],
+        [Key.CHANNEL, textValue(frame.channel)],
         [
           Key.SINCE,
           frame.since &&
-            map([
-              [Key.EPOCH, t(frame.since.epoch)],
-              [Key.OFFSET, u(frame.since.offset)],
+            nestedValue([
+              [Key.EPOCH, textValue(frame.since.epoch)],
+              [Key.OFFSET, uintValue(frame.since.offset)],
             ]),
         ],
-        [Key.PRESENCE, b(frame.presence)],
+        [Key.PRESENCE, boolValue(frame.presence)],
         [Key.META, metaValue(frame.meta)],
-        ...seq(frame),
+        ...sequencingEntries(frame),
       ];
     case "SUBSCRIBED":
       return [
-        [Key.RID, u(frame.rid)],
-        [Key.CHANNEL, t(frame.channel)],
-        [Key.EPOCH, t(frame.epoch)],
-        [Key.OFFSET, u(frame.offset)],
-        [Key.RECOVERED, b(frame.recovered)],
-        ...seq(frame),
+        [Key.RID, uintValue(frame.rid)],
+        [Key.CHANNEL, textValue(frame.channel)],
+        [Key.EPOCH, textValue(frame.epoch)],
+        [Key.OFFSET, uintValue(frame.offset)],
+        [Key.RECOVERED, boolValue(frame.recovered)],
+        ...sequencingEntries(frame),
       ];
     case "UNSUBSCRIBE":
-      return [[Key.RID, u(frame.rid)], [Key.CHANNEL, t(frame.channel)], ...seq(frame)];
+      return [[Key.RID, uintValue(frame.rid)], [Key.CHANNEL, textValue(frame.channel)], ...sequencingEntries(frame)];
     case "UNSUBSCRIBED": {
       const form: Entries =
         "rid" in frame.form
-          ? [[Key.RID, u(frame.form.rid)]]
+          ? [[Key.RID, uintValue(frame.form.rid)]]
           : [
-              [Key.CODE, u(frame.form.code)],
-              [Key.MSG, t(frame.form.msg)],
+              [Key.CODE, uintValue(frame.form.code)],
+              [Key.MSG, textValue(frame.form.msg)],
             ];
-      return [...form, [Key.CHANNEL, t(frame.channel)], ...seq(frame)];
+      return [...form, [Key.CHANNEL, textValue(frame.channel)], ...sequencingEntries(frame)];
     }
     case "PUBLICATION":
-      return [[Key.CHANNEL, t(frame.channel)], [Key.OFFSET, u(frame.offset)], ...seq(frame)];
+      return [
+        [Key.CHANNEL, textValue(frame.channel)],
+        [Key.OFFSET, uintValue(frame.offset)],
+        ...sequencingEntries(frame),
+      ];
     case "PRESENCE":
-      return [[Key.CHANNEL, t(frame.channel)], [Key.KIND, u(frame.kind)], ...seq(frame)];
+      return [[Key.CHANNEL, textValue(frame.channel)], [Key.KIND, uintValue(frame.kind)], ...sequencingEntries(frame)];
     case "DATAGRAM":
       return [
-        [Key.KEY, u(frame.key)],
-        [Key.SEQ, u(frame.seq)],
+        [Key.KEY, uintValue(frame.key)],
+        [Key.SEQ, uintValue(frame.seq)],
       ];
     case "DGRAM_BIND":
-      return [[Key.KEY, u(frame.key)], [Key.NAME, t(frame.name)], ...seq(frame)];
+      return [[Key.KEY, uintValue(frame.key)], [Key.NAME, textValue(frame.name)], ...sequencingEntries(frame)];
   }
 }
 
@@ -1083,7 +1107,6 @@ function frameData(frame: Frame): Uint8Array {
 }
 
 function check(frame: Frame): void {
-  const belowFloor = (value: bigint | undefined) => value !== undefined && value < LIMITS_FLOOR;
   if (frame.type === "EXTENSION") {
     if (!Number.isInteger(frame.frameType) || frame.frameType < 0x80 || frame.frameType > 0xff) {
       throw new EncodeError("not_an_extension_type", `extension frame type ${frame.frameType} is outside 0x80 to 0xff`);
@@ -1102,7 +1125,8 @@ function check(frame: Frame): void {
  * deterministic encoding (spec 5.4.1) or HeaderLength 0 when it has no fields, and the data.
  *
  * @throws {@link EncodeError} `not_an_extension_type`, `limits_below_floor` or `invalid_field`
- * for a frame {@link decodeFrame} would refuse.
+ * for a typed frame {@link decodeFrame} would refuse, and `lone_surrogate` for text with no UTF-8 form.
+ * A frame object built outside these types, one missing a required field, is not checked.
  */
 export function toRawFrame(frame: Frame): RawFrame {
   check(frame);
@@ -1118,8 +1142,5 @@ export function toRawFrame(frame: Frame): RawFrame {
  * @throws {@link EncodeError} for the reasons of {@link toRawFrame}, and `payload_too_large`.
  */
 export function encodeFrame(frame: Frame): Uint8Array {
-  const raw = toRawFrame(frame);
-  const out = new ByteWriter(raw.header.length + raw.data.length + 16);
-  writeRawFrame(out, raw);
-  return out.finish();
+  return encodeRawFrame(toRawFrame(frame));
 }

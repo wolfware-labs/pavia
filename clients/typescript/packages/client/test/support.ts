@@ -1,7 +1,8 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { type Diag, hexToBytes, parse } from "@pavia/vectors/diag";
-import type { HeaderMap, HeaderValue } from "../src/index.js";
+import { expect } from "vitest";
+import { EncodeError, type HeaderMap, type HeaderValue, ProtocolError } from "../src/index.js";
 
 const VECTORS = fileURLToPath(new URL("../../../../../vectors/", import.meta.url));
 
@@ -51,6 +52,27 @@ export function headerOf(diag: string): HeaderMap {
 
 export function valueOf(diag: string): HeaderValue {
   return value(parse(diag));
+}
+
+function thrown(f: () => unknown): unknown {
+  try {
+    f();
+  } catch (error) {
+    return error;
+  }
+  throw new Error("expected an error");
+}
+
+export function protocolError(f: () => unknown): ProtocolError {
+  const error = thrown(f);
+  expect(error).toBeInstanceOf(ProtocolError);
+  return error as ProtocolError;
+}
+
+export function encodeError(f: () => unknown): EncodeError {
+  const error = thrown(f);
+  expect(error).toBeInstanceOf(EncodeError);
+  return error as EncodeError;
 }
 
 export function concat(parts: readonly Uint8Array[]): Uint8Array {

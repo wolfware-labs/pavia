@@ -101,8 +101,6 @@ export type Outcome =
   | { readonly action: "close"; readonly code: CloseCode }
   | { readonly action: "request_error"; readonly rid: bigint; readonly status: typeof INVALID_ARGUMENT };
 
-const CONTROL_REQUESTS: ReadonlySet<number> = new Set([0x08, 0x30, 0x32]);
-
 /**
  * Bytes received from the peer that break the protocol. {@link ProtocolError.outcome} says how the
  * session reacts: close with a code from spec 15.1, or answer a control request with REQUEST_ERROR.
@@ -125,9 +123,12 @@ export class ProtocolError extends Error {
     this.field = detail.field;
   }
 
-  /** A field error, classified as a control request error when the frame allows it. */
-  static field(field: FieldError): ProtocolError {
-    const control = CONTROL_REQUESTS.has(field.frameType) && field.rid !== undefined;
+  /**
+   * A field error, classified as a control request error when the frame is a control request
+   * (spec 7.9) and its `rid` decoded.
+   */
+  static field(field: FieldError, controlRequest: boolean): ProtocolError {
+    const control = controlRequest && field.rid !== undefined;
     return new ProtocolError(control ? "invalid_control_request_field" : "invalid_header_field", { field });
   }
 
@@ -168,7 +169,8 @@ export type EncodeErrorKind =
   | "limits_below_floor"
   | "invalid_field"
   | "duplicate_key"
-  | "reserved_simple_value";
+  | "reserved_simple_value"
+  | "lone_surrogate";
 
 /** A value this side was asked to send that has no valid encoding. Nothing is sent. */
 export class EncodeError extends Error {

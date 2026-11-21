@@ -33,6 +33,6 @@ export {
   takeFrame,
   writeRawFrame,
   type WsFrame,
-} from "./frame.js";
+} from "./wire.js";
 export * from "./frames.js";
 export { decodeVarint, encodeVarint, MAX_VARINT, type VarintResult, varintLength, writeVarint } from "./varint.js";

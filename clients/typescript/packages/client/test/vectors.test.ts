@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   CloseCode,
+  DEFAULT_HEADER_LIMITS,
   decodeFrame,
   decodeHeader,
   decodeMessage,
@@ -10,24 +11,22 @@ import {
   encodeHeaderValue,
   encodeMessages,
   encodeVarint,
-  EncodeError,
   type Frame,
   MAX_FRAME_FLOOR,
-  ProtocolError,
   type RawFrame,
   StreamFrameDecoder,
   toRawFrame,
 } from "../src/index.js";
-import { cases, concat, headerOf, hexToBytes, type Json, valueOf } from "./support.js";
-
-function thrown(f: () => unknown): unknown {
-  try {
-    f();
-  } catch (error) {
-    return error;
-  }
-  throw new Error("expected an error");
-}
+import {
+  cases,
+  concat,
+  encodeError,
+  headerOf,
+  hexToBytes,
+  type Json,
+  protocolError,
+  valueOf,
+} from "./support.js";
 
 describe("varint vectors", () => {
   const all = cases("varints");
@@ -36,9 +35,7 @@ describe("varint vectors", () => {
     it(id, () => {
       const max = typeof c.max === "string" ? BigInt(c.max) : undefined;
       if (c.error === "out_of_range") {
-        const error = thrown(() => encodeVarint(BigInt(c.value as string)));
-        expect(error).toBeInstanceOf(EncodeError);
-        expect((error as EncodeError).kind).toBe("out_of_range");
+        expect(encodeError(() => encodeVarint(BigInt(c.value as string))).kind).toBe("out_of_range");
         return;
       }
       const bytes = hexToBytes(c.hex as string);
@@ -63,15 +60,14 @@ describe("header vectors", () => {
     it(id, () => {
       const bytes = hexToBytes(c.hex as string);
       const limits = {
-        maxSize: typeof c.max_size === "number" ? c.max_size : 16_384,
-        maxDepth: typeof c.max_depth === "number" ? c.max_depth : 16,
+        maxSize: typeof c.max_size === "number" ? c.max_size : DEFAULT_HEADER_LIMITS.maxSize,
+        maxDepth: typeof c.max_depth === "number" ? c.max_depth : DEFAULT_HEADER_LIMITS.maxDepth,
       };
       if (typeof c.error === "string") {
-        const error = thrown(() => decodeHeader(bytes, limits));
-        expect(error).toBeInstanceOf(ProtocolError);
-        expect((error as ProtocolError).kind).toBe("malformed_header");
-        expect((error as ProtocolError).reason).toBe(c.error);
-        expect((error as ProtocolError).outcome).toEqual({ action: "close", code: CloseCode.PROTOCOL_ERROR });
+        const error = protocolError(() => decodeHeader(bytes, limits));
+        expect(error.kind).toBe("malformed_header");
+        expect(error.reason).toBe(c.error);
+        expect(error.outcome).toEqual({ action: "close", code: CloseCode.PROTOCOL_ERROR });
         return;
       }
       const expected = headerOf(c.header as string);
@@ -120,9 +116,8 @@ describe("frame vectors", () => {
       const bytes = hexToBytes(c.hex as string);
       const error = c.error as { code: string } | undefined;
       if (error !== undefined) {
-        const e = thrown(() => rawFrames(c, bytes).forEach(({ frame }) => decodeFrame(frame)));
-        expect(e).toBeInstanceOf(ProtocolError);
-        expect((e as ProtocolError).outcome).toEqual({ action: "close", code: CLOSE_CODES[error.code] });
+        const e = protocolError(() => rawFrames(c, bytes).forEach(({ frame }) => decodeFrame(frame)));
+        expect(e.outcome).toEqual({ action: "close", code: CLOSE_CODES[error.code] });
         return;
       }
       const want = c.frames as Json[];

@@ -11,40 +11,17 @@ import {
   encodeMessages,
   encodeRawFrame,
   encodeVarint,
-  EncodeError,
   type Frame,
   type HeaderMap,
   type HeaderValue,
   MAX_FRAME_FLOOR,
   MAX_VARINT,
-  ProtocolError,
   type RawFrame,
   StreamFrameDecoder,
   takeFrame,
   toRawFrame,
 } from "../src/index.js";
-import { hexToBytes } from "./support.js";
-
-function thrown(f: () => unknown): unknown {
-  try {
-    f();
-  } catch (error) {
-    return error;
-  }
-  throw new Error("expected an error");
-}
-
-function protocolError(f: () => unknown): ProtocolError {
-  const error = thrown(f);
-  expect(error).toBeInstanceOf(ProtocolError);
-  return error as ProtocolError;
-}
-
-function encodeError(f: () => unknown): EncodeError {
-  const error = thrown(f);
-  expect(error).toBeInstanceOf(EncodeError);
-  return error as EncodeError;
-}
+import { concat, encodeError, hexToBytes, protocolError } from "./support.js";
 
 const u = (n: number | bigint): HeaderValue => ({ kind: "uint", value: BigInt(n) });
 const t = (value: string): HeaderValue => ({ kind: "text", value });
@@ -85,7 +62,7 @@ describe("frames on the wire", () => {
       action: "close",
       code: CloseCode.FRAME_TOO_LARGE,
     });
-    expect(protocolError(() => decodeMessage(concat0(huge), MAX_FRAME_FLOOR)).kind).toBe("frame_too_large");
+    expect(protocolError(() => decodeMessage(concat([Uint8Array.of(0), huge]), MAX_FRAME_FLOOR)).kind).toBe("frame_too_large");
   });
 
   it("waits for a Length of 2^32 + 5 under a huge limit instead of reading it as 5", () => {
@@ -138,10 +115,6 @@ describe("frames on the wire", () => {
     expect(decoder.next()?.data.length).toBe(500);
   });
 });
-
-function concat0(frame: Uint8Array): Uint8Array {
-  return Uint8Array.from([0, ...frame]);
-}
 
 describe("WebSocket messages", () => {
   it("refuses text, empty and oversized messages", () => {
@@ -470,5 +443,23 @@ describe("close codes", () => {
     expect(closeCodeFromWire(13n)).toBe(CloseCode.CONTRACT_MISMATCH);
     expect(closeCodeFromWire(14)).toBe(CloseCode.INTERNAL);
     expect(closeCodeFromWire(2n ** 64n)).toBe(CloseCode.INTERNAL);
+  });
+});
+
+describe("text with a lone surrogate", () => {
+  it("is refused rather than rewritten as U+FFFD", () => {
+    const header: HeaderMap = [[{ kind: "uint", value: 1n }, { kind: "text", value: "room-\uD83D" }]];
+    expect(encodeError(() => encodeHeader(header)).kind).toBe("lone_surrogate");
+    const subscribe = { type: "SUBSCRIBE", rid: 1n, channel: "room-\uD83D", data: new Uint8Array() } as Frame;
+    expect(encodeError(() => encodeFrame(subscribe)).kind).toBe("lone_surrogate");
+    const close = { type: "CLOSE", code: 0n, msg: "\uDC00" } as Frame;
+    expect(encodeError(() => encodeFrame(close)).kind).toBe("lone_surrogate");
+  });
+
+  it("does not catch a well-formed surrogate pair", () => {
+    const header: HeaderMap = [[{ kind: "uint", value: 1n }, { kind: "text", value: "😀" }]];
+    expect(Array.from(encodeHeader(header), (byte) => byte.toString(16).padStart(2, "0")).join("")).toBe(
+      "a10164f09f9880",
+    );
   });
 });
