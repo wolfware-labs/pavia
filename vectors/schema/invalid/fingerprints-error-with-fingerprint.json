@@ -1,0 +1,8 @@
+{
+  "$schema": "../fingerprints.schema.json",
+  "group": "broken",
+  "note": "Deliberately invalid fixture: a refused manifest cannot also carry a fingerprint. CI checks that schema validation rejects it.",
+  "cases": [
+    {"id": "error-with-fingerprint", "spec": ["12.5"], "note": "error and fingerprint together", "manifest": {}, "error": "default", "fingerprint": "00000000000000000000000000000000000000000000000000000000000000ff"}
+  ]
+}

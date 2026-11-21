@@ -15,3 +15,6 @@ ryu-js.workspace = true
 serde_json = { workspace = true, features = ["float_roundtrip"] }
 sha2.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+pavia-vectors = { path = "../pavia-vectors" }
