@@ -105,7 +105,7 @@ describe("codec vectors", () => {
           expect(render(c.type as string | Json, expected, types), "json is not the canonical form of value").toBe(c.json);
         }
       }
-      if (c.direction === "both" || c.normalizes !== true) expect(same(decode(bytes), expected)).toBe(true);
+      if (c.normalizes !== true) expect(same(decode(bytes), expected)).toBe(true);
     });
   }
 });

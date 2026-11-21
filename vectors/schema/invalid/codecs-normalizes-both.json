@@ -1,0 +1,18 @@
+{
+  "$schema": "../codecs.schema.json",
+  "group": "broken",
+  "note": "Deliberately invalid fixture: a case that encodes to its input cannot normalize it. CI checks that schema validation rejects it.",
+  "cases": [
+    {
+      "id": "normalizes-both",
+      "spec": ["12.3"],
+      "note": "normalizes on a both case",
+      "type": "u8",
+      "direction": "both",
+      "normalizes": true,
+      "value": "1",
+      "cbor": "01",
+      "json": "1"
+    }
+  ]
+}

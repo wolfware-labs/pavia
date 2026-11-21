@@ -54,7 +54,9 @@
       "oneOf": [
         {"required": ["value"], "anyOf": [{"required": ["cbor"]}, {"required": ["json"]}], "not": {"required": ["error"]}},
         {"required": ["error"], "not": {"required": ["value"]}, "properties": {"direction": {"const": "decode"}}}
-      ]
+      ],
+      "if": {"required": ["normalizes"]},
+      "then": {"required": ["value"], "properties": {"direction": {"const": "decode"}}}
     }
   }
 }

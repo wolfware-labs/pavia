@@ -32,6 +32,32 @@ impl Default for DecodeLimits {
   }
 }
 
+impl DecodeLimits {
+  /// Whether a decoder with these limits accepts `value`: it nests at most `max_depth` deep and no
+  /// run of tags in it holds more than `max_depth` tags, the rules [`decode`] applies. An encoder
+  /// checks this to refuse a value that every receiver would refuse.
+  #[must_use]
+  pub fn admits(&self, value: &Value) -> bool {
+    self.admits_under(value, 0, 0)
+  }
+
+  /// [`admits`](Self::admits) for `value` inside `parent` arrays and maps and directly inside `run`
+  /// tags. It stops at the first level past the limit, so it recurses no deeper than a decoder.
+  fn admits_under(&self, value: &Value, parent: usize, run: usize) -> bool {
+    match value {
+      Value::Array(items) => parent < self.max_depth && items.iter().all(|item| self.admits_under(item, parent + 1, 0)),
+      Value::Map(entries) => {
+        parent < self.max_depth
+          && entries
+            .iter()
+            .all(|(key, item)| self.admits_under(key, parent + 1, 0) && self.admits_under(item, parent + 1, 0))
+      }
+      Value::Tag(_, content) => run < self.max_depth && self.admits_under(content, parent, run + 1),
+      _ => true,
+    }
+  }
+}
+
 /// The session codec, chosen in the handshake (§5.5, §7.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Codec {

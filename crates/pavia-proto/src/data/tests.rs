@@ -260,6 +260,36 @@ fn takes_the_depth_limit_from_the_caller() {
   assert_eq!(DecodeLimits::default().max_depth, MAX_DEPTH);
 }
 
+fn nested_values() -> Vec<Value> {
+  let mut values = Vec::new();
+  for depth in 0..=4 {
+    let arrays = (0..depth).fold(Value::Null, |item, _| Value::Array(vec![item]));
+    let values_in_maps = (0..depth).fold(Value::Null, |item, _| Value::Map(vec![(text("k"), item)]));
+    let keys_in_maps = (0..depth).fold(Value::Null, |item, _| Value::Map(vec![(item, Value::Null)]));
+    let tags = (0..depth).fold(Value::Unsigned(0), |item, _| Value::Tag(1, Box::new(item)));
+    let split = Value::Tag(1, Box::new(Value::Array(vec![tags.clone()])));
+    values.extend([arrays, values_in_maps, keys_in_maps, tags, split]);
+  }
+  values
+}
+
+#[test]
+fn admits_exactly_what_the_decoders_accept() {
+  for max_depth in 0..=3 {
+    let limits = DecodeLimits { max_depth };
+    for value in nested_values() {
+      for codec in [Codec::Cbor, Codec::Json] {
+        let mut out = Vec::new();
+        if encode(&value, codec, &mut out).is_err() {
+          continue;
+        }
+        let accepted = super::decode(&out, codec, &limits).is_ok();
+        assert_eq!(limits.admits(&value), accepted, "max_depth {max_depth}, {codec:?}, {value:?}");
+      }
+    }
+  }
+}
+
 #[test]
 fn names_the_codecs_as_the_handshake_does() {
   for codec in [Codec::Cbor, Codec::Json] {

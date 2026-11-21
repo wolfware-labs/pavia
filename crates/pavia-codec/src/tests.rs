@@ -456,6 +456,9 @@ fn refuses_to_encode_a_value_deeper_than_the_receiver_takes() {
     let list = Type::List(Box::new(primitive(Primitive::Timestamp)));
     assert!(encode(&list, &tree, &tagged, codec, &DecodeLimits { max_depth: 1 }).is_ok());
   }
+  let tags = (0..=limits.max_depth).fold(Value::Unsigned(0), |item, _| Value::Tag(2, Box::new(item)));
+  let error = encode(&primitive(Primitive::Any), &tree, &tags, Codec::Cbor, &limits).unwrap_err();
+  assert_eq!((error.at(), error.problem()), ("$", &Problem::TooDeep));
 }
 
 #[test]
@@ -507,4 +510,15 @@ fn names_what_the_container_needs_in_both_directions() {
     decode_problem(&primitive(Primitive::Bytes), b"1", Codec::Json),
     ("$".into(), Problem::Expected("bytes"))
   );
+}
+
+#[test]
+fn refuses_a_variant_map_whose_key_is_not_a_name() {
+  let entry = Value::Map(vec![(Value::Unsigned(1), Value::Unsigned(1))]);
+  for codec in [Codec::Cbor, Codec::Json] {
+    assert_eq!(
+      problem_of(&reference("Status"), &entry, codec),
+      ("$".into(), Problem::Expected("a variant name or a one-entry map"))
+    );
+  }
 }

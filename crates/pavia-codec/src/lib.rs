@@ -49,12 +49,12 @@ const UUID_TAG: u64 = 37;
 /// # Errors
 ///
 /// [`TypedError`] for a value that does not fit `ty`, a type that refers to a name `types` does not
-/// have, an `any` value with no form in `codec`, or a value nested deeper than `limits` allows
+/// have, an `any` value with no form in `codec`, or a value that `limits` do not admit
 /// ([`Problem::TooDeep`]): every receiver would refuse it, so it is refused here, before anything is
 /// written.
 pub fn encode(ty: &Type, types: &Types, value: &Value, codec: Codec, limits: &DecodeLimits) -> Result<Vec<u8>, TypedError> {
   let wire = Walk { types, codec }.wire_of(ty, value)?;
-  if depth(&wire) > limits.max_depth {
+  if !limits.admits(&wire) {
     return Err(TypedError::new(Problem::TooDeep));
   }
   let mut out = Vec::new();
@@ -154,7 +154,8 @@ pub enum Problem {
   /// to it before any item of the value is read.
   #[error("type {0:?} is not defined")]
   UnknownType(String),
-  /// A value to encode that nests deeper than the receiver's depth limit (§12.3, §5.4.1).
+  /// A value to encode that nests deeper than the receiver's depth limit, or holds a longer run of
+  /// tags than it takes (§12.3, §5.4.1, [`DecodeLimits::admits`]).
   #[error("value nests deeper than the depth limit")]
   TooDeep,
 }
@@ -599,22 +600,6 @@ fn owned_text_entries(value: Value) -> Result<Vec<(String, Value)>, TypedError> 
       _ => Err(TypedError::new(Problem::Expected("text keys"))),
     })
     .collect()
-}
-
-/// How deep `value` nests as §5.4.1 counts it: arrays and maps add a level, tags and scalars none.
-fn depth(value: &Value) -> usize {
-  match value {
-    Value::Array(items) => 1 + items.iter().map(depth).max().unwrap_or(0),
-    Value::Map(entries) => {
-      1 + entries
-        .iter()
-        .map(|(key, item)| depth(key).max(depth(item)))
-        .max()
-        .unwrap_or(0)
-    }
-    Value::Tag(_, content) => depth(content),
-    _ => 0,
-  }
 }
 
 #[cfg(test)]
