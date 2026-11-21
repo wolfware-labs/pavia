@@ -138,6 +138,9 @@ fn reads_and_writes_lowercase_hyphenated_uuids() {
     "7d444840-9dc0-11d1-b245-5ffdce74-ad2",
     "7d444840-9dc0-11d1-b245_5ffdce74fad2",
     "{7d444840-9dc0-11d1-b245-5ffdce74fad2}",
+    "",
+    "7d444840",
+    "7d444840-9dc0-11d1-b245-5ffdce74fad2-",
   ] {
     assert_eq!(uuid_of_text(text), None, "{text}");
   }

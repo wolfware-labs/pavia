@@ -467,11 +467,11 @@ impl<'t> Walk<'t> {
         .decode(text.as_bytes())
         .map(Value::Bytes)
         .map_err(|_| TypedError::new(Problem::Expected("unpadded base64url"))),
-      (Primitive::Bytes, value @ Value::Bytes(_)) if !json => Ok(value),
+      (Primitive::Bytes, value @ Value::Bytes(_)) => Ok(value),
       (Primitive::Timestamp, Value::Text(text)) if json => scalar::millis_of_rfc3339(&text)
         .map(|millis| Value::Tag(TIMESTAMP_TAG, Box::new(scalar::epoch_seconds(millis))))
         .ok_or_else(|| TypedError::new(Problem::Expected("an RFC 3339 timestamp in UTC with milliseconds"))),
-      (Primitive::Timestamp, Value::Tag(TIMESTAMP_TAG, content)) if !json => {
+      (Primitive::Timestamp, Value::Tag(TIMESTAMP_TAG, content)) => {
         let millis =
           scalar::millis_of_epoch_seconds(&content).ok_or_else(|| TypedError::new(Problem::OutOfRange("timestamp")))?;
         Ok(Value::Tag(TIMESTAMP_TAG, Box::new(scalar::epoch_seconds(millis))))
@@ -479,10 +479,10 @@ impl<'t> Walk<'t> {
       (Primitive::Uuid, Value::Text(text)) if json => scalar::uuid_of_text(&text)
         .map(|bytes| Value::Tag(UUID_TAG, Box::new(Value::Bytes(bytes.to_vec()))))
         .ok_or_else(|| TypedError::new(Problem::Expected("a lowercase hyphenated uuid"))),
-      (Primitive::Uuid, Value::Tag(UUID_TAG, content)) if !json => uuid_bytes(&content)
+      (Primitive::Uuid, Value::Tag(UUID_TAG, content)) => uuid_bytes(&content)
         .map(|bytes| Value::Tag(UUID_TAG, Box::new(Value::Bytes(bytes.to_vec()))))
         .ok_or_else(|| TypedError::new(Problem::Expected("16 bytes in tag 37"))),
-      (_, Value::Tag(tag, _)) if !json => Err(TypedError::new(Problem::Tag(tag))),
+      (_, Value::Tag(tag, _)) => Err(TypedError::new(Problem::Tag(tag))),
       (primitive, value) => {
         let Some((name, bounds)) = range(primitive) else {
           return Err(TypedError::new(Problem::Expected(primitive.name())));

@@ -560,3 +560,59 @@ fn reports_a_wrong_item_first_unless_the_value_is_far_too_deep() {
   let error = encode(&pair, &types(), &value(limits.max_depth + 4), Codec::Cbor, &limits).unwrap_err();
   assert_eq!((error.at(), error.problem()), ("$", &Problem::TooDeep));
 }
+
+#[test]
+fn reads_the_text_forms_only_in_json() {
+  for (ty, input) in [
+    (Primitive::Bytes, [0x62, b'A', b'A']),
+    (Primitive::Timestamp, [0x62, b'2', b'5']),
+    (Primitive::Uuid, [0x62, b'7', b'd']),
+  ] {
+    assert_eq!(
+      decode_problem(&primitive(ty), &input, Codec::Cbor),
+      ("$".into(), Problem::Expected(ty.name()))
+    );
+  }
+}
+
+#[test]
+fn leaves_out_an_optional_field_given_as_null() {
+  let message = reference("Message");
+  let without = map(&[("id", Value::Unsigned(1)), ("tags", Value::Array(vec![]))]);
+  let with_null = map(&[
+    ("id", Value::Unsigned(1)),
+    ("tags", Value::Array(vec![])),
+    ("note", Value::Null),
+  ]);
+  for codec in [Codec::Cbor, Codec::Json] {
+    let limits = DecodeLimits::default();
+    assert_eq!(
+      encode(&message, &types(), &with_null, codec, &limits),
+      encode(&message, &types(), &without, codec, &limits)
+    );
+  }
+}
+
+#[test]
+fn names_a_key_that_appears_twice() {
+  assert_eq!(
+    decode_problem(&reference("Message"), br#"{"id":1,"id":2,"tags":[]}"#, Codec::Json),
+    ("$".into(), Problem::Decode(DecodeError::DuplicateKey))
+  );
+  assert_eq!(
+    decode_problem(
+      &reference("Message"),
+      &[0xa2, 0x62, b'i', b'd', 0x01, 0x62, b'i', b'd', 0x02],
+      Codec::Cbor
+    ),
+    ("$".into(), Problem::DuplicateKey("id".into()))
+  );
+  assert_eq!(
+    decode_problem(
+      &Type::Map(Box::new(primitive(Primitive::U8))),
+      &[0xa2, 0x61, b'a', 0x01, 0x61, b'a', 0x02],
+      Codec::Cbor
+    ),
+    ("$".into(), Problem::DuplicateKey("a".into()))
+  );
+}

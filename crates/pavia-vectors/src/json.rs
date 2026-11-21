@@ -298,8 +298,15 @@ mod tests {
     let types = Map::new();
     assert!(render(&Json::from("any"), &twice, &types).unwrap_err().contains("twice"));
     assert!(render(&Json::from("any"), &Value::Float(f64::NAN), &types).is_err());
-    let once = Value::Map(vec![(key(), Value::Integer(1.into()))]);
-    assert_eq!(render(&Json::from("any"), &once, &types).unwrap(), r#"{"a":1}"#);
+    let once = Value::Map(vec![
+      (key(), Value::Integer(1.into())),
+      (Value::Text("b".into()), Value::Bool(true)),
+      (Value::Text("c".into()), Value::Float(1.5)),
+    ]);
+    assert_eq!(
+      render(&Json::from("any"), &once, &types).unwrap(),
+      r#"{"a":1,"b":true,"c":1.5}"#
+    );
   }
 
   #[test]
