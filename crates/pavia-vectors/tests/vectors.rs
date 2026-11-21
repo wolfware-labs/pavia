@@ -150,7 +150,7 @@ fn codec_vectors_match_their_cbor_and_json() {
     let types = doc["types"].as_object().unwrap_or(&empty);
     for case in doc["cases"].as_array().expect("cases") {
       let ctx = format!("{}#{}", path.display(), str_field(case, "id"));
-      if let Some(json) = case["json"].as_str() {
+      if let (Some(json), None) = (case["json"].as_str(), case.get("error")) {
         serde_json::from_str::<Json>(json).unwrap_or_else(|e| panic!("{ctx}: json {e}"));
       }
       let (Some(value), Some(cbor)) = (case["value"].as_str(), case["cbor"].as_str()) else {
@@ -165,7 +165,9 @@ fn codec_vectors_match_their_cbor_and_json() {
           assert_eq!(rendered, json, "{ctx}: json is not the canonical form of value");
         }
       }
-      assert!(same(&decode(&bytes), &expected), "{ctx}: cbor does not decode to value");
+      if case["normalizes"] != true {
+        assert!(same(&decode(&bytes), &expected), "{ctx}: cbor does not decode to value");
+      }
     }
   }
   assert!(!cases.is_empty());

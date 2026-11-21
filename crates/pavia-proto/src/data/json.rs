@@ -28,8 +28,12 @@ pub(super) fn decode(data: &[u8], max_depth: usize) -> Result<Value, DecodeError
 }
 
 pub(super) fn encode(value: &Value, out: &mut impl BufMut) -> Result<(), EncodeError> {
-  write(value, &mut Discard)?;
+  check(value)?;
   write(value, &mut Out(out))
+}
+
+pub(super) fn check(value: &Value) -> Result<(), EncodeError> {
+  write(value, &mut Discard)
 }
 
 trait Text {

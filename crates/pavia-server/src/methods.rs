@@ -139,8 +139,8 @@ pub enum Kind {
 /// A signature is declared with [`param`](Self::param), [`returns`](Self::returns),
 /// [`yields`](Self::yields), [`accepts`](Self::accepts) and [`error`](Self::error);
 /// [`manifest::render`](crate::manifest::render) checks it against the kind, the shape and the handler.
-/// The handler still takes and returns dynamic values
-/// until the typed codec mapping (#66).
+/// The handler still takes and returns dynamic values; typed handlers, which decode them with
+/// `pavia-codec`, arrive with the service macros (#218).
 ///
 /// ```
 /// use pavia_proto::stream::Shape;
@@ -325,7 +325,7 @@ type Run = dyn Fn(HandlerContext, Vec<Value>) -> Running + Send + Sync;
 /// returns the RESULT value, or with [`fallible`](Self::fallible) a [`HandlerError`]. A method
 /// with no return value returns [`Value::Null`], the codec's unit value. A handler made with
 /// [`with_context`](Self::with_context) also gets the [`HandlerContext`] of the session that
-/// called it. Typed handlers arrive with the typed codec mapping (#66).
+/// called it. Typed handlers arrive with the service macros (#218).
 #[derive(Clone)]
 pub struct Handler {
   params: usize,

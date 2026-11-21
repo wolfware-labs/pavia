@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde_json::{Value, json};
 
 use super::{Call, Channel, Datagram, Direction, Manifest, ManifestError, Method, Mode, Param, Service, Shape};
-use crate::schema::{Definition, Enum, Field, Primitive, Struct, Type, Variant};
+use crate::schema::{Definition, Enum, Field, Primitive, Struct, Type, Types, Variant};
 
 fn reference(name: &str) -> Type {
   Type::Ref(name.into())
@@ -17,7 +17,7 @@ fn option(inner: Type) -> Type {
   Type::Option(Box::new(inner))
 }
 
-fn spec_types() -> BTreeMap<String, Definition> {
+fn spec_types() -> Types {
   let field = |name: &str, ty: Type| Field::new(name, ty);
   BTreeMap::from([
     ("RoomId".into(), Definition::Alias(string())),

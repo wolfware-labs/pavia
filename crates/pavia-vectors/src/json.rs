@@ -35,15 +35,17 @@ fn write(out: &mut String, ty: &Json, v: &Value, types: &Map<String, Json>) -> R
     },
     "list" => {
       let items = v.as_array().ok_or("list expects an array")?;
-      out.push('[');
-      for (i, item) in items.iter().enumerate() {
-        if i > 0 {
-          out.push(',');
-        }
-        write(out, arg, item, types)?;
-      }
-      out.push(']');
-      Ok(())
+      joined(out, ['[', ']'], items, |out, item| write(out, arg, item, types))
+    }
+    "tuple" => {
+      let elements = arg.as_array().ok_or("tuple needs element types")?;
+      let items = v
+        .as_array()
+        .filter(|items| items.len() == elements.len())
+        .ok_or("tuple length")?;
+      joined(out, ['[', ']'], elements.iter().zip(items), |out, (element, item)| {
+        write(out, element, item, types)
+      })
     }
     "map" => {
       let entries = v.as_map().ok_or("map expects a map")?;
@@ -52,17 +54,11 @@ fn write(out: &mut String, ty: &Json, v: &Value, types: &Map<String, Json>) -> R
         .map(|(k, val)| Ok((k.as_text().ok_or("map keys are text")?, val)))
         .collect::<Result<_, String>>()?;
       sorted.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
-      out.push('{');
-      for (i, (k, val)) in sorted.iter().enumerate() {
-        if i > 0 {
-          out.push(',');
-        }
+      joined(out, ['{', '}'], sorted, |out, (k, val)| {
         string(out, k);
         out.push(':');
-        write(out, arg, val, types)?;
-      }
-      out.push('}');
-      Ok(())
+        write(out, arg, val, types)
+      })
     }
     "struct" => {
       let fields = arg["fields"].as_array().ok_or("struct needs fields")?;
@@ -116,6 +112,7 @@ fn write(out: &mut String, ty: &Json, v: &Value, types: &Map<String, Json>) -> R
 fn primitive(out: &mut String, name: &str, v: &Value) -> Result<(), String> {
   match (name, v) {
     ("unit", Value::Null) => out.push_str("null"),
+    ("any", v) => untyped(out, v)?,
     ("bool", Value::Bool(b)) => out.push_str(if *b { "true" } else { "false" }),
     ("u8" | "u16" | "u32" | "i8" | "i16" | "i32", Value::Integer(i)) => {
       out.push_str(&i128::from(*i).to_string());
@@ -158,6 +155,50 @@ fn primitive(out: &mut String, name: &str, v: &Value) -> Result<(), String> {
     }
     _ => return Err(format!("{name} does not accept {v:?}")),
   }
+  Ok(())
+}
+
+/// An `any` value as received: JSON's own forms only, map entries in the order given.
+fn untyped(out: &mut String, v: &Value) -> Result<(), String> {
+  match v {
+    Value::Null => out.push_str("null"),
+    Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+    Value::Integer(i) => out.push_str(&i128::from(*i).to_string()),
+    Value::Float(f) => out.push_str(&number(*f)?),
+    Value::Text(s) => string(out, s),
+    Value::Array(items) => joined(out, ['[', ']'], items, untyped)?,
+    Value::Map(entries) => {
+      let mut seen = std::collections::BTreeSet::new();
+      joined(out, ['{', '}'], entries, |out, (k, val)| {
+        let key = k.as_text().ok_or("json object keys are text")?;
+        if !seen.insert(key) {
+          return Err(format!("json object key {key:?} appears twice"));
+        }
+        string(out, key);
+        out.push(':');
+        untyped(out, val)
+      })?;
+    }
+    _ => return Err(format!("{v:?} has no json form")),
+  }
+  Ok(())
+}
+
+/// Writes `items` with `each`, separated by commas, between the two `brackets`.
+fn joined<T>(
+  out: &mut String,
+  brackets: [char; 2],
+  items: impl IntoIterator<Item = T>,
+  mut each: impl FnMut(&mut String, T) -> Result<(), String>,
+) -> Result<(), String> {
+  out.push(brackets[0]);
+  for (i, item) in items.into_iter().enumerate() {
+    if i > 0 {
+      out.push(',');
+    }
+    each(out, item)?;
+  }
+  out.push(brackets[1]);
   Ok(())
 }
 
@@ -248,6 +289,24 @@ mod tests {
     ] {
       assert_eq!(number(x).unwrap(), s, "{x}");
     }
+  }
+
+  #[test]
+  fn any_refuses_what_json_cannot_hold() {
+    let key = || Value::Text("a".into());
+    let twice = Value::Map(vec![(key(), Value::Null), (key(), Value::Null)]);
+    let types = Map::new();
+    assert!(render(&Json::from("any"), &twice, &types).unwrap_err().contains("twice"));
+    assert!(render(&Json::from("any"), &Value::Float(f64::NAN), &types).is_err());
+    let once = Value::Map(vec![
+      (key(), Value::Integer(1.into())),
+      (Value::Text("b".into()), Value::Bool(true)),
+      (Value::Text("c".into()), Value::Float(1.5)),
+    ]);
+    assert_eq!(
+      render(&Json::from("any"), &once, &types).unwrap(),
+      r#"{"a":1,"b":true,"c":1.5}"#
+    );
   }
 
   #[test]

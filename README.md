@@ -71,7 +71,8 @@ vectors/              test vectors and conformance scripts shared by all impleme
 docs/design/          decision records that shape more than one issue
 crates/               Rust workspace members
   pavia-proto/          sans-IO core: framing, streams, session state, sequencing
-  pavia-contract/       type system, manifest, fingerprint, typed codecs
+  pavia-contract/       type system, manifest, fingerprint
+  pavia-codec/          typed codecs: contract values in the cbor and json data sections
   pavia-contract-derive/ derive macros for contract types
   pavia-server/         tokio runtime: session tasks, registry, targeting, hooks
   pavia-axum/           axum adapter

@@ -1,0 +1,681 @@
+{
+  "$schema": "../schema/codecs.schema.json",
+  "group": "rows",
+  "note": "One case per row of spec 12.3, and the encoding-order, float-width and depth cases of draft 0.9.",
+  "types": {
+    "Point": {
+      "struct": {
+        "fields": [
+          {
+            "name": "y",
+            "type": "f64"
+          },
+          {
+            "name": "x",
+            "type": "f64"
+          }
+        ]
+      }
+    },
+    "Status": {
+      "enum": {
+        "variants": [
+          {
+            "name": "Idle"
+          },
+          {
+            "name": "Busy",
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    "Options": {
+      "struct": {
+        "fields": [
+          {
+            "name": "lang",
+            "type": {
+              "option": "string"
+            },
+            "optional": true
+          }
+        ]
+      }
+    }
+  },
+  "cases": [
+    {
+      "id": "unit-null",
+      "spec": [
+        "12.3"
+      ],
+      "note": "unit: null in both codecs.",
+      "type": "unit",
+      "direction": "both",
+      "value": "null",
+      "cbor": "f6",
+      "json": "null"
+    },
+    {
+      "id": "bool-true",
+      "spec": [
+        "12.3"
+      ],
+      "note": "bool: a CBOR simple value and a JSON literal.",
+      "type": "bool",
+      "direction": "both",
+      "value": "true",
+      "cbor": "f5",
+      "json": "true"
+    },
+    {
+      "id": "u8-max",
+      "spec": [
+        "12.3"
+      ],
+      "note": "Largest u8: a one-byte argument in cbor, a number in json.",
+      "type": "u8",
+      "direction": "both",
+      "value": "255",
+      "cbor": "18 ff",
+      "json": "255"
+    },
+    {
+      "id": "i8-min",
+      "spec": [
+        "12.3"
+      ],
+      "note": "Smallest i8: a negative integer.",
+      "type": "i8",
+      "direction": "both",
+      "value": "-128",
+      "cbor": "38 7f",
+      "json": "-128"
+    },
+    {
+      "id": "i16-negative",
+      "spec": [
+        "12.3"
+      ],
+      "note": "An i16 below -256 takes a two-byte argument.",
+      "type": "i16",
+      "direction": "both",
+      "value": "-1000",
+      "cbor": "39 03 e7",
+      "json": "-1000"
+    },
+    {
+      "id": "u16-max",
+      "spec": [
+        "12.3"
+      ],
+      "note": "Largest u16.",
+      "type": "u16",
+      "direction": "both",
+      "value": "65535",
+      "cbor": "19 ff ff",
+      "json": "65535"
+    },
+    {
+      "id": "i32-min",
+      "spec": [
+        "12.3"
+      ],
+      "note": "Smallest i32: a four-byte argument.",
+      "type": "i32",
+      "direction": "both",
+      "value": "-2147483648",
+      "cbor": "3a 7f ff ff ff",
+      "json": "-2147483648"
+    },
+    {
+      "id": "u32-max",
+      "spec": [
+        "12.3"
+      ],
+      "note": "Largest u32.",
+      "type": "u32",
+      "direction": "both",
+      "value": "4294967295",
+      "cbor": "1a ff ff ff ff",
+      "json": "4294967295"
+    },
+    {
+      "id": "i64-min",
+      "spec": [
+        "12.3"
+      ],
+      "note": "Smallest i64. json: a decimal string.",
+      "type": "i64",
+      "direction": "both",
+      "value": "-9223372036854775808",
+      "cbor": "3b 7f ff ff ff ff ff ff ff",
+      "json": "\"-9223372036854775808\""
+    },
+    {
+      "id": "i64-max",
+      "spec": [
+        "12.3"
+      ],
+      "note": "Largest i64. json: a decimal string.",
+      "type": "i64",
+      "direction": "both",
+      "value": "9223372036854775807",
+      "cbor": "1b 7f ff ff ff ff ff ff ff",
+      "json": "\"9223372036854775807\""
+    },
+    {
+      "id": "u64-zero",
+      "spec": [
+        "12.3"
+      ],
+      "note": "Zero as u64. json: the string \"0\", no sign, no padding.",
+      "type": "u64",
+      "direction": "both",
+      "value": "0",
+      "cbor": "00",
+      "json": "\"0\""
+    },
+    {
+      "id": "f64-whole-json",
+      "spec": [
+        "12.3"
+      ],
+      "note": "A whole f64: a half float in cbor, the integer form in json (RFC 8785).",
+      "type": "f64",
+      "direction": "both",
+      "value": "2.0",
+      "cbor": "f9 40 00",
+      "json": "2"
+    },
+    {
+      "id": "f64-1e21",
+      "spec": [
+        "12.3"
+      ],
+      "note": "1e21 has no exact single width: a double in cbor, 1e+21 in json (RFC 8785).",
+      "type": "f64",
+      "direction": "both",
+      "value": "1e21",
+      "cbor": "fb 44 4b 1a e4 d6 e2 ef 50",
+      "json": "1e+21"
+    },
+    {
+      "id": "f64-1-1",
+      "spec": [
+        "12.3"
+      ],
+      "note": "1.1 needs a double.",
+      "type": "f64",
+      "direction": "both",
+      "value": "1.1",
+      "cbor": "fb 3f f1 99 99 99 99 99 9a",
+      "json": "1.1"
+    },
+    {
+      "id": "f64-half-as-single",
+      "spec": [
+        "12.3"
+      ],
+      "note": "1.5 written as a single float: decoders accept every width.",
+      "type": "f64",
+      "direction": "decode",
+      "value": "1.5",
+      "cbor": "fa 3f c0 00 00"
+    },
+    {
+      "id": "f64-half-as-double",
+      "spec": [
+        "12.3"
+      ],
+      "note": "1.5 written as a double float: decoders accept every width.",
+      "type": "f64",
+      "direction": "decode",
+      "value": "1.5",
+      "cbor": "fb 3f f8 00 00 00 00 00 00"
+    },
+    {
+      "id": "string-control-slash-accent",
+      "spec": [
+        "12.3"
+      ],
+      "note": "U+001F, '/' and 'é': json escapes the control character as \\u001f in lowercase and leaves '/' and 'é' as they are (RFC 8785).",
+      "type": "string",
+      "direction": "both",
+      "value": "\"\\u001f/\\u00e9\"",
+      "cbor": "64 1f 2f c3 a9",
+      "json": "\"\\u001f/é\""
+    },
+    {
+      "id": "bytes-empty",
+      "spec": [
+        "12.3"
+      ],
+      "note": "Empty bytes: an empty byte string, an empty json string.",
+      "type": "bytes",
+      "direction": "both",
+      "value": "h''",
+      "cbor": "40",
+      "json": "\"\""
+    },
+    {
+      "id": "timestamp-whole-second",
+      "spec": [
+        "12.3"
+      ],
+      "note": "A whole second: tag 1 over an integer.",
+      "type": "timestamp",
+      "direction": "both",
+      "value": "1(1758499200)",
+      "cbor": "c1 1a 68 d0 91 80",
+      "json": "\"2025-09-22T00:00:00.000Z\""
+    },
+    {
+      "id": "timestamp-before-epoch",
+      "spec": [
+        "12.3"
+      ],
+      "note": "One second before the epoch: tag 1 over a negative integer.",
+      "type": "timestamp",
+      "direction": "both",
+      "value": "1(-1)",
+      "cbor": "c1 20",
+      "json": "\"1969-12-31T23:59:59.000Z\""
+    },
+    {
+      "id": "timestamp-half-width",
+      "spec": [
+        "12.3"
+      ],
+      "note": "Half a second after the epoch: the narrowest float that keeps the milliseconds is a half float.",
+      "type": "timestamp",
+      "direction": "both",
+      "value": "1(0.5)",
+      "cbor": "c1 f9 38 00",
+      "json": "\"1970-01-01T00:00:00.500Z\""
+    },
+    {
+      "id": "timestamp-whole-as-double",
+      "spec": [
+        "12.3"
+      ],
+      "note": "A whole second written as a double: decoders accept it.",
+      "type": "timestamp",
+      "direction": "decode",
+      "normalizes": true,
+      "value": "1(1758499200)",
+      "cbor": "c1 fb 41 da 34 24 60 00 00 00"
+    },
+    {
+      "id": "timestamp-half-as-single",
+      "spec": [
+        "12.3"
+      ],
+      "note": "0.5 seconds written as a single float: decoders accept it.",
+      "type": "timestamp",
+      "direction": "decode",
+      "value": "1(0.5)",
+      "cbor": "c1 fa 3f 00 00 00"
+    },
+    {
+      "id": "timestamp-next-to-a-tie",
+      "spec": [
+        "12.3"
+      ],
+      "note": "-127.938 s: the half float -127.9375 is exactly half a millisecond away, a tie that decoders could round either way, so the encoder writes the single float, which is closer than half a millisecond.",
+      "type": "timestamp",
+      "direction": "both",
+      "value": "1(-127.93800354003906)",
+      "cbor": "c1 fa c2 ff e0 42",
+      "json": "\"1969-12-31T23:57:52.062Z\""
+    },
+    {
+      "id": "timestamp-tie-rounds-away-from-zero",
+      "spec": [
+        "12.3"
+      ],
+      "note": "127.9375 s written as a half float is exactly half a millisecond past 127.937 s. Decoders round a tie away from zero, to 127.938 s; encoders never write a tie.",
+      "type": "timestamp",
+      "direction": "decode",
+      "normalizes": true,
+      "value": "1(127.93800354003906)",
+      "cbor": "c1 f9 57 ff"
+    },
+    {
+      "id": "timestamp-negative-tie-rounds-away-from-zero",
+      "spec": [
+        "12.3"
+      ],
+      "note": "-127.9375 s written as a half float: the tie rounds away from zero, to -127.938 s, not up to -127.937 s as JavaScript's Math.round would.",
+      "type": "timestamp",
+      "direction": "decode",
+      "normalizes": true,
+      "value": "1(-127.93800354003906)",
+      "cbor": "c1 f9 d7 ff"
+    },
+    {
+      "id": "uuid-direct",
+      "spec": [
+        "12.3"
+      ],
+      "note": "A uuid without an alias.",
+      "type": "uuid",
+      "direction": "both",
+      "value": "37(h'00112233445566778899aabbccddeeff')",
+      "cbor": "d8 25 50 00 11 22 33 44 55 66 77 88 99 aa bb cc dd ee ff",
+      "json": "\"00112233-4455-6677-8899-aabbccddeeff\""
+    },
+    {
+      "id": "option-none",
+      "spec": [
+        "12.3"
+      ],
+      "note": "An absent option: null.",
+      "type": {
+        "option": "string"
+      },
+      "direction": "both",
+      "value": "null",
+      "cbor": "f6",
+      "json": "null"
+    },
+    {
+      "id": "option-some",
+      "spec": [
+        "12.3"
+      ],
+      "note": "A present option: the value itself.",
+      "type": {
+        "option": "string"
+      },
+      "direction": "both",
+      "value": "\"a\"",
+      "cbor": "61 61",
+      "json": "\"a\""
+    },
+    {
+      "id": "list-u8",
+      "spec": [
+        "12.3"
+      ],
+      "note": "A list: an array.",
+      "type": {
+        "list": "u8"
+      },
+      "direction": "both",
+      "value": "[1, 2]",
+      "cbor": "82 01 02",
+      "json": "[1,2]"
+    },
+    {
+      "id": "tuple-u8-string",
+      "spec": [
+        "12.3"
+      ],
+      "note": "A tuple: an array with one item per element type.",
+      "type": {
+        "tuple": [
+          "u8",
+          "string"
+        ]
+      },
+      "direction": "both",
+      "value": "[1, \"a\"]",
+      "cbor": "82 01 61 61",
+      "json": "[1,\"a\"]"
+    },
+    {
+      "id": "map-key-order",
+      "spec": [
+        "12.3"
+      ],
+      "note": "map {\"b\": 1, \"aa\": 2}: cbor sorts keys by encoded bytes, so the shorter \"b\" comes first; json sorts by UTF-8 bytes, so \"aa\" does.",
+      "type": {
+        "map": "u32"
+      },
+      "direction": "both",
+      "value": "{\"b\": 1, \"aa\": 2}",
+      "cbor": "a2 61 62 01 62 61 61 02",
+      "json": "{\"aa\":2,\"b\":1}"
+    },
+    {
+      "id": "map-key-order-reversed",
+      "spec": [
+        "12.3"
+      ],
+      "note": "The same map with its keys in the other order: decoders accept it.",
+      "type": {
+        "map": "u32"
+      },
+      "direction": "decode",
+      "value": "{\"b\": 1, \"aa\": 2}",
+      "cbor": "a2 62 61 61 02 61 62 01",
+      "json": "{\"b\":1,\"aa\":2}"
+    },
+    {
+      "id": "struct-declaration-order",
+      "spec": [
+        "12.3"
+      ],
+      "note": "Point is declared { y, x }: both codecs write the fields in declaration order, not sorted.",
+      "type": {
+        "ref": "Point"
+      },
+      "direction": "both",
+      "value": "{\"y\": 2.0, \"x\": 1.5}",
+      "cbor": "a2 61 79 f9 40 00 61 78 f9 3e 00",
+      "json": "{\"y\":2,\"x\":1.5}"
+    },
+    {
+      "id": "struct-fields-reversed",
+      "spec": [
+        "12.3"
+      ],
+      "note": "Point with x before y: decoders accept it.",
+      "type": {
+        "ref": "Point"
+      },
+      "direction": "decode",
+      "value": "{\"y\": 2.0, \"x\": 1.5}",
+      "cbor": "a2 61 78 f9 3e 00 61 79 f9 40 00",
+      "json": "{\"x\":1.5,\"y\":2}"
+    },
+    {
+      "id": "struct-optional-absent",
+      "spec": [
+        "12.3"
+      ],
+      "note": "An absent optional field is omitted.",
+      "type": {
+        "ref": "Options"
+      },
+      "direction": "both",
+      "value": "{}",
+      "cbor": "a0",
+      "json": "{}"
+    },
+    {
+      "id": "struct-optional-present",
+      "spec": [
+        "12.3"
+      ],
+      "note": "A present optional field is written.",
+      "type": {
+        "ref": "Options"
+      },
+      "direction": "both",
+      "value": "{\"lang\": \"en\"}",
+      "cbor": "a1 64 6c 61 6e 67 62 65 6e",
+      "json": "{\"lang\":\"en\"}"
+    },
+    {
+      "id": "struct-optional-null",
+      "spec": [
+        "12.3"
+      ],
+      "note": "An optional field present as null decodes like an absent one.",
+      "type": {
+        "ref": "Options"
+      },
+      "direction": "decode",
+      "normalizes": true,
+      "value": "{}",
+      "cbor": "a1 64 6c 61 6e 67 f6",
+      "json": "{\"lang\":null}"
+    },
+    {
+      "id": "enum-unit-variant",
+      "spec": [
+        "12.3"
+      ],
+      "note": "A unit variant: its name as text.",
+      "type": {
+        "ref": "Status"
+      },
+      "direction": "both",
+      "value": "\"Idle\"",
+      "cbor": "64 49 64 6c 65",
+      "json": "\"Idle\""
+    },
+    {
+      "id": "enum-data-variant-u32",
+      "spec": [
+        "12.3"
+      ],
+      "note": "A data variant: a one-entry map from its name to its value.",
+      "type": {
+        "ref": "Status"
+      },
+      "direction": "both",
+      "value": "{\"Busy\": 7}",
+      "cbor": "a1 64 42 75 73 79 07",
+      "json": "{\"Busy\":7}"
+    },
+    {
+      "id": "any-big-integer",
+      "spec": [
+        "12.3"
+      ],
+      "note": "any holding 2^53 + 1, past the integers a JavaScript number holds: both codecs write every digit.",
+      "type": "any",
+      "direction": "both",
+      "value": "9007199254740993",
+      "cbor": "1b 00 20 00 00 00 00 00 01",
+      "json": "9007199254740993"
+    },
+    {
+      "id": "any-big-negative-integer",
+      "spec": [
+        "12.3"
+      ],
+      "note": "any holding -2^53 - 2, a negative integer past the ones a JavaScript number holds: both codecs write every digit.",
+      "type": "any",
+      "direction": "both",
+      "value": "-9007199254740994",
+      "cbor": "3b 00 20 00 00 00 00 00 01",
+      "json": "-9007199254740994"
+    },
+    {
+      "id": "any-passes-through",
+      "spec": [
+        "12.3"
+      ],
+      "note": "any: the value as received.",
+      "type": "any",
+      "direction": "both",
+      "value": "[1, \"a\"]",
+      "cbor": "82 01 61 61",
+      "json": "[1,\"a\"]"
+    },
+    {
+      "id": "depth-16-decodes",
+      "spec": [
+        "12.3",
+        "5.4.1"
+      ],
+      "note": "Lists nested 16 deep: the depth limit (16) allows it.",
+      "type": {
+        "list": {
+          "list": {
+            "list": {
+              "list": {
+                "list": {
+                  "list": {
+                    "list": {
+                      "list": {
+                        "list": {
+                          "list": {
+                            "list": {
+                              "list": {
+                                "list": {
+                                  "list": {
+                                    "list": {
+                                      "list": "u8"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "direction": "both",
+      "value": "[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]",
+      "cbor": "81 81 81 81 81 81 81 81 81 81 81 81 81 81 81 81 01",
+      "json": "[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]"
+    },
+    {
+      "id": "depth-16-tag-decodes",
+      "spec": [
+        "12.3",
+        "5.4.1"
+      ],
+      "note": "A timestamp inside lists nested 16 deep: tags add no depth, so it decodes.",
+      "type": {
+        "list": {
+          "list": {
+            "list": {
+              "list": {
+                "list": {
+                  "list": {
+                    "list": {
+                      "list": {
+                        "list": {
+                          "list": {
+                            "list": {
+                              "list": {
+                                "list": {
+                                  "list": {
+                                    "list": {
+                                      "list": "timestamp"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "direction": "decode",
+      "value": "[[[[[[[[[[[[[[[[1(0)]]]]]]]]]]]]]]]]",
+      "cbor": "81 81 81 81 81 81 81 81 81 81 81 81 81 81 81 81 c1 00"
+    }
+  ]
+}

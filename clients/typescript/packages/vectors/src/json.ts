@@ -29,11 +29,14 @@ function base64url(bytes: Uint8Array): string {
   return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
+function integer(d: Diag): bigint {
+  if (d.kind === "uint") return d.value;
+  if (d.kind === "nint") return -1n - d.value;
+  throw new Error(`expected an integer, got ${d.kind}`);
+}
+
 function number(d: Diag): number {
-  if (d.kind === "float") return d.value;
-  if (d.kind === "uint") return Number(d.value);
-  if (d.kind === "nint") return -1 - Number(d.value);
-  throw new Error(`expected a number, got ${d.kind}`);
+  return d.kind === "float" ? d.value : Number(integer(d));
 }
 
 /** Renders `value`, whose contract type is `ty`, as canonical `json` text. */
@@ -53,6 +56,11 @@ export function render(ty: Type, value: Diag, types: Types): string {
     case "list":
       if (value.kind !== "array") throw new Error("list expects an array");
       return `[${value.items.map((i) => render(arg as Type, i, types)).join(",")}]`;
+    case "tuple": {
+      const elements = arg as Type[];
+      if (value.kind !== "array" || value.items.length !== elements.length) throw new Error("tuple length");
+      return `[${value.items.map((item, i) => render(elements[i] as Type, item, types)).join(",")}]`;
+    }
     case "map": {
       if (value.kind !== "map") throw new Error("map expects a map");
       const members = value.entries
@@ -85,8 +93,42 @@ export function render(ty: Type, value: Diag, types: Types): string {
   }
 }
 
+/** An `any` value as received: json's own forms only, map members in the order given. */
+function untyped(v: Diag): string {
+  switch (v.kind) {
+    case "null":
+      return "null";
+    case "bool":
+      return String(v.value);
+    case "uint":
+    case "nint":
+      return String(integer(v));
+    case "float":
+      if (!Number.isFinite(v.value)) throw new Error("NaN and infinities have no json form");
+      return JSON.stringify(v.value);
+    case "text":
+      return JSON.stringify(v.value);
+    case "array":
+      return `[${v.items.map(untyped).join(",")}]`;
+    case "map": {
+      const seen = new Set<string>();
+      const members = v.entries.map(([k, item]) => {
+        const key = textOf(k);
+        if (seen.has(key)) throw new Error(`json object key ${JSON.stringify(key)} appears twice`);
+        seen.add(key);
+        return `${JSON.stringify(key)}:${untyped(item)}`;
+      });
+      return `{${members.join(",")}}`;
+    }
+    default:
+      throw new Error(`${v.kind} has no json form`);
+  }
+}
+
 function primitive(name: string, v: Diag): string {
   switch (name) {
+    case "any":
+      return untyped(v);
     case "unit":
       return "null";
     case "bool":
@@ -101,9 +143,7 @@ function primitive(name: string, v: Diag): string {
       return String(number(v));
     case "u64":
     case "i64":
-      if (v.kind === "uint") return `"${v.value}"`;
-      if (v.kind === "nint") return `"${-1n - v.value}"`;
-      throw new Error("integer expected");
+      return `"${integer(v)}"`;
     case "f32":
     case "f64": {
       const x = number(v);

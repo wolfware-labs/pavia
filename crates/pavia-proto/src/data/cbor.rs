@@ -90,13 +90,24 @@ fn item(decoder: &mut Decoder<'_>, parent: usize, max_depth: usize) -> Result<Va
       }
       Ok(Value::Map(entries))
     }
-    Type::Tag => {
-      let depth = nested(parent, max_depth)?;
-      let tag = decoder.tag().map_err(malformed)?;
-      Ok(Value::Tag(tag.as_u64(), Box::new(item(decoder, depth, max_depth)?)))
-    }
+    Type::Tag => tagged(decoder, parent, max_depth, 0),
     Type::Break | Type::Unknown(_) => Err(DecodeError::Malformed),
   }
+}
+
+/// A tagged item whose tag is next in `decoder`, the `run`th of the tags directly around one item. The
+/// tags add no depth, and a run holds at most `max_depth` of them.
+fn tagged(decoder: &mut Decoder<'_>, parent: usize, max_depth: usize, run: usize) -> Result<Value, DecodeError> {
+  if run == max_depth {
+    return Err(DecodeError::TooDeep);
+  }
+  let malformed = |_| DecodeError::Malformed;
+  let tag = decoder.tag().map_err(malformed)?.as_u64();
+  let content = match decoder.datatype().map_err(malformed)? {
+    Type::Tag => tagged(decoder, parent, max_depth, run + 1)?,
+    _ => item(decoder, parent, max_depth)?,
+  };
+  Ok(Value::Tag(tag, Box::new(content)))
 }
 
 fn simple(decoder: &mut Decoder<'_>) -> Result<Value, DecodeError> {
@@ -134,7 +145,7 @@ fn capacity_for(decoder: &Decoder<'_>, length: Option<u64>, bytes_per_item: u64)
   Ok(usize::try_from(length.min(MAX_PREALLOCATED)).unwrap_or(0))
 }
 
-fn check(value: &Value) -> Result<(), EncodeError> {
+pub(super) fn check(value: &Value) -> Result<(), EncodeError> {
   match value {
     Value::Simple(20..=31) => Err(EncodeError::ReservedSimpleValue),
     Value::Array(items) => items.iter().try_for_each(check),

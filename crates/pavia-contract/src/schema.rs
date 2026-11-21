@@ -4,6 +4,8 @@
 //! [`Type::Ref`] to a named type. [`Definition`] is what the `types` table holds under a name: a struct,
 //! an enum or an alias. Both turn into their manifest JSON with `to_json`.
 
+use std::collections::BTreeMap;
+
 use serde_json::{Map, Value, json};
 
 /// A primitive contract type (§12.1).
@@ -47,6 +49,27 @@ pub enum Primitive {
 }
 
 impl Primitive {
+  /// Every primitive, in the order of the §12.1 table.
+  pub const ALL: [Self; 17] = [
+    Self::Unit,
+    Self::Bool,
+    Self::I8,
+    Self::I16,
+    Self::I32,
+    Self::I64,
+    Self::U8,
+    Self::U16,
+    Self::U32,
+    Self::U64,
+    Self::F32,
+    Self::F64,
+    Self::String,
+    Self::Bytes,
+    Self::Timestamp,
+    Self::Uuid,
+    Self::Any,
+  ];
+
   /// The name in the manifest: `"u32"`, `"string"`.
   #[must_use]
   pub const fn name(self) -> &'static str {
@@ -114,6 +137,9 @@ impl From<Primitive> for Type {
     Self::Primitive(primitive)
   }
 }
+
+/// The `types` table of a manifest (§12.2): the definition of each named type, by name.
+pub type Types = BTreeMap<String, Definition>;
 
 /// A named type of the `types` table (§12.1).
 #[derive(Debug, Clone, PartialEq, Eq)]

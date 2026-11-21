@@ -18,6 +18,7 @@ forbid() {
 
 forbid pavia-proto        tokio hyper axum quinn h3
 forbid pavia-contract     pavia-proto tokio hyper axum quinn
+forbid pavia-codec        tokio hyper axum quinn
 forbid pavia-webtransport pavia-proto
 forbid pavia-codegen      pavia-proto pavia-server tokio
 forbid pavia-server       axum

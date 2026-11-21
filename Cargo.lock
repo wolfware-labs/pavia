@@ -771,6 +771,20 @@ name = "pavia-client"
 version = "0.1.0-alpha.0"
 
 [[package]]
+name = "pavia-codec"
+version = "0.1.0-alpha.0"
+dependencies = [
+ "data-encoding",
+ "half",
+ "pavia-contract",
+ "pavia-proto",
+ "pavia-vectors",
+ "proptest",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "pavia-codegen"
 version = "0.1.0-alpha.0"
 

@@ -95,7 +95,7 @@ describe("frame vectors", () => {
 describe("codec vectors", () => {
   for (const { ctx, c, types } of cases("codecs")) {
     it(ctx, () => {
-      if (typeof c.json === "string") expect(() => JSON.parse(c.json as string)).not.toThrow();
+      if (typeof c.json === "string" && c.error === undefined) expect(() => JSON.parse(c.json as string)).not.toThrow();
       if (typeof c.value !== "string" || typeof c.cbor !== "string") return;
       const expected = parse(c.value);
       const bytes = hexToBytes(c.cbor);
@@ -105,7 +105,7 @@ describe("codec vectors", () => {
           expect(render(c.type as string | Json, expected, types), "json is not the canonical form of value").toBe(c.json);
         }
       }
-      expect(same(decode(bytes), expected)).toBe(true);
+      if (c.normalizes !== true) expect(same(decode(bytes), expected)).toBe(true);
     });
   }
 });
@@ -335,5 +335,13 @@ describe("diagnostic notation parser", () => {
   it("round-trips the largest integers", () => {
     expect([...encode(parse("18446744073709551615"))]).toEqual([0x1b, ...Array(8).fill(0xff)]);
     expect([...encode(parse("-18446744073709551616"))]).toEqual([0x3b, ...Array(8).fill(0xff)]);
+  });
+});
+
+describe("json oracle for any", () => {
+  it("refuses what json cannot hold", () => {
+    expect(() => render("any", parse('{"a": null, "a": null}'), {})).toThrow("twice");
+    expect(() => render("any", parse("NaN"), {})).toThrow("no json form");
+    expect(render("any", parse('{"a": 1}'), {})).toBe('{"a":1}');
   });
 });

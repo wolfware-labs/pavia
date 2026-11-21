@@ -1,0 +1,688 @@
+{
+  "$schema": "../schema/codecs.schema.json",
+  "group": "invalid",
+  "note": "Input decoders must refuse (spec 12.3): no value decodes from any of these.",
+  "types": {
+    "Point": {
+      "struct": {
+        "fields": [
+          {
+            "name": "y",
+            "type": "f64"
+          },
+          {
+            "name": "x",
+            "type": "f64"
+          }
+        ]
+      }
+    },
+    "Status": {
+      "enum": {
+        "variants": [
+          {
+            "name": "Idle"
+          },
+          {
+            "name": "Busy",
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    "Options": {
+      "struct": {
+        "fields": [
+          {
+            "name": "lang",
+            "type": {
+              "option": "string"
+            },
+            "optional": true
+          }
+        ]
+      }
+    }
+  },
+  "cases": [
+    {
+      "id": "json-nan",
+      "spec": [
+        "12.3"
+      ],
+      "note": "NaN is not a json number.",
+      "type": "f64",
+      "direction": "decode",
+      "error": {
+        "codec": "json",
+        "reason": "NaN"
+      },
+      "json": "NaN"
+    },
+    {
+      "id": "json-infinity",
+      "spec": [
+        "12.3"
+      ],
+      "note": "Infinity is not a json number.",
+      "type": "f64",
+      "direction": "decode",
+      "error": {
+        "codec": "json",
+        "reason": "Infinity"
+      },
+      "json": "Infinity"
+    },
+    {
+      "id": "json-duplicate-field",
+      "spec": [
+        "12.3"
+      ],
+      "note": "A struct with the field y twice.",
+      "type": {
+        "ref": "Point"
+      },
+      "direction": "decode",
+      "error": {
+        "codec": "json",
+        "reason": "duplicate key"
+      },
+      "json": "{\"y\":1,\"y\":2,\"x\":1}"
+    },
+    {
+      "id": "cbor-duplicate-field",
+      "spec": [
+        "12.3"
+      ],
+      "note": "A struct with the field y twice.",
+      "type": {
+        "ref": "Point"
+      },
+      "direction": "decode",
+      "error": {
+        "codec": "cbor",
+        "reason": "duplicate key"
+      },
+      "cbor": "a3 61 79 f9 3c 00 61 79 f9 40 00 61 78 f9 3c 00"
+    },
+    {
+      "id": "json-duplicate-map-key",
+      "spec": [
+        "12.3"
+      ],
+      "note": "A map with the key a twice.",
+      "type": {
+        "map": "u8"
+      },
+      "direction": "decode",
+      "error": {
+        "codec": "json",
+        "reason": "duplicate key"
+      },
+      "json": "{\"a\":1,\"a\":2}"
+    },
+    {
+      "id": "cbor-duplicate-map-key",
+      "spec": [
+        "12.3"
+      ],
+      "note": "A map with the key a twice.",
+      "type": {
+        "map": "u8"
+      },
+      "direction": "decode",
+      "error": {
+        "codec": "cbor",
+        "reason": "duplicate key"
+      },
+      "cbor": "a2 61 61 01 61 61 02"
+    },
+    {
+      "id": "timestamp-tag-0",
+      "spec": [
+        "12.3"
+      ],
+      "note": "A text date under tag 0: timestamps take tag 1 only.",
+      "type": "timestamp",
+      "direction": "decode",
+      "error": {
+        "codec": "cbor",
+        "reason": "tag 0"
+      },
+      "cbor": "c0 74 32 30 32 35 2d 30 39 2d 32 32 54 30 30 3a 30 30 3a 30 30 5a"
+    },
+    {
+      "id": "timestamp-tag-1-nan",
+      "spec": [
+        "12.3"
+      ],
+      "note": "Tag 1 over NaN.",
+      "type": "timestamp",
+      "direction": "decode",
+      "error": {
+        "codec": "cbor",
+        "reason": "NaN"
+      },
+      "cbor": "c1 f9 7e 00"
+    },
+    {
+      "id": "timestamp-tag-1-out-of-range",
+      "spec": [
+        "12.3"
+      ],
+      "note": "Tag 1 over 1e300 seconds, past year 9999.",
+      "type": "timestamp",
+      "direction": "decode",
+      "error": {
+        "codec": "cbor",
+        "reason": "out of range"
+      },
+      "cbor": "c1 fb 7e 37 e4 3c 88 00 75 9c"
+    },
+    {
+      "id": "timestamp-json-offset",
+      "spec": [
+        "12.3"
+      ],
+      "note": "An RFC 3339 time with an offset other than Z.",
+      "type": "timestamp",
+      "direction": "decode",
+      "error": {
+        "codec": "json",
+        "reason": "not UTC"
+      },
+      "json": "\"2025-09-22T01:00:00.000+01:00\""
+    },
+    {
+      "id": "timestamp-json-no-millis",
+      "spec": [
+        "12.3"
+      ],
+      "note": "An RFC 3339 time without milliseconds.",
+      "type": "timestamp",
+      "direction": "decode",
+      "error": {
+        "codec": "json",
+        "reason": "no milliseconds"
+      },
+      "json": "\"2025-09-22T00:00:00Z\""
+    },
+    {
+      "id": "uuid-15-bytes",
+      "spec": [
+        "12.3"
+      ],
+      "note": "Tag 37 over 15 bytes.",
+      "type": "uuid",
+      "direction": "decode",
+      "error": {
+        "codec": "cbor",
+        "reason": "length"
+      },
+      "cbor": "d8 25 4f 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "id": "uuid-uppercase",
+      "spec": [
+        "12.3"
+      ],
+      "note": "An uppercase uuid string.",
+      "type": "uuid",
+      "direction": "decode",
+      "error": {
+        "codec": "json",
+        "reason": "uppercase"
+      },
+      "json": "\"00112233-4455-6677-8899-AABBCCDDEEFF\""
+    },
+    {
+      "id": "undeclared-tag-in-list",
+      "spec": [
+        "12.3"
+      ],
+      "note": "Tag 5 around a u8: u8 declares no tag.",
+      "type": {
+        "list": "u8"
+      },
+      "direction": "decode",
+      "error": {
+        "codec": "cbor",
+        "reason": "tag 5"
+      },
+      "cbor": "81 c5 01"
+    },
+    {
+      "id": "undeclared-tag-in-struct-field",
+      "spec": [
+        "12.3"
+      ],
+      "note": "Tag 5 around the f64 field y of Point.",
+      "type": {
+        "ref": "Point"
+      },
+      "direction": "decode",
+      "error": {
+        "codec": "cbor",
+        "reason": "tag 5"
+      },
+      "cbor": "a2 61 79 c5 f9 3c 00 61 78 f9 3c 00"
+    },
+    {
+      "id": "bytes-nonzero-trailing-bits",
+      "spec": [
+        "12.3"
+      ],
+      "note": "\"AB\" leaves the low bits of its last character set: one byte has one base64url form, \"AA\".",
+      "type": "bytes",
+      "direction": "decode",
+      "error": {
+        "codec": "json",
+        "reason": "trailing bits"
+      },
+      "json": "\"AB\""
+    },
+    {
+      "id": "u8-300-cbor",
+      "spec": [
+        "12.3"
+      ],
+      "note": "300 is out of u8 range.",
+      "type": "u8",
+      "direction": "decode",
+      "error": {
+        "codec": "cbor",
+        "reason": "out of range"
+      },
+      "cbor": "19 01 2c"
+    },
+    {
+      "id": "u8-300-json",
+      "spec": [
+        "12.3"
+      ],
+      "note": "300 is out of u8 range.",
+      "type": "u8",
+      "direction": "decode",
+      "error": {
+        "codec": "json",
+        "reason": "out of range"
+      },
+      "json": "300"
+    },
+    {
+      "id": "i32-2-31-cbor",
+      "spec": [
+        "12.3"
+      ],
+      "note": "2^31 is out of i32 range.",
+      "type": "i32",
+      "direction": "decode",
+      "error": {
+        "codec": "cbor",
+        "reason": "out of range"
+      },
+      "cbor": "1a 80 00 00 00"
+    },
+    {
+      "id": "i32-2-31-json",
+      "spec": [
+        "12.3"
+      ],
+      "note": "2^31 is out of i32 range.",
+      "type": "i32",
+      "direction": "decode",
+      "error": {
+        "codec": "json",
+        "reason": "out of range"
+      },
+      "json": "2147483648"
+    },
+    {
+      "id": "u32-negative-cbor",
+      "spec": [
+        "12.3"
+      ],
+      "note": "-1 is out of u32 range.",
+      "type": "u32",
+      "direction": "decode",
+      "error": {
+        "codec": "cbor",
+        "reason": "out of range"
+      },
+      "cbor": "20"
+    },
+    {
+      "id": "u32-negative-json",
+      "spec": [
+        "12.3"
+      ],
+      "note": "-1 is out of u32 range.",
+      "type": "u32",
+      "direction": "decode",
+      "error": {
+        "codec": "json",
+        "reason": "out of range"
+      },
+      "json": "-1"
+    },
+    {
+      "id": "u8-fraction-json",
+      "spec": [
+        "12.3"
+      ],
+      "note": "1.0 is not an integer literal.",
+      "type": "u8",
+      "direction": "decode",
+      "error": {
+        "codec": "json",
+        "reason": "fraction"
+      },
+      "json": "1.0"
+    },
+    {
+      "id": "u8-exponent-json",
+      "spec": [
+        "12.3"
+      ],
+      "note": "1e2 is not an integer literal.",
+      "type": "u8",
+      "direction": "decode",
+      "error": {
+        "codec": "json",
+        "reason": "exponent"
+      },
+      "json": "1e2"
+    },
+    {
+      "id": "u8-float-cbor",
+      "spec": [
+        "12.3"
+      ],
+      "note": "A float where an integer is declared.",
+      "type": "u8",
+      "direction": "decode",
+      "error": {
+        "codec": "cbor",
+        "reason": "float"
+      },
+      "cbor": "f9 3c 00"
+    },
+    {
+      "id": "u64-number-json",
+      "spec": [
+        "12.3"
+      ],
+      "note": "A json number where u64 needs a string.",
+      "type": "u64",
+      "direction": "decode",
+      "error": {
+        "codec": "json",
+        "reason": "number"
+      },
+      "json": "5"
+    },
+    {
+      "id": "u64-plus-sign",
+      "spec": [
+        "12.3"
+      ],
+      "note": "A sign on a positive u64 string.",
+      "type": "u64",
+      "direction": "decode",
+      "error": {
+        "codec": "json",
+        "reason": "sign"
+      },
+      "json": "\"+5\""
+    },
+    {
+      "id": "u64-leading-zero",
+      "spec": [
+        "12.3"
+      ],
+      "note": "A leading zero.",
+      "type": "u64",
+      "direction": "decode",
+      "error": {
+        "codec": "json",
+        "reason": "leading zero"
+      },
+      "json": "\"05\""
+    },
+    {
+      "id": "u64-hex",
+      "spec": [
+        "12.3"
+      ],
+      "note": "Hexadecimal digits.",
+      "type": "u64",
+      "direction": "decode",
+      "error": {
+        "codec": "json",
+        "reason": "hex"
+      },
+      "json": "\"0x10\""
+    },
+    {
+      "id": "u64-empty",
+      "spec": [
+        "12.3"
+      ],
+      "note": "An empty string.",
+      "type": "u64",
+      "direction": "decode",
+      "error": {
+        "codec": "json",
+        "reason": "empty"
+      },
+      "json": "\"\""
+    },
+    {
+      "id": "u64-past-max",
+      "spec": [
+        "12.3"
+      ],
+      "note": "2^64, one past u64::MAX.",
+      "type": "u64",
+      "direction": "decode",
+      "error": {
+        "codec": "json",
+        "reason": "out of range"
+      },
+      "json": "\"18446744073709551616\""
+    },
+    {
+      "id": "i64-negative-zero",
+      "spec": [
+        "12.3"
+      ],
+      "note": "-0 is not the canonical zero.",
+      "type": "i64",
+      "direction": "decode",
+      "error": {
+        "codec": "json",
+        "reason": "negative zero"
+      },
+      "json": "\"-0\""
+    },
+    {
+      "id": "list-length-past-input",
+      "spec": [
+        "12.3"
+      ],
+      "note": "A list whose header declares 2^32 items followed by 3 bytes: decoders check declared lengths against the input before reserving memory.",
+      "type": {
+        "list": "u8"
+      },
+      "direction": "decode",
+      "error": {
+        "codec": "cbor",
+        "reason": "length past input"
+      },
+      "cbor": "9b 00 00 00 01 00 00 00 00 01 02 03"
+    },
+    {
+      "id": "tuple-short",
+      "spec": [
+        "12.3"
+      ],
+      "note": "A tuple with one item where the type has two.",
+      "type": {
+        "tuple": [
+          "u8",
+          "string"
+        ]
+      },
+      "direction": "decode",
+      "error": {
+        "codec": "cbor",
+        "reason": "length"
+      },
+      "cbor": "81 01"
+    },
+    {
+      "id": "struct-missing-field",
+      "spec": [
+        "12.3"
+      ],
+      "note": "Point without x.",
+      "type": {
+        "ref": "Point"
+      },
+      "direction": "decode",
+      "error": {
+        "codec": "json",
+        "reason": "missing field"
+      },
+      "json": "{\"y\":1}"
+    },
+    {
+      "id": "enum-unknown-variant",
+      "spec": [
+        "12.3"
+      ],
+      "note": "A variant Status does not declare.",
+      "type": {
+        "ref": "Status"
+      },
+      "direction": "decode",
+      "error": {
+        "codec": "json",
+        "reason": "unknown variant"
+      },
+      "json": "\"Gone\""
+    },
+    {
+      "id": "enum-unit-variant-with-value",
+      "spec": [
+        "12.3"
+      ],
+      "note": "The unit variant Idle written with a value.",
+      "type": {
+        "ref": "Status"
+      },
+      "direction": "decode",
+      "error": {
+        "codec": "cbor",
+        "reason": "unit variant with a value"
+      },
+      "cbor": "a1 64 49 64 6c 65 01"
+    },
+    {
+      "id": "depth-17-cbor",
+      "spec": [
+        "12.3"
+      ],
+      "note": "Lists nested 17 deep: past the depth limit.",
+      "type": {
+        "list": {
+          "list": {
+            "list": {
+              "list": {
+                "list": {
+                  "list": {
+                    "list": {
+                      "list": {
+                        "list": {
+                          "list": {
+                            "list": {
+                              "list": {
+                                "list": {
+                                  "list": {
+                                    "list": {
+                                      "list": {
+                                        "list": "u8"
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "direction": "decode",
+      "error": {
+        "codec": "cbor",
+        "reason": "too deep"
+      },
+      "cbor": "81 81 81 81 81 81 81 81 81 81 81 81 81 81 81 81 81 01"
+    },
+    {
+      "id": "depth-17-json",
+      "spec": [
+        "12.3"
+      ],
+      "note": "Lists nested 17 deep: past the depth limit.",
+      "type": {
+        "list": {
+          "list": {
+            "list": {
+              "list": {
+                "list": {
+                  "list": {
+                    "list": {
+                      "list": {
+                        "list": {
+                          "list": {
+                            "list": {
+                              "list": {
+                                "list": {
+                                  "list": {
+                                    "list": {
+                                      "list": {
+                                        "list": "u8"
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "direction": "decode",
+      "error": {
+        "codec": "json",
+        "reason": "too deep"
+      },
+      "json": "[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]"
+    }
+  ]
+}

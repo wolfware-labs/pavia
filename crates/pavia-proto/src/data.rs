@@ -18,9 +18,10 @@ mod json;
 /// Limits a data-section decoder enforces on input from the peer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DecodeLimits {
-  /// How deep a value may nest (§12.3, the same limit as headers in §5.4.1). The outermost array,
-  /// map or tag has depth 1 and every one inside it adds one; other items add nothing. Tags count
-  /// so that a chain of them cannot recurse without bound.
+  /// How deep a value may nest (§12.3, the same limit as headers in §5.4.1). The outermost array
+  /// or map has depth 1 and every one inside it adds one; other items, tags included, add nothing.
+  /// A run of tags directly around one item holds at most this many tags, so it cannot recurse
+  /// without bound either.
   pub max_depth: usize,
 }
 
@@ -28,6 +29,32 @@ impl Default for DecodeLimits {
   /// A depth of 16, the protocol default.
   fn default() -> Self {
     Self { max_depth: 16 }
+  }
+}
+
+impl DecodeLimits {
+  /// Whether a decoder with these limits accepts `value`: it nests at most `max_depth` deep and no
+  /// run of tags in it holds more than `max_depth` tags, the rules [`decode`] applies. An encoder
+  /// checks this to refuse a value that every receiver would refuse.
+  #[must_use]
+  pub fn admits(&self, value: &Value) -> bool {
+    self.admits_under(value, 0, 0)
+  }
+
+  /// [`admits`](Self::admits) for `value` inside `parent` arrays and maps and directly inside `run`
+  /// tags. It stops at the first level past the limit, so it recurses no deeper than a decoder.
+  fn admits_under(&self, value: &Value, parent: usize, run: usize) -> bool {
+    match value {
+      Value::Array(items) => parent < self.max_depth && items.iter().all(|item| self.admits_under(item, parent + 1, 0)),
+      Value::Map(entries) => {
+        parent < self.max_depth
+          && entries
+            .iter()
+            .all(|(key, item)| self.admits_under(key, parent + 1, 0) && self.admits_under(item, parent + 1, 0))
+      }
+      Value::Tag(_, content) => run < self.max_depth && self.admits_under(content, parent, run + 1),
+      _ => true,
+    }
   }
 }
 
@@ -139,6 +166,18 @@ pub fn decode(data: &[u8], codec: Codec, limits: &DecodeLimits) -> Result<Value,
   match codec {
     Codec::Cbor => cbor::decode(data, limits.max_depth),
     Codec::Json => json::decode(data, limits.max_depth),
+  }
+}
+
+/// Whether `value` has a form in `codec`, as [`encode`] would find it, without writing anything.
+///
+/// # Errors
+///
+/// The errors of [`encode`].
+pub fn check(value: &Value, codec: Codec) -> Result<(), EncodeError> {
+  match codec {
+    Codec::Cbor => cbor::check(value),
+    Codec::Json => json::check(value),
   }
 }
 

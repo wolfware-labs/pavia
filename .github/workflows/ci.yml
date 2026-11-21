@@ -194,7 +194,9 @@ jobs:
           tool: cargo-fuzz@0.13.2
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          workspaces: crates/pavia-proto/fuzz
+          workspaces: |
+            crates/pavia-proto/fuzz
+            crates/pavia-codec/fuzz
       - name: Fuzz the varint decoder for 10 minutes
         working-directory: crates/pavia-proto
         run: cargo +nightly-2026-10-01 fuzz run --target x86_64-unknown-linux-gnu varint_decode -- -max_total_time=600 -rss_limit_mb=8192 -malloc_limit_mb=512
@@ -210,3 +212,6 @@ jobs:
       - name: Fuzz the json data decoder and encoder for 5 minutes
         working-directory: crates/pavia-proto
         run: cargo +nightly-2026-10-01 fuzz run --target x86_64-unknown-linux-gnu data_json -- -max_total_time=300 -rss_limit_mb=8192 -malloc_limit_mb=512
+      - name: Fuzz the typed decoder and encoder for 5 minutes
+        working-directory: crates/pavia-codec
+        run: cargo +nightly-2026-10-01 fuzz run --target x86_64-unknown-linux-gnu typed_decode -- -max_total_time=300 -rss_limit_mb=8192 -malloc_limit_mb=512

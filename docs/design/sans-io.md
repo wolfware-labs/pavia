@@ -1,11 +1,11 @@
 # Sans-IO core and crate layout
 
-Decision record for roadmap C0.7 (#2). Status: accepted, 2026-09-21. Amended 2026-11-01 (#36): `poll_output` returns `None` when drained, and the next deadline comes from `poll_timeout`. Amended 2026-11-01 (#27): `now` is a `handle_input` argument, not a field of each input. Amended 2026-11-01 (#30): authentication is `Output::Authenticate` and its answer an input, because the authenticator is async application code that runs in the driver. Amended 2026-11-01 (#31): the driver supplies the session ID with `Authenticated`, since generating it needs OS randomness. Amended 2026-11-08 (#34): when the timer fires with a message already readable, the driver feeds the message, and the session handles input that arrives past a deadline itself. Amended 2026-11-09 (#35): the transport refuses a WebSocket message above `2 x max_frame` from its frame headers and reports it as `Input::MessageTooLarge`, and the driver lingers on the connection after the session ends. Amended 2026-11-10 (#37): the session reports `Output::Established { session }` right before it queues WELCOME, and the server driver registers the session once that WELCOME is written, never earlier. Amended 2026-11-11 (#47): a CALL reaches the driver as `Output::Call { stream, call }`, and the driver answers with `Command::Result` or `Command::Error`; the session keeps the stream IDs and the call state machine.
+Decision record for roadmap C0.7 (#2). Status: accepted, 2026-09-21. Amended 2026-11-01 (#36): `poll_output` returns `None` when drained, and the next deadline comes from `poll_timeout`. Amended 2026-11-01 (#27): `now` is a `handle_input` argument, not a field of each input. Amended 2026-11-01 (#30): authentication is `Output::Authenticate` and its answer an input, because the authenticator is async application code that runs in the driver. Amended 2026-11-01 (#31): the driver supplies the session ID with `Authenticated`, since generating it needs OS randomness. Amended 2026-11-08 (#34): when the timer fires with a message already readable, the driver feeds the message, and the session handles input that arrives past a deadline itself. Amended 2026-11-09 (#35): the transport refuses a WebSocket message above `2 x max_frame` from its frame headers and reports it as `Input::MessageTooLarge`, and the driver lingers on the connection after the session ends. Amended 2026-11-10 (#37): the session reports `Output::Established { session }` right before it queues WELCOME, and the server driver registers the session once that WELCOME is written, never earlier. Amended 2026-11-11 (#47): a CALL reaches the driver as `Output::Call { stream, call }`, and the driver answers with `Command::Result` or `Command::Error`; the session keeps the stream IDs and the call state machine. Amended 2026-11-20 (#66): the typed codecs leave `pavia-contract` for a new crate, `pavia-codec`, on top of `pavia-proto` and `pavia-contract`, so `pavia-contract`, and with it codegen and the CLI, stays free of `pavia-proto`.
 
 ## Decisions
 
 1. The protocol crate is sans-IO and exposes one driver loop: `handle_input(input, now)` then `poll_output()` until it returns `None`.
-2. The Rust workspace has seven library crates plus the proc-macro crates (`pavia-contract-derive` today, `pavia-macros` planned in #218); dependency rules are enforced by Cargo and checked in CI.
+2. The Rust workspace has eight library crates plus the proc-macro crates (`pavia-contract-derive` today, `pavia-macros` planned in #218); dependency rules are enforced by Cargo and checked in CI.
 3. The TypeScript generator is a Rust crate, driven from the `pavia` binary.
 
 ## Why sans-IO
@@ -20,7 +20,8 @@ Everything that parses bytes or holds protocol state lives in a crate with no so
 
 ```
 pavia-proto            wire, streams, session state machine, sequencing      no tokio, hyper, axum, quinn
-pavia-contract         type system, manifest, fingerprint, typed codecs      no pavia-proto, no IO
+pavia-contract         type system, manifest, fingerprint                    no pavia-proto, no IO
+pavia-codec            typed codecs: contract values in cbor and json        pavia-proto + pavia-contract; no IO
 pavia-contract-derive  #[derive] for contract types (proc-macro)            depends on nothing else here
 pavia-macros           #[service], #[client], error mapping (proc-macro)    planned (#218); re-exported by pavia-server
 pavia-server           tokio session tasks, registry, targeting, hooks,      no axum
@@ -36,10 +37,11 @@ pavia-vectors          test support: checks the files under vectors/           n
 
 Rules:
 
-- `pavia-proto` and `pavia-contract` carry `#![forbid(unsafe_code)]`.
-- CI asserts the graph: `cargo tree -p pavia-proto -e normal` contains no `tokio`, `hyper`, `axum` or `quinn`; `cargo tree -p pavia-contract` contains no `pavia-proto`; `cargo tree -p pavia-client` contains no `pavia-server`.
+- `pavia-proto`, `pavia-contract` and `pavia-codec` carry `#![forbid(unsafe_code)]`.
+- CI asserts the graph: `cargo tree -p pavia-proto -e normal` contains no `tokio`, `hyper`, `axum` or `quinn`; `cargo tree -p pavia-contract` contains no `pavia-proto`; `cargo tree -p pavia-codec -e normal` contains no `tokio`, `hyper`, `axum` or `quinn`; `cargo tree -p pavia-client` contains no `pavia-server`.
 - One workspace version; all crates release together.
-- `pavia-server` depends on `pavia-proto` and `pavia-contract`; the typed layer sits on top of the untyped session, never inside it.
+- `pavia-server` depends on `pavia-proto` and `pavia-contract`, and on `pavia-codec` once its handlers take typed values (#218); the typed layer sits on top of the untyped session, never inside it.
+- `pavia-codec` holds the typed codecs (#66): a contract type from `pavia-contract` drives the untyped data-section codec of `pavia-proto`. It is its own crate so `pavia-contract`, and with it codegen and the CLI, stays free of `pavia-proto`.
 - `pavia-webtransport` is a transport, not protocol: it knows nothing about Pavia frames. `pavia-server` and `pavia-client` drive `pavia-proto` over it (decision #120: own HTTP/3 layer so the port also serves ordinary HTTP/3).
 
 Rejected: four crates (contract types inside proto; client inside server) because the CLI and the client would link the server, and splitting after 1.0 is a breaking reshuffle. One crate with feature flags because additive features cannot enforce "no runtime in the core".

@@ -1,6 +1,6 @@
 use proptest::prelude::*;
 
-use super::{Codec, DecodeError, DecodeLimits, EncodeError, Value, encode};
+use super::{Codec, DecodeError, DecodeLimits, EncodeError, Value, check, encode};
 use crate::error::{DataSection, ErrorStatus, Outcome, ProtocolError};
 use crate::registry::StatusCode;
 
@@ -200,14 +200,19 @@ fn refuses_values_a_codec_cannot_carry() {
   ] {
     let mut out = Vec::new();
     assert_eq!(encode(&value, Codec::Json, &mut out), Err(EncodeError::NotJson), "{value:?}");
+    assert_eq!(check(&value, Codec::Json), Err(EncodeError::NotJson), "{value:?}");
     assert!(out.is_empty());
   }
   for simple in 20..=31 {
     let mut out = Vec::new();
     let nested = Value::Array(vec![Value::Simple(simple)]);
     assert_eq!(encode(&nested, Codec::Cbor, &mut out), Err(EncodeError::ReservedSimpleValue));
+    assert_eq!(check(&nested, Codec::Cbor), Err(EncodeError::ReservedSimpleValue));
     assert!(out.is_empty());
   }
+  let fine = Value::Map(vec![(text("a"), Value::Array(vec![Value::Unsigned(1)]))]);
+  assert_eq!(check(&fine, Codec::Json), Ok(()));
+  assert_eq!(check(&fine, Codec::Cbor), Ok(()));
 }
 
 fn nested_cbor(depth: usize) -> Vec<u8> {
@@ -232,6 +237,14 @@ fn limits_nesting_depth_in_both_codecs() {
   let mut tags = vec![0xc1; MAX_DEPTH + 1];
   tags.push(0x00);
   assert_eq!(decode(&tags, Codec::Cbor), Err(DecodeError::TooDeep));
+  assert_eq!(decode(&tags[1..], Codec::Cbor).map(|_| ()), Ok(()));
+  let mut tagged = vec![0x81; MAX_DEPTH];
+  tagged.extend([0xc1, 0x00]);
+  let mut expected = Value::Tag(1, Box::new(Value::Unsigned(0)));
+  for _ in 0..MAX_DEPTH {
+    expected = Value::Array(vec![expected]);
+  }
+  assert_eq!(decode(&tagged, Codec::Cbor), Ok(expected));
   assert_eq!(decode(&vec![0x81; 100_000], Codec::Cbor), Err(DecodeError::TooDeep));
   assert_eq!(decode("[".repeat(100_000).as_bytes(), Codec::Json), Err(DecodeError::TooDeep));
 }
@@ -250,6 +263,36 @@ fn takes_the_depth_limit_from_the_caller() {
     Err(DecodeError::TooDeep)
   );
   assert_eq!(DecodeLimits::default().max_depth, MAX_DEPTH);
+}
+
+fn nested_values() -> Vec<Value> {
+  let mut values = Vec::new();
+  for depth in 0..=4 {
+    let arrays = (0..depth).fold(Value::Null, |item, _| Value::Array(vec![item]));
+    let values_in_maps = (0..depth).fold(Value::Null, |item, _| Value::Map(vec![(text("k"), item)]));
+    let keys_in_maps = (0..depth).fold(Value::Null, |item, _| Value::Map(vec![(item, Value::Null)]));
+    let tags = (0..depth).fold(Value::Unsigned(0), |item, _| Value::Tag(1, Box::new(item)));
+    let split = Value::Tag(1, Box::new(Value::Array(vec![tags.clone()])));
+    values.extend([arrays, values_in_maps, keys_in_maps, tags, split]);
+  }
+  values
+}
+
+#[test]
+fn admits_exactly_what_the_decoders_accept() {
+  for max_depth in 0..=3 {
+    let limits = DecodeLimits { max_depth };
+    for value in nested_values() {
+      for codec in [Codec::Cbor, Codec::Json] {
+        let mut out = Vec::new();
+        if encode(&value, codec, &mut out).is_err() {
+          continue;
+        }
+        let accepted = super::decode(&out, codec, &limits).is_ok();
+        assert_eq!(limits.admits(&value), accepted, "max_depth {max_depth}, {codec:?}, {value:?}");
+      }
+    }
+  }
 }
 
 #[test]
