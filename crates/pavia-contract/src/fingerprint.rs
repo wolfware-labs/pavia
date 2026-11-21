@@ -90,6 +90,13 @@ pub enum FingerprintError {
     /// Where it is.
     at: String,
   },
+  /// `services`, `server_methods`, `client_methods`, `channels` or `datagrams` given as something other
+  /// than an array.
+  #[error("{at} is not an array (spec 12.2)")]
+  NotAnArray {
+    /// Where it is.
+    at: String,
+  },
   /// An array of named entries out of byte order by name, or with one name twice.
   #[error("{at} is not sorted by {key} in byte order (spec 12.2)")]
   Unsorted {
@@ -108,6 +115,7 @@ impl FingerprintError {
     | Self::Null { at }
     | Self::Default { at }
     | Self::NotADouble { at }
+    | Self::NotAnArray { at }
     | Self::Unsorted { at, .. }) = &mut self;
     at.insert_str(1, step);
     self
@@ -141,7 +149,7 @@ fn check(value: &Value) -> Result<(), FingerprintError> {
 /// Whether `value` is the default of the optional field `key` (§12.2).
 fn is_default(key: &str, value: &Value) -> bool {
   match key {
-    "idempotent" | "open" | "history" | "optional" => *value == Value::Bool(false),
+    "idempotent" | "open" | "history" => *value == Value::Bool(false),
     "returns" => value.as_str() == Some("unit"),
     "params" => value.as_array().is_some_and(Vec::is_empty),
     _ => false,
@@ -150,8 +158,10 @@ fn is_default(key: &str, value: &Value) -> bool {
 
 /// Refuses an array of named entries that is not strictly sorted by `key` in byte order.
 fn sorted(array: Option<&Value>, key: &'static str, at: &str) -> Result<(), FingerprintError> {
-  let Some(Value::Array(entries)) = array else {
-    return Ok(());
+  let entries = match array {
+    None => return Ok(()),
+    Some(Value::Array(entries)) => entries,
+    Some(_) => return Err(FingerprintError::NotAnArray { at: at.to_owned() }),
   };
   let names: Option<Vec<&str>> = entries.iter().map(|entry| entry.get(key).and_then(Value::as_str)).collect();
   match names {

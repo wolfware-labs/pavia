@@ -141,8 +141,8 @@ fn refuses_null_and_default_values() {
   example["channels"][0]["history"] = json!(false);
   assert!(matches!(fingerprint(&example), Err(FingerprintError::Default { .. })));
   let mut example = spec_example();
-  example["types"]["RoomOptions"]["struct"]["fields"][0]["optional"] = json!(false);
-  assert!(matches!(fingerprint(&example), Err(FingerprintError::Default { .. })));
+  example["types"]["Member"]["struct"]["fields"][0]["optional"] = json!(false);
+  assert!(fingerprint(&example).is_ok(), "12.2 lists no default for optional");
   let mut example = spec_example();
   example["types"]["SendError"]["enum"]["open"] = json!(false);
   assert!(matches!(fingerprint(&example), Err(FingerprintError::Default { .. })));
@@ -197,4 +197,23 @@ fn writes_control_characters_with_their_short_escapes() {
 #[test]
 fn fingerprints_a_manifest_without_named_arrays() {
   assert_eq!(canonical(&json!({"pavia": 1, "name": "app"})).unwrap(), r#"{"pavia":1}"#);
+}
+
+#[test]
+fn refuses_named_lists_that_are_not_arrays() {
+  for (manifest, at) in [
+    (json!({"services": {}}), "$.services"),
+    (json!({"channels": "room"}), "$.channels"),
+    (json!({"datagrams": 1}), "$.datagrams"),
+    (
+      json!({"services": [{"name": "a", "server_methods": {}}]}),
+      "$.services[0].server_methods",
+    ),
+  ] {
+    assert_eq!(
+      fingerprint(&manifest),
+      Err(FingerprintError::NotAnArray { at: at.into() }),
+      "{manifest}"
+    );
+  }
 }
