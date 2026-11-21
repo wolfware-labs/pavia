@@ -241,6 +241,7 @@ pub struct Registry {
 struct Inner {
   sessions: HashMap<SessionId, Entry>,
   registrations: u64,
+  contract_mismatches: u64,
 }
 
 #[derive(Debug)]
@@ -254,6 +255,14 @@ impl Registry {
   #[must_use]
   pub fn new() -> Self {
     Self::default()
+  }
+
+  /// Counts one more HELLO whose contract fingerprint differs from this endpoint's, or is missing, and
+  /// returns the count so far.
+  pub(crate) fn count_contract_mismatch(&self) -> u64 {
+    let mut inner = self.lock();
+    inner.contract_mismatches += 1;
+    inner.contract_mismatches
   }
 
   /// The number of established sessions.

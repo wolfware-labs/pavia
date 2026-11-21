@@ -188,3 +188,12 @@ fn matches_the_services_and_types_of_the_spec_example() {
     assert!(!text.contains(forbidden), "{forbidden}");
   }
 }
+
+#[test]
+fn fingerprints_the_committed_manifest() {
+  let methods = registry(server_methods(), client_methods());
+  let committed: serde_json::Value = serde_json::from_str(&fs::read_to_string(committed()).unwrap()).unwrap();
+  let expected = pavia_contract::fingerprint::fingerprint(&committed).unwrap();
+  assert_eq!(manifest::fingerprint(NAME, &methods).unwrap().bytes(), expected);
+  assert_eq!(manifest::fingerprint("another-name", &methods).unwrap().bytes(), expected);
+}

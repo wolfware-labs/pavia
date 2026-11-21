@@ -11,6 +11,7 @@ vectors/
   varints/<group>.json varint vectors
   headers/<group>.json header section vectors
   scripts/<group>.json scripts and abuse scripts
+  fingerprints/<group>.json  contract fingerprint vectors
 ```
 
 ## Common rules
@@ -62,6 +63,17 @@ A file may define named types in `types`, in the form of the manifest's `types` 
 | `normalizes` | no | `true` on a `decode` case whose input decodes to another form of the value than the untyped item, such as a whole-second timestamp written as a float or an optional field written as `null`. Untyped checkers skip comparing the item with `value`; typed decoders still return `value` |
 
 Every value has one encoding ([spec 12.3](../spec/pavia-protocol.md#123-codec-mapping), draft 0.9): struct fields in manifest declaration order, `map` keys sorted, shortest integer and float forms, compact `json`. Codec vectors are therefore `both` unless the input is one that encoders never produce, such as fields out of order.
+
+## Fingerprint vectors (`fingerprints/`)
+
+Each case gives a manifest ([spec 12.2](../spec/pavia-protocol.md#122-manifest-format)) as a JSON value and either its canonical form and fingerprint, or why canonicalization refuses it ([spec 12.5](../spec/pavia-protocol.md#125-fingerprint)).
+
+| Field | Required | Meaning |
+|---|---|---|
+| `manifest` | yes | The manifest, as JSON |
+| `canonical` | one of | The manifest without its `docs` fields and its top-level `name`, written with RFC 8785, compared byte for byte |
+| `fingerprint` | with `canonical` | The SHA-256 of `canonical`, as 64 lowercase hex digits |
+| `error` | one of | Why the manifest has no fingerprint: `null` (a `null` anywhere), `default` (an optional field equal to its default), `unsorted` (named entries out of byte order by name, or a name twice), `not_an_array` (a named list that is not an array), `not_an_object`, `not_a_double` (a number that is not a finite IEEE-754 double, which RFC 8785 cannot write; no vector carries one yet, since many JSON parsers, serde_json among them, refuse a number such as `1e400` before canonicalization starts) |
 
 ## Varint vectors (`varints/`)
 

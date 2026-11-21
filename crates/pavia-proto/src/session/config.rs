@@ -97,8 +97,7 @@ impl Config {
   /// Checks every setting: every duration from 1 ms to [`Self::MAX_DURATION`], `idle_timeout`
   /// longer than `heartbeat` in whole milliseconds, no zero limit, no empty version or codec list,
   /// an `internal_error_message` of 1 to [`Self::MAX_INTERNAL_ERROR_MESSAGE`] bytes (§8.4),
-  /// `max_frame` and `window` at or above the 64 KiB floor (§4.1, §16), and no
-  /// [`ContractPolicy::Strict`], which is not supported yet (#68).
+  /// and `max_frame` and `window` at or above the 64 KiB floor (§4.1, §16).
   ///
   /// ```
   /// use pavia_proto::session::{Config, ConfigError};
@@ -146,9 +145,6 @@ impl Config {
     }
     if self.codecs.is_empty() {
       return Err(ConfigError::Empty("codecs"));
-    }
-    if self.contract_policy == ContractPolicy::Strict {
-      return Err(ConfigError::Unsupported("contract_policy strict"));
     }
     if self.internal_error_message.is_empty() {
       return Err(ConfigError::Empty("internal_error_message"));
@@ -230,9 +226,6 @@ pub enum ConfigError {
   /// An `internal_error_message` above [`Config::MAX_INTERNAL_ERROR_MESSAGE`] bytes.
   #[error("{0} must be at most {max} bytes", max = Config::MAX_INTERNAL_ERROR_MESSAGE)]
   TooLarge(&'static str),
-  /// A setting this version does not support yet: [`ContractPolicy::Strict`] (#68).
-  #[error("{0} is not supported yet")]
-  Unsupported(&'static str),
 }
 
 pub(super) fn millis(duration: Duration) -> u64 {

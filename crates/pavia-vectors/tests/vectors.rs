@@ -402,3 +402,16 @@ fn ciborium_writes_shortest_float_width() {
     assert_eq!(encode(&Value::Float(x)), expected, "{x}");
   }
 }
+
+#[test]
+fn fingerprint_vectors_have_unique_ids_and_hex_of_their_canonical_text() {
+  for (ctx, case) in unique_ids("fingerprints") {
+    if let Some(fingerprint) = case["fingerprint"].as_str() {
+      assert!(
+        case["canonical"].is_string(),
+        "{ctx}: a fingerprint comes with its canonical text"
+      );
+      assert_eq!(fingerprint.len(), 64, "{ctx}");
+    }
+  }
+}

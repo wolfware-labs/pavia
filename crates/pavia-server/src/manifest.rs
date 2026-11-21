@@ -33,6 +33,7 @@ use std::path::Path;
 use pavia_contract::manifest::{self as contract, Call, Manifest, ManifestError, Method, Param, Service};
 use pavia_contract::schema::{Primitive, Type};
 use pavia_contract::{TypeError, TypeTable};
+use pavia_proto::contract::Fingerprint;
 use pavia_proto::stream::{Shape, Side};
 use thiserror::Error;
 
@@ -87,6 +88,19 @@ pub fn manifest(name: &str, methods: &MethodRegistry<Handler>) -> Result<Manifes
 /// The errors of [`manifest`], and [`ExportError::Manifest`] for what the manifest's validation finds.
 pub fn render(name: &str, methods: &MethodRegistry<Handler>) -> Result<String, ExportError> {
   manifest(name, methods)?.render().map_err(ExportError::Manifest)
+}
+
+/// The contract fingerprint (§12.5) of the manifest of [`manifest`], for
+/// [`Config::contract`](pavia_proto::session::Config::contract) and the WELCOME of every session.
+///
+/// # Errors
+///
+/// The errors of [`render`].
+pub fn fingerprint(name: &str, methods: &MethodRegistry<Handler>) -> Result<Fingerprint, ExportError> {
+  manifest(name, methods)?
+    .fingerprint()
+    .map(Fingerprint::new)
+    .map_err(ExportError::Manifest)
 }
 
 /// Writes the manifest of [`render`] to `writer`.

@@ -1,8 +1,8 @@
 //! Pavia contract layer: type system, manifest, fingerprint.
 //!
-//! Today it holds the type system (§12.1) and the manifest (§12.2): [`Contract`] maps a Rust type to its
-//! contract type, a [`TypeTable`] collects the named types the manifest's `types` table lists, and
-//! [`manifest::Manifest`] checks and writes the whole document.
+//! It holds the type system (§12.1), the manifest (§12.2) and its fingerprint (§12.5): [`Contract`] maps a
+//! Rust type to its contract type, a [`TypeTable`] collects the named types the manifest's `types` table
+//! lists, [`manifest::Manifest`] checks and writes the whole document, and [`fingerprint`] hashes it.
 //!
 //! ```
 //! use pavia_contract::{Contract, Timestamp, TypeTable};
@@ -29,9 +29,11 @@
 //!
 //! [`schema`] is public because a hand-written [`Contract`] impl builds its contract type from it, and the
 //! manifest and the typed codecs of `pavia-codec` read it. [`name`] is the name grammar of §12.2, which
-//! the server's method names follow too.
+//! the server's method names follow too. [`fingerprint`] reads manifest JSON from any source, not only
+//! from [`manifest::Manifest`], so a tool can fingerprint a manifest file.
 #![forbid(unsafe_code)]
 
+pub mod fingerprint;
 pub mod manifest;
 mod mapping;
 pub mod name;

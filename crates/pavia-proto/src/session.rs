@@ -73,7 +73,7 @@ use std::time::{Duration, Instant};
 use bytes::{Bytes, BytesMut};
 
 use crate::caps::{self, Capability, Caps};
-use crate::contract::Fingerprint;
+use crate::contract::{ContractPolicy, Fingerprint};
 use crate::data::Codec;
 use crate::error::{Outcome, ProtocolError};
 use crate::frame::{
@@ -258,9 +258,9 @@ pub enum Output {
     limit: u64,
   },
   /// The client's HELLO carries a contract fingerprint other than this server's, or none, and
-  /// the policy is [`ContractPolicy::Warn`](crate::contract::ContractPolicy::Warn): the session
-  /// goes on and the driver reports it (§7.2). Never emitted by a server without a fingerprint.
-  /// Comes between [`Output::Established`] and the WELCOME's [`Output::Transmit`].
+  /// the policy is [`ContractPolicy::Warn`]: the session goes on and the driver reports it (§7.2).
+  /// Never emitted by a server without a fingerprint. Comes between [`Output::Established`] and
+  /// the WELCOME's [`Output::Transmit`].
   ContractMismatch {
     /// The client's fingerprint, or `None` when its HELLO has none.
     client: Option<Fingerprint>,
@@ -641,6 +641,9 @@ impl Session {
           let (Some(version), Some(codec)) = (version, codec) else {
             return self.reject(CloseCode::UnsupportedVersion, "no common protocol version or codec");
           };
+          if self.config.0.contract_policy == ContractPolicy::Strict && self.contract_mismatch(&hello).is_some() {
+            return self.reject(CloseCode::ContractMismatch, "contract mismatch");
+          }
           let auth = hello.auth.take();
           self.state = State::Handshaking {
             deadline: *deadline,

@@ -1,0 +1,2152 @@
+{
+  "$schema": "../schema/fingerprints.schema.json",
+  "group": "basics",
+  "note": "The canonical form and SHA-256 fingerprint of spec 12.5, and manifests that canonicalization refuses.",
+  "cases": [
+    {
+      "id": "spec-example",
+      "spec": [
+        "12.5"
+      ],
+      "note": "The manifest example of spec 12.2.",
+      "manifest": {
+        "pavia": 1,
+        "name": "example-app",
+        "services": [
+          {
+            "name": "chat",
+            "server_methods": [
+              {
+                "name": "history",
+                "kind": "call",
+                "shape": "server_stream",
+                "params": [
+                  {
+                    "name": "room",
+                    "type": {
+                      "ref": "RoomId"
+                    }
+                  }
+                ],
+                "yields": {
+                  "ref": "Message"
+                }
+              },
+              {
+                "name": "send",
+                "kind": "call",
+                "shape": "unary",
+                "params": [
+                  {
+                    "name": "room",
+                    "type": {
+                      "ref": "RoomId"
+                    }
+                  },
+                  {
+                    "name": "text",
+                    "type": "string"
+                  }
+                ],
+                "returns": {
+                  "ref": "MessageId"
+                },
+                "error": {
+                  "ref": "SendError"
+                }
+              },
+              {
+                "name": "typing",
+                "kind": "notify",
+                "params": [
+                  {
+                    "name": "room",
+                    "type": {
+                      "ref": "RoomId"
+                    }
+                  }
+                ]
+              },
+              {
+                "name": "upload",
+                "kind": "call",
+                "shape": "client_stream",
+                "accepts": "bytes",
+                "returns": "u64"
+              }
+            ],
+            "client_methods": [
+              {
+                "name": "confirm",
+                "kind": "call",
+                "shape": "unary",
+                "params": [
+                  {
+                    "name": "prompt",
+                    "type": "string"
+                  }
+                ],
+                "returns": "bool"
+              },
+              {
+                "name": "systemNotice",
+                "kind": "notify",
+                "params": [
+                  {
+                    "name": "text",
+                    "type": "string"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "channels": [
+          {
+            "namespace": "room",
+            "publication": {
+              "ref": "Message"
+            },
+            "presence_info": {
+              "ref": "Member"
+            },
+            "subscribe": {
+              "ref": "RoomOptions"
+            },
+            "history": true
+          }
+        ],
+        "datagrams": [
+          {
+            "topic": "cursor",
+            "direction": "both",
+            "mode": "latest",
+            "payload": {
+              "ref": "CursorPos"
+            }
+          }
+        ],
+        "types": {
+          "RoomId": {
+            "alias": "string"
+          },
+          "MessageId": {
+            "alias": "uuid"
+          },
+          "Message": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "id",
+                  "type": {
+                    "ref": "MessageId"
+                  }
+                },
+                {
+                  "name": "author",
+                  "type": "string"
+                },
+                {
+                  "name": "text",
+                  "type": "string"
+                },
+                {
+                  "name": "sent_at",
+                  "type": "timestamp"
+                }
+              ]
+            }
+          },
+          "SendError": {
+            "enum": {
+              "variants": [
+                {
+                  "name": "RoomNotFound"
+                },
+                {
+                  "name": "TooLong",
+                  "type": {
+                    "struct": {
+                      "fields": [
+                        {
+                          "name": "max",
+                          "type": "u32"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "Member": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "display_name",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "RoomOptions": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "lang",
+                  "type": {
+                    "option": "string"
+                  },
+                  "optional": true
+                }
+              ]
+            }
+          },
+          "CursorPos": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "x",
+                  "type": "f32"
+                },
+                {
+                  "name": "y",
+                  "type": "f32"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "canonical": "{\"channels\":[{\"history\":true,\"namespace\":\"room\",\"presence_info\":{\"ref\":\"Member\"},\"publication\":{\"ref\":\"Message\"},\"subscribe\":{\"ref\":\"RoomOptions\"}}],\"datagrams\":[{\"direction\":\"both\",\"mode\":\"latest\",\"payload\":{\"ref\":\"CursorPos\"},\"topic\":\"cursor\"}],\"pavia\":1,\"services\":[{\"client_methods\":[{\"kind\":\"call\",\"name\":\"confirm\",\"params\":[{\"name\":\"prompt\",\"type\":\"string\"}],\"returns\":\"bool\",\"shape\":\"unary\"},{\"kind\":\"notify\",\"name\":\"systemNotice\",\"params\":[{\"name\":\"text\",\"type\":\"string\"}]}],\"name\":\"chat\",\"server_methods\":[{\"kind\":\"call\",\"name\":\"history\",\"params\":[{\"name\":\"room\",\"type\":{\"ref\":\"RoomId\"}}],\"shape\":\"server_stream\",\"yields\":{\"ref\":\"Message\"}},{\"error\":{\"ref\":\"SendError\"},\"kind\":\"call\",\"name\":\"send\",\"params\":[{\"name\":\"room\",\"type\":{\"ref\":\"RoomId\"}},{\"name\":\"text\",\"type\":\"string\"}],\"returns\":{\"ref\":\"MessageId\"},\"shape\":\"unary\"},{\"kind\":\"notify\",\"name\":\"typing\",\"params\":[{\"name\":\"room\",\"type\":{\"ref\":\"RoomId\"}}]},{\"accepts\":\"bytes\",\"kind\":\"call\",\"name\":\"upload\",\"returns\":\"u64\",\"shape\":\"client_stream\"}]}],\"types\":{\"CursorPos\":{\"struct\":{\"fields\":[{\"name\":\"x\",\"type\":\"f32\"},{\"name\":\"y\",\"type\":\"f32\"}]}},\"Member\":{\"struct\":{\"fields\":[{\"name\":\"display_name\",\"type\":\"string\"}]}},\"Message\":{\"struct\":{\"fields\":[{\"name\":\"id\",\"type\":{\"ref\":\"MessageId\"}},{\"name\":\"author\",\"type\":\"string\"},{\"name\":\"text\",\"type\":\"string\"},{\"name\":\"sent_at\",\"type\":\"timestamp\"}]}},\"MessageId\":{\"alias\":\"uuid\"},\"RoomId\":{\"alias\":\"string\"},\"RoomOptions\":{\"struct\":{\"fields\":[{\"name\":\"lang\",\"optional\":true,\"type\":{\"option\":\"string\"}}]}},\"SendError\":{\"enum\":{\"variants\":[{\"name\":\"RoomNotFound\"},{\"name\":\"TooLong\",\"type\":{\"struct\":{\"fields\":[{\"name\":\"max\",\"type\":\"u32\"}]}}}]}}}}",
+      "fingerprint": "dedf47918edc5b0734cae064374cbb478f796a735cbd1ad7d2584f109a610097"
+    },
+    {
+      "id": "docs-and-name-left-out",
+      "spec": [
+        "12.5"
+      ],
+      "note": "The spec example with docs on several objects and another top-level name: the same canonical form and fingerprint as spec-example.",
+      "manifest": {
+        "pavia": 1,
+        "name": "another-app",
+        "services": [
+          {
+            "name": "chat",
+            "server_methods": [
+              {
+                "name": "history",
+                "kind": "call",
+                "shape": "server_stream",
+                "params": [
+                  {
+                    "name": "room",
+                    "type": {
+                      "ref": "RoomId"
+                    }
+                  }
+                ],
+                "yields": {
+                  "ref": "Message"
+                }
+              },
+              {
+                "name": "send",
+                "kind": "call",
+                "shape": "unary",
+                "params": [
+                  {
+                    "name": "room",
+                    "type": {
+                      "ref": "RoomId"
+                    }
+                  },
+                  {
+                    "name": "text",
+                    "type": "string"
+                  }
+                ],
+                "returns": {
+                  "ref": "MessageId"
+                },
+                "error": {
+                  "ref": "SendError"
+                },
+                "docs": "Sends a message."
+              },
+              {
+                "name": "typing",
+                "kind": "notify",
+                "params": [
+                  {
+                    "name": "room",
+                    "type": {
+                      "ref": "RoomId"
+                    }
+                  }
+                ]
+              },
+              {
+                "name": "upload",
+                "kind": "call",
+                "shape": "client_stream",
+                "accepts": "bytes",
+                "returns": "u64"
+              }
+            ],
+            "client_methods": [
+              {
+                "name": "confirm",
+                "kind": "call",
+                "shape": "unary",
+                "params": [
+                  {
+                    "name": "prompt",
+                    "type": "string"
+                  }
+                ],
+                "returns": "bool"
+              },
+              {
+                "name": "systemNotice",
+                "kind": "notify",
+                "params": [
+                  {
+                    "name": "text",
+                    "type": "string"
+                  }
+                ]
+              }
+            ],
+            "docs": "Chat."
+          }
+        ],
+        "channels": [
+          {
+            "namespace": "room",
+            "publication": {
+              "ref": "Message"
+            },
+            "presence_info": {
+              "ref": "Member"
+            },
+            "subscribe": {
+              "ref": "RoomOptions"
+            },
+            "history": true
+          }
+        ],
+        "datagrams": [
+          {
+            "topic": "cursor",
+            "direction": "both",
+            "mode": "latest",
+            "payload": {
+              "ref": "CursorPos"
+            }
+          }
+        ],
+        "types": {
+          "RoomId": {
+            "alias": "string"
+          },
+          "MessageId": {
+            "alias": "uuid"
+          },
+          "Message": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "id",
+                  "type": {
+                    "ref": "MessageId"
+                  },
+                  "docs": "The id."
+                },
+                {
+                  "name": "author",
+                  "type": "string"
+                },
+                {
+                  "name": "text",
+                  "type": "string"
+                },
+                {
+                  "name": "sent_at",
+                  "type": "timestamp"
+                }
+              ]
+            }
+          },
+          "SendError": {
+            "enum": {
+              "variants": [
+                {
+                  "name": "RoomNotFound"
+                },
+                {
+                  "name": "TooLong",
+                  "type": {
+                    "struct": {
+                      "fields": [
+                        {
+                          "name": "max",
+                          "type": "u32"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "Member": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "display_name",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "RoomOptions": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "lang",
+                  "type": {
+                    "option": "string"
+                  },
+                  "optional": true
+                }
+              ]
+            }
+          },
+          "CursorPos": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "x",
+                  "type": "f32"
+                },
+                {
+                  "name": "y",
+                  "type": "f32"
+                }
+              ]
+            }
+          }
+        },
+        "docs": "The example app."
+      },
+      "canonical": "{\"channels\":[{\"history\":true,\"namespace\":\"room\",\"presence_info\":{\"ref\":\"Member\"},\"publication\":{\"ref\":\"Message\"},\"subscribe\":{\"ref\":\"RoomOptions\"}}],\"datagrams\":[{\"direction\":\"both\",\"mode\":\"latest\",\"payload\":{\"ref\":\"CursorPos\"},\"topic\":\"cursor\"}],\"pavia\":1,\"services\":[{\"client_methods\":[{\"kind\":\"call\",\"name\":\"confirm\",\"params\":[{\"name\":\"prompt\",\"type\":\"string\"}],\"returns\":\"bool\",\"shape\":\"unary\"},{\"kind\":\"notify\",\"name\":\"systemNotice\",\"params\":[{\"name\":\"text\",\"type\":\"string\"}]}],\"name\":\"chat\",\"server_methods\":[{\"kind\":\"call\",\"name\":\"history\",\"params\":[{\"name\":\"room\",\"type\":{\"ref\":\"RoomId\"}}],\"shape\":\"server_stream\",\"yields\":{\"ref\":\"Message\"}},{\"error\":{\"ref\":\"SendError\"},\"kind\":\"call\",\"name\":\"send\",\"params\":[{\"name\":\"room\",\"type\":{\"ref\":\"RoomId\"}},{\"name\":\"text\",\"type\":\"string\"}],\"returns\":{\"ref\":\"MessageId\"},\"shape\":\"unary\"},{\"kind\":\"notify\",\"name\":\"typing\",\"params\":[{\"name\":\"room\",\"type\":{\"ref\":\"RoomId\"}}]},{\"accepts\":\"bytes\",\"kind\":\"call\",\"name\":\"upload\",\"returns\":\"u64\",\"shape\":\"client_stream\"}]}],\"types\":{\"CursorPos\":{\"struct\":{\"fields\":[{\"name\":\"x\",\"type\":\"f32\"},{\"name\":\"y\",\"type\":\"f32\"}]}},\"Member\":{\"struct\":{\"fields\":[{\"name\":\"display_name\",\"type\":\"string\"}]}},\"Message\":{\"struct\":{\"fields\":[{\"name\":\"id\",\"type\":{\"ref\":\"MessageId\"}},{\"name\":\"author\",\"type\":\"string\"},{\"name\":\"text\",\"type\":\"string\"},{\"name\":\"sent_at\",\"type\":\"timestamp\"}]}},\"MessageId\":{\"alias\":\"uuid\"},\"RoomId\":{\"alias\":\"string\"},\"RoomOptions\":{\"struct\":{\"fields\":[{\"name\":\"lang\",\"optional\":true,\"type\":{\"option\":\"string\"}}]}},\"SendError\":{\"enum\":{\"variants\":[{\"name\":\"RoomNotFound\"},{\"name\":\"TooLong\",\"type\":{\"struct\":{\"fields\":[{\"name\":\"max\",\"type\":\"u32\"}]}}}]}}}}",
+      "fingerprint": "dedf47918edc5b0734cae064374cbb478f796a735cbd1ad7d2584f109a610097"
+    },
+    {
+      "id": "type-named-docs",
+      "spec": [
+        "12.5"
+      ],
+      "note": "A type named docs is a name in types, not a docs field: it stays, while its definition's own docs field goes.",
+      "manifest": {
+        "pavia": 1,
+        "name": "app",
+        "services": [
+          {
+            "name": "s",
+            "server_methods": [
+              {
+                "name": "get",
+                "kind": "call",
+                "shape": "unary",
+                "returns": {
+                  "ref": "docs"
+                }
+              }
+            ],
+            "client_methods": []
+          }
+        ],
+        "channels": [],
+        "datagrams": [],
+        "types": {
+          "docs": {
+            "docs": "A type named docs.",
+            "struct": {
+              "fields": [
+                {
+                  "name": "x",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "canonical": "{\"channels\":[],\"datagrams\":[],\"pavia\":1,\"services\":[{\"client_methods\":[],\"name\":\"s\",\"server_methods\":[{\"kind\":\"call\",\"name\":\"get\",\"returns\":{\"ref\":\"docs\"},\"shape\":\"unary\"}]}],\"types\":{\"docs\":{\"struct\":{\"fields\":[{\"name\":\"x\",\"type\":\"string\"}]}}}}",
+      "fingerprint": "5fd01a27b12b03aeed734f2d10ba9fbbfbd0a30c7488e24493483ce79403abe5"
+    },
+    {
+      "id": "idempotent-false",
+      "spec": [
+        "12.2",
+        "12.5"
+      ],
+      "note": "\"idempotent\": false is the default and must be omitted.",
+      "manifest": {
+        "pavia": 1,
+        "name": "example-app",
+        "services": [
+          {
+            "name": "chat",
+            "server_methods": [
+              {
+                "name": "history",
+                "kind": "call",
+                "shape": "server_stream",
+                "params": [
+                  {
+                    "name": "room",
+                    "type": {
+                      "ref": "RoomId"
+                    }
+                  }
+                ],
+                "yields": {
+                  "ref": "Message"
+                }
+              },
+              {
+                "name": "send",
+                "kind": "call",
+                "shape": "unary",
+                "params": [
+                  {
+                    "name": "room",
+                    "type": {
+                      "ref": "RoomId"
+                    }
+                  },
+                  {
+                    "name": "text",
+                    "type": "string"
+                  }
+                ],
+                "returns": {
+                  "ref": "MessageId"
+                },
+                "error": {
+                  "ref": "SendError"
+                },
+                "idempotent": false
+              },
+              {
+                "name": "typing",
+                "kind": "notify",
+                "params": [
+                  {
+                    "name": "room",
+                    "type": {
+                      "ref": "RoomId"
+                    }
+                  }
+                ]
+              },
+              {
+                "name": "upload",
+                "kind": "call",
+                "shape": "client_stream",
+                "accepts": "bytes",
+                "returns": "u64"
+              }
+            ],
+            "client_methods": [
+              {
+                "name": "confirm",
+                "kind": "call",
+                "shape": "unary",
+                "params": [
+                  {
+                    "name": "prompt",
+                    "type": "string"
+                  }
+                ],
+                "returns": "bool"
+              },
+              {
+                "name": "systemNotice",
+                "kind": "notify",
+                "params": [
+                  {
+                    "name": "text",
+                    "type": "string"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "channels": [
+          {
+            "namespace": "room",
+            "publication": {
+              "ref": "Message"
+            },
+            "presence_info": {
+              "ref": "Member"
+            },
+            "subscribe": {
+              "ref": "RoomOptions"
+            },
+            "history": true
+          }
+        ],
+        "datagrams": [
+          {
+            "topic": "cursor",
+            "direction": "both",
+            "mode": "latest",
+            "payload": {
+              "ref": "CursorPos"
+            }
+          }
+        ],
+        "types": {
+          "RoomId": {
+            "alias": "string"
+          },
+          "MessageId": {
+            "alias": "uuid"
+          },
+          "Message": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "id",
+                  "type": {
+                    "ref": "MessageId"
+                  }
+                },
+                {
+                  "name": "author",
+                  "type": "string"
+                },
+                {
+                  "name": "text",
+                  "type": "string"
+                },
+                {
+                  "name": "sent_at",
+                  "type": "timestamp"
+                }
+              ]
+            }
+          },
+          "SendError": {
+            "enum": {
+              "variants": [
+                {
+                  "name": "RoomNotFound"
+                },
+                {
+                  "name": "TooLong",
+                  "type": {
+                    "struct": {
+                      "fields": [
+                        {
+                          "name": "max",
+                          "type": "u32"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "Member": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "display_name",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "RoomOptions": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "lang",
+                  "type": {
+                    "option": "string"
+                  },
+                  "optional": true
+                }
+              ]
+            }
+          },
+          "CursorPos": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "x",
+                  "type": "f32"
+                },
+                {
+                  "name": "y",
+                  "type": "f32"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "error": "default"
+    },
+    {
+      "id": "returns-unit",
+      "spec": [
+        "12.2",
+        "12.5"
+      ],
+      "note": "\"returns\": \"unit\" is the default and must be omitted.",
+      "manifest": {
+        "pavia": 1,
+        "name": "example-app",
+        "services": [
+          {
+            "name": "chat",
+            "server_methods": [
+              {
+                "name": "history",
+                "kind": "call",
+                "shape": "server_stream",
+                "params": [
+                  {
+                    "name": "room",
+                    "type": {
+                      "ref": "RoomId"
+                    }
+                  }
+                ],
+                "yields": {
+                  "ref": "Message"
+                }
+              },
+              {
+                "name": "send",
+                "kind": "call",
+                "shape": "unary",
+                "params": [
+                  {
+                    "name": "room",
+                    "type": {
+                      "ref": "RoomId"
+                    }
+                  },
+                  {
+                    "name": "text",
+                    "type": "string"
+                  }
+                ],
+                "returns": {
+                  "ref": "MessageId"
+                },
+                "error": {
+                  "ref": "SendError"
+                }
+              },
+              {
+                "name": "typing",
+                "kind": "notify",
+                "params": [
+                  {
+                    "name": "room",
+                    "type": {
+                      "ref": "RoomId"
+                    }
+                  }
+                ]
+              },
+              {
+                "name": "upload",
+                "kind": "call",
+                "shape": "client_stream",
+                "accepts": "bytes",
+                "returns": "u64"
+              }
+            ],
+            "client_methods": [
+              {
+                "name": "confirm",
+                "kind": "call",
+                "shape": "unary",
+                "params": [
+                  {
+                    "name": "prompt",
+                    "type": "string"
+                  }
+                ],
+                "returns": "unit"
+              },
+              {
+                "name": "systemNotice",
+                "kind": "notify",
+                "params": [
+                  {
+                    "name": "text",
+                    "type": "string"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "channels": [
+          {
+            "namespace": "room",
+            "publication": {
+              "ref": "Message"
+            },
+            "presence_info": {
+              "ref": "Member"
+            },
+            "subscribe": {
+              "ref": "RoomOptions"
+            },
+            "history": true
+          }
+        ],
+        "datagrams": [
+          {
+            "topic": "cursor",
+            "direction": "both",
+            "mode": "latest",
+            "payload": {
+              "ref": "CursorPos"
+            }
+          }
+        ],
+        "types": {
+          "RoomId": {
+            "alias": "string"
+          },
+          "MessageId": {
+            "alias": "uuid"
+          },
+          "Message": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "id",
+                  "type": {
+                    "ref": "MessageId"
+                  }
+                },
+                {
+                  "name": "author",
+                  "type": "string"
+                },
+                {
+                  "name": "text",
+                  "type": "string"
+                },
+                {
+                  "name": "sent_at",
+                  "type": "timestamp"
+                }
+              ]
+            }
+          },
+          "SendError": {
+            "enum": {
+              "variants": [
+                {
+                  "name": "RoomNotFound"
+                },
+                {
+                  "name": "TooLong",
+                  "type": {
+                    "struct": {
+                      "fields": [
+                        {
+                          "name": "max",
+                          "type": "u32"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "Member": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "display_name",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "RoomOptions": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "lang",
+                  "type": {
+                    "option": "string"
+                  },
+                  "optional": true
+                }
+              ]
+            }
+          },
+          "CursorPos": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "x",
+                  "type": "f32"
+                },
+                {
+                  "name": "y",
+                  "type": "f32"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "error": "default"
+    },
+    {
+      "id": "empty-params",
+      "spec": [
+        "12.2",
+        "12.5"
+      ],
+      "note": "An empty params list equals the default and must be omitted.",
+      "manifest": {
+        "pavia": 1,
+        "name": "example-app",
+        "services": [
+          {
+            "name": "chat",
+            "server_methods": [
+              {
+                "name": "history",
+                "kind": "call",
+                "shape": "server_stream",
+                "params": [
+                  {
+                    "name": "room",
+                    "type": {
+                      "ref": "RoomId"
+                    }
+                  }
+                ],
+                "yields": {
+                  "ref": "Message"
+                }
+              },
+              {
+                "name": "send",
+                "kind": "call",
+                "shape": "unary",
+                "params": [
+                  {
+                    "name": "room",
+                    "type": {
+                      "ref": "RoomId"
+                    }
+                  },
+                  {
+                    "name": "text",
+                    "type": "string"
+                  }
+                ],
+                "returns": {
+                  "ref": "MessageId"
+                },
+                "error": {
+                  "ref": "SendError"
+                }
+              },
+              {
+                "name": "typing",
+                "kind": "notify",
+                "params": [
+                  {
+                    "name": "room",
+                    "type": {
+                      "ref": "RoomId"
+                    }
+                  }
+                ]
+              },
+              {
+                "name": "upload",
+                "kind": "call",
+                "shape": "client_stream",
+                "accepts": "bytes",
+                "returns": "u64",
+                "params": []
+              }
+            ],
+            "client_methods": [
+              {
+                "name": "confirm",
+                "kind": "call",
+                "shape": "unary",
+                "params": [
+                  {
+                    "name": "prompt",
+                    "type": "string"
+                  }
+                ],
+                "returns": "bool"
+              },
+              {
+                "name": "systemNotice",
+                "kind": "notify",
+                "params": [
+                  {
+                    "name": "text",
+                    "type": "string"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "channels": [
+          {
+            "namespace": "room",
+            "publication": {
+              "ref": "Message"
+            },
+            "presence_info": {
+              "ref": "Member"
+            },
+            "subscribe": {
+              "ref": "RoomOptions"
+            },
+            "history": true
+          }
+        ],
+        "datagrams": [
+          {
+            "topic": "cursor",
+            "direction": "both",
+            "mode": "latest",
+            "payload": {
+              "ref": "CursorPos"
+            }
+          }
+        ],
+        "types": {
+          "RoomId": {
+            "alias": "string"
+          },
+          "MessageId": {
+            "alias": "uuid"
+          },
+          "Message": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "id",
+                  "type": {
+                    "ref": "MessageId"
+                  }
+                },
+                {
+                  "name": "author",
+                  "type": "string"
+                },
+                {
+                  "name": "text",
+                  "type": "string"
+                },
+                {
+                  "name": "sent_at",
+                  "type": "timestamp"
+                }
+              ]
+            }
+          },
+          "SendError": {
+            "enum": {
+              "variants": [
+                {
+                  "name": "RoomNotFound"
+                },
+                {
+                  "name": "TooLong",
+                  "type": {
+                    "struct": {
+                      "fields": [
+                        {
+                          "name": "max",
+                          "type": "u32"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "Member": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "display_name",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "RoomOptions": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "lang",
+                  "type": {
+                    "option": "string"
+                  },
+                  "optional": true
+                }
+              ]
+            }
+          },
+          "CursorPos": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "x",
+                  "type": "f32"
+                },
+                {
+                  "name": "y",
+                  "type": "f32"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "error": "default"
+    },
+    {
+      "id": "history-false",
+      "spec": [
+        "12.2",
+        "12.5"
+      ],
+      "note": "\"history\": false is the default and must be omitted.",
+      "manifest": {
+        "pavia": 1,
+        "name": "example-app",
+        "services": [
+          {
+            "name": "chat",
+            "server_methods": [
+              {
+                "name": "history",
+                "kind": "call",
+                "shape": "server_stream",
+                "params": [
+                  {
+                    "name": "room",
+                    "type": {
+                      "ref": "RoomId"
+                    }
+                  }
+                ],
+                "yields": {
+                  "ref": "Message"
+                }
+              },
+              {
+                "name": "send",
+                "kind": "call",
+                "shape": "unary",
+                "params": [
+                  {
+                    "name": "room",
+                    "type": {
+                      "ref": "RoomId"
+                    }
+                  },
+                  {
+                    "name": "text",
+                    "type": "string"
+                  }
+                ],
+                "returns": {
+                  "ref": "MessageId"
+                },
+                "error": {
+                  "ref": "SendError"
+                }
+              },
+              {
+                "name": "typing",
+                "kind": "notify",
+                "params": [
+                  {
+                    "name": "room",
+                    "type": {
+                      "ref": "RoomId"
+                    }
+                  }
+                ]
+              },
+              {
+                "name": "upload",
+                "kind": "call",
+                "shape": "client_stream",
+                "accepts": "bytes",
+                "returns": "u64"
+              }
+            ],
+            "client_methods": [
+              {
+                "name": "confirm",
+                "kind": "call",
+                "shape": "unary",
+                "params": [
+                  {
+                    "name": "prompt",
+                    "type": "string"
+                  }
+                ],
+                "returns": "bool"
+              },
+              {
+                "name": "systemNotice",
+                "kind": "notify",
+                "params": [
+                  {
+                    "name": "text",
+                    "type": "string"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "channels": [
+          {
+            "namespace": "room",
+            "publication": {
+              "ref": "Message"
+            },
+            "presence_info": {
+              "ref": "Member"
+            },
+            "subscribe": {
+              "ref": "RoomOptions"
+            },
+            "history": false
+          }
+        ],
+        "datagrams": [
+          {
+            "topic": "cursor",
+            "direction": "both",
+            "mode": "latest",
+            "payload": {
+              "ref": "CursorPos"
+            }
+          }
+        ],
+        "types": {
+          "RoomId": {
+            "alias": "string"
+          },
+          "MessageId": {
+            "alias": "uuid"
+          },
+          "Message": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "id",
+                  "type": {
+                    "ref": "MessageId"
+                  }
+                },
+                {
+                  "name": "author",
+                  "type": "string"
+                },
+                {
+                  "name": "text",
+                  "type": "string"
+                },
+                {
+                  "name": "sent_at",
+                  "type": "timestamp"
+                }
+              ]
+            }
+          },
+          "SendError": {
+            "enum": {
+              "variants": [
+                {
+                  "name": "RoomNotFound"
+                },
+                {
+                  "name": "TooLong",
+                  "type": {
+                    "struct": {
+                      "fields": [
+                        {
+                          "name": "max",
+                          "type": "u32"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "Member": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "display_name",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "RoomOptions": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "lang",
+                  "type": {
+                    "option": "string"
+                  },
+                  "optional": true
+                }
+              ]
+            }
+          },
+          "CursorPos": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "x",
+                  "type": "f32"
+                },
+                {
+                  "name": "y",
+                  "type": "f32"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "error": "default"
+    },
+    {
+      "id": "null-field",
+      "spec": [
+        "12.2",
+        "12.5"
+      ],
+      "note": "An absent field is omitted, never null.",
+      "manifest": {
+        "pavia": 1,
+        "name": "example-app",
+        "services": [
+          {
+            "name": "chat",
+            "server_methods": [
+              {
+                "name": "history",
+                "kind": "call",
+                "shape": "server_stream",
+                "params": [
+                  {
+                    "name": "room",
+                    "type": {
+                      "ref": "RoomId"
+                    }
+                  }
+                ],
+                "yields": {
+                  "ref": "Message"
+                },
+                "error": null
+              },
+              {
+                "name": "send",
+                "kind": "call",
+                "shape": "unary",
+                "params": [
+                  {
+                    "name": "room",
+                    "type": {
+                      "ref": "RoomId"
+                    }
+                  },
+                  {
+                    "name": "text",
+                    "type": "string"
+                  }
+                ],
+                "returns": {
+                  "ref": "MessageId"
+                },
+                "error": {
+                  "ref": "SendError"
+                }
+              },
+              {
+                "name": "typing",
+                "kind": "notify",
+                "params": [
+                  {
+                    "name": "room",
+                    "type": {
+                      "ref": "RoomId"
+                    }
+                  }
+                ]
+              },
+              {
+                "name": "upload",
+                "kind": "call",
+                "shape": "client_stream",
+                "accepts": "bytes",
+                "returns": "u64"
+              }
+            ],
+            "client_methods": [
+              {
+                "name": "confirm",
+                "kind": "call",
+                "shape": "unary",
+                "params": [
+                  {
+                    "name": "prompt",
+                    "type": "string"
+                  }
+                ],
+                "returns": "bool"
+              },
+              {
+                "name": "systemNotice",
+                "kind": "notify",
+                "params": [
+                  {
+                    "name": "text",
+                    "type": "string"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "channels": [
+          {
+            "namespace": "room",
+            "publication": {
+              "ref": "Message"
+            },
+            "presence_info": {
+              "ref": "Member"
+            },
+            "subscribe": {
+              "ref": "RoomOptions"
+            },
+            "history": true
+          }
+        ],
+        "datagrams": [
+          {
+            "topic": "cursor",
+            "direction": "both",
+            "mode": "latest",
+            "payload": {
+              "ref": "CursorPos"
+            }
+          }
+        ],
+        "types": {
+          "RoomId": {
+            "alias": "string"
+          },
+          "MessageId": {
+            "alias": "uuid"
+          },
+          "Message": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "id",
+                  "type": {
+                    "ref": "MessageId"
+                  }
+                },
+                {
+                  "name": "author",
+                  "type": "string"
+                },
+                {
+                  "name": "text",
+                  "type": "string"
+                },
+                {
+                  "name": "sent_at",
+                  "type": "timestamp"
+                }
+              ]
+            }
+          },
+          "SendError": {
+            "enum": {
+              "variants": [
+                {
+                  "name": "RoomNotFound"
+                },
+                {
+                  "name": "TooLong",
+                  "type": {
+                    "struct": {
+                      "fields": [
+                        {
+                          "name": "max",
+                          "type": "u32"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "Member": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "display_name",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "RoomOptions": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "lang",
+                  "type": {
+                    "option": "string"
+                  },
+                  "optional": true
+                }
+              ]
+            }
+          },
+          "CursorPos": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "x",
+                  "type": "f32"
+                },
+                {
+                  "name": "y",
+                  "type": "f32"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "error": "null"
+    },
+    {
+      "id": "methods-out-of-order",
+      "spec": [
+        "12.2",
+        "12.5"
+      ],
+      "note": "server_methods with send before history: named entries are sorted by name in byte order.",
+      "manifest": {
+        "pavia": 1,
+        "name": "example-app",
+        "services": [
+          {
+            "name": "chat",
+            "server_methods": [
+              {
+                "name": "send",
+                "kind": "call",
+                "shape": "unary",
+                "params": [
+                  {
+                    "name": "room",
+                    "type": {
+                      "ref": "RoomId"
+                    }
+                  },
+                  {
+                    "name": "text",
+                    "type": "string"
+                  }
+                ],
+                "returns": {
+                  "ref": "MessageId"
+                },
+                "error": {
+                  "ref": "SendError"
+                }
+              },
+              {
+                "name": "history",
+                "kind": "call",
+                "shape": "server_stream",
+                "params": [
+                  {
+                    "name": "room",
+                    "type": {
+                      "ref": "RoomId"
+                    }
+                  }
+                ],
+                "yields": {
+                  "ref": "Message"
+                }
+              },
+              {
+                "name": "typing",
+                "kind": "notify",
+                "params": [
+                  {
+                    "name": "room",
+                    "type": {
+                      "ref": "RoomId"
+                    }
+                  }
+                ]
+              },
+              {
+                "name": "upload",
+                "kind": "call",
+                "shape": "client_stream",
+                "accepts": "bytes",
+                "returns": "u64"
+              }
+            ],
+            "client_methods": [
+              {
+                "name": "confirm",
+                "kind": "call",
+                "shape": "unary",
+                "params": [
+                  {
+                    "name": "prompt",
+                    "type": "string"
+                  }
+                ],
+                "returns": "bool"
+              },
+              {
+                "name": "systemNotice",
+                "kind": "notify",
+                "params": [
+                  {
+                    "name": "text",
+                    "type": "string"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "channels": [
+          {
+            "namespace": "room",
+            "publication": {
+              "ref": "Message"
+            },
+            "presence_info": {
+              "ref": "Member"
+            },
+            "subscribe": {
+              "ref": "RoomOptions"
+            },
+            "history": true
+          }
+        ],
+        "datagrams": [
+          {
+            "topic": "cursor",
+            "direction": "both",
+            "mode": "latest",
+            "payload": {
+              "ref": "CursorPos"
+            }
+          }
+        ],
+        "types": {
+          "RoomId": {
+            "alias": "string"
+          },
+          "MessageId": {
+            "alias": "uuid"
+          },
+          "Message": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "id",
+                  "type": {
+                    "ref": "MessageId"
+                  }
+                },
+                {
+                  "name": "author",
+                  "type": "string"
+                },
+                {
+                  "name": "text",
+                  "type": "string"
+                },
+                {
+                  "name": "sent_at",
+                  "type": "timestamp"
+                }
+              ]
+            }
+          },
+          "SendError": {
+            "enum": {
+              "variants": [
+                {
+                  "name": "RoomNotFound"
+                },
+                {
+                  "name": "TooLong",
+                  "type": {
+                    "struct": {
+                      "fields": [
+                        {
+                          "name": "max",
+                          "type": "u32"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "Member": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "display_name",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "RoomOptions": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "lang",
+                  "type": {
+                    "option": "string"
+                  },
+                  "optional": true
+                }
+              ]
+            }
+          },
+          "CursorPos": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "x",
+                  "type": "f32"
+                },
+                {
+                  "name": "y",
+                  "type": "f32"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "error": "unsorted"
+    },
+    {
+      "id": "duplicate-method-names",
+      "spec": [
+        "12.2",
+        "12.5"
+      ],
+      "note": "Two client methods named confirm: a sorted list has each name once.",
+      "manifest": {
+        "pavia": 1,
+        "name": "example-app",
+        "services": [
+          {
+            "name": "chat",
+            "server_methods": [
+              {
+                "name": "history",
+                "kind": "call",
+                "shape": "server_stream",
+                "params": [
+                  {
+                    "name": "room",
+                    "type": {
+                      "ref": "RoomId"
+                    }
+                  }
+                ],
+                "yields": {
+                  "ref": "Message"
+                }
+              },
+              {
+                "name": "send",
+                "kind": "call",
+                "shape": "unary",
+                "params": [
+                  {
+                    "name": "room",
+                    "type": {
+                      "ref": "RoomId"
+                    }
+                  },
+                  {
+                    "name": "text",
+                    "type": "string"
+                  }
+                ],
+                "returns": {
+                  "ref": "MessageId"
+                },
+                "error": {
+                  "ref": "SendError"
+                }
+              },
+              {
+                "name": "typing",
+                "kind": "notify",
+                "params": [
+                  {
+                    "name": "room",
+                    "type": {
+                      "ref": "RoomId"
+                    }
+                  }
+                ]
+              },
+              {
+                "name": "upload",
+                "kind": "call",
+                "shape": "client_stream",
+                "accepts": "bytes",
+                "returns": "u64"
+              }
+            ],
+            "client_methods": [
+              {
+                "name": "confirm",
+                "kind": "call",
+                "shape": "unary",
+                "params": [
+                  {
+                    "name": "prompt",
+                    "type": "string"
+                  }
+                ],
+                "returns": "bool"
+              },
+              {
+                "name": "confirm",
+                "kind": "call",
+                "shape": "unary",
+                "params": [
+                  {
+                    "name": "prompt",
+                    "type": "string"
+                  }
+                ],
+                "returns": "bool"
+              }
+            ]
+          }
+        ],
+        "channels": [
+          {
+            "namespace": "room",
+            "publication": {
+              "ref": "Message"
+            },
+            "presence_info": {
+              "ref": "Member"
+            },
+            "subscribe": {
+              "ref": "RoomOptions"
+            },
+            "history": true
+          }
+        ],
+        "datagrams": [
+          {
+            "topic": "cursor",
+            "direction": "both",
+            "mode": "latest",
+            "payload": {
+              "ref": "CursorPos"
+            }
+          }
+        ],
+        "types": {
+          "RoomId": {
+            "alias": "string"
+          },
+          "MessageId": {
+            "alias": "uuid"
+          },
+          "Message": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "id",
+                  "type": {
+                    "ref": "MessageId"
+                  }
+                },
+                {
+                  "name": "author",
+                  "type": "string"
+                },
+                {
+                  "name": "text",
+                  "type": "string"
+                },
+                {
+                  "name": "sent_at",
+                  "type": "timestamp"
+                }
+              ]
+            }
+          },
+          "SendError": {
+            "enum": {
+              "variants": [
+                {
+                  "name": "RoomNotFound"
+                },
+                {
+                  "name": "TooLong",
+                  "type": {
+                    "struct": {
+                      "fields": [
+                        {
+                          "name": "max",
+                          "type": "u32"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "Member": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "display_name",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "RoomOptions": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "lang",
+                  "type": {
+                    "option": "string"
+                  },
+                  "optional": true
+                }
+              ]
+            }
+          },
+          "CursorPos": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "x",
+                  "type": "f32"
+                },
+                {
+                  "name": "y",
+                  "type": "f32"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "error": "unsorted"
+    },
+    {
+      "id": "services-not-an-array",
+      "spec": [
+        "12.2",
+        "12.5"
+      ],
+      "note": "services given as an object.",
+      "manifest": {
+        "pavia": 1,
+        "name": "example-app",
+        "services": {},
+        "channels": [
+          {
+            "namespace": "room",
+            "publication": {
+              "ref": "Message"
+            },
+            "presence_info": {
+              "ref": "Member"
+            },
+            "subscribe": {
+              "ref": "RoomOptions"
+            },
+            "history": true
+          }
+        ],
+        "datagrams": [
+          {
+            "topic": "cursor",
+            "direction": "both",
+            "mode": "latest",
+            "payload": {
+              "ref": "CursorPos"
+            }
+          }
+        ],
+        "types": {
+          "RoomId": {
+            "alias": "string"
+          },
+          "MessageId": {
+            "alias": "uuid"
+          },
+          "Message": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "id",
+                  "type": {
+                    "ref": "MessageId"
+                  }
+                },
+                {
+                  "name": "author",
+                  "type": "string"
+                },
+                {
+                  "name": "text",
+                  "type": "string"
+                },
+                {
+                  "name": "sent_at",
+                  "type": "timestamp"
+                }
+              ]
+            }
+          },
+          "SendError": {
+            "enum": {
+              "variants": [
+                {
+                  "name": "RoomNotFound"
+                },
+                {
+                  "name": "TooLong",
+                  "type": {
+                    "struct": {
+                      "fields": [
+                        {
+                          "name": "max",
+                          "type": "u32"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "Member": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "display_name",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "RoomOptions": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "lang",
+                  "type": {
+                    "option": "string"
+                  },
+                  "optional": true
+                }
+              ]
+            }
+          },
+          "CursorPos": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "x",
+                  "type": "f32"
+                },
+                {
+                  "name": "y",
+                  "type": "f32"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "error": "not_an_array"
+    }
+  ]
+}

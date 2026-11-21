@@ -7,7 +7,7 @@ use pavia_proto::data::Value;
 use pavia_proto::stream::Shape;
 use serde_json::json;
 
-use super::{ExportError, Problem, export, manifest, render, write};
+use super::{ExportError, Problem, export, fingerprint, manifest, render, write};
 use crate::methods::{Handler, MethodEntry, MethodRegistry};
 
 fn handler(params: usize) -> Handler {
@@ -204,6 +204,16 @@ fn reports_what_the_manifest_validation_finds() {
     error.to_string(),
     "`returns` of server method `s/get` refers to `Nowhere`, which is not in `types`"
   );
+}
+
+#[test]
+fn fingerprints_only_a_valid_manifest_whatever_its_name() {
+  let dangling = server(vec![("s/get", call(Shape::Unary).returns::<Dangling>())]);
+  assert!(matches!(fingerprint("app", &dangling), Err(ExportError::Manifest(_))));
+  let unfinished = server(vec![("s/feed", call(Shape::ServerStream))]);
+  assert!(matches!(fingerprint("app", &unfinished), Err(ExportError::Signatures(_))));
+  let fine = server(vec![("s/get", call(Shape::Unary))]);
+  assert_eq!(fingerprint("app", &fine).unwrap(), fingerprint("other", &fine).unwrap());
 }
 
 #[test]

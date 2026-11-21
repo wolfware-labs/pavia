@@ -514,12 +514,15 @@ async fn carry_out<Z: Authorizer + 'static>(
           .receive(&notify, calls.methods, context, &calls.authorizer, &calls.principal);
       }
       Output::ContractMismatch { client, server } => {
-        let session = calls.lane.session();
-        match client {
-          Some(client) => {
-            tracing::warn!(session, %client, %server, "contract fingerprint differs from the server's");
+        let mismatches = membership.registry.count_contract_mismatch();
+        if mismatches.is_power_of_two() {
+          let session = calls.lane.session();
+          match client {
+            Some(client) => {
+              tracing::warn!(session, %client, %server, mismatches, "contract fingerprint differs from the server's");
+            }
+            None => tracing::warn!(session, %server, mismatches, "HELLO carries no contract fingerprint"),
           }
-          None => tracing::warn!(session, %server, "HELLO carries no contract fingerprint"),
         }
       }
       Output::NotifyTooLarge { method, length, limit } => {
