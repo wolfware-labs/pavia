@@ -217,3 +217,12 @@ fn refuses_named_lists_that_are_not_arrays() {
     );
   }
 }
+
+#[test]
+fn strips_docs_inside_every_top_level_member_but_the_type_names() {
+  let manifest = json!({"pavia": 1, "extra": {"docs": "Gone.", "kept": 1}, "types": {"docs": {"alias": "string"}}});
+  assert_eq!(
+    canonical(&manifest).unwrap(),
+    r#"{"extra":{"kept":1},"pavia":1,"types":{"docs":{"alias":"string"}}}"#
+  );
+}
