@@ -30,6 +30,8 @@ pub fn epoch_seconds(millis: i64) -> Value {
 }
 
 /// The milliseconds of a tag 1 content: an integer or a float of seconds, within the RFC 3339 range.
+/// A float exactly half a millisecond off rounds away from zero, as the codec vectors pin; encoders
+/// never write one.
 pub fn millis_of_epoch_seconds(content: &Value) -> Option<i64> {
   match content {
     Value::Float(seconds) => to_millis(*seconds),

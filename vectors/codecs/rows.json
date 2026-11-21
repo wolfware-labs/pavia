@@ -331,6 +331,30 @@
       "json": "\"1969-12-31T23:57:52.062Z\""
     },
     {
+      "id": "timestamp-tie-rounds-away-from-zero",
+      "spec": [
+        "12.3"
+      ],
+      "note": "127.9375 s written as a half float is exactly half a millisecond past 127.937 s. Decoders round a tie away from zero, to 127.938 s; encoders never write a tie.",
+      "type": "timestamp",
+      "direction": "decode",
+      "normalizes": true,
+      "value": "1(127.93800354003906)",
+      "cbor": "c1 f9 57 ff"
+    },
+    {
+      "id": "timestamp-negative-tie-rounds-away-from-zero",
+      "spec": [
+        "12.3"
+      ],
+      "note": "-127.9375 s written as a half float: the tie rounds away from zero, to -127.938 s, not up to -127.937 s as JavaScript's Math.round would.",
+      "type": "timestamp",
+      "direction": "decode",
+      "normalizes": true,
+      "value": "1(-127.93800354003906)",
+      "cbor": "c1 f9 d7 ff"
+    },
+    {
       "id": "uuid-direct",
       "spec": [
         "12.3"
