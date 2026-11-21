@@ -29,7 +29,7 @@
         "manifest": {},
         "canonical": {"type": "string", "minLength": 2},
         "fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "error": {"enum": ["null", "default", "unsorted", "not_an_array", "not_an_object"]}
+        "error": {"enum": ["null", "default", "unsorted", "not_an_array", "not_an_object", "not_a_double"]}
       },
       "oneOf": [
         {"required": ["canonical", "fingerprint"], "not": {"required": ["error"]}},

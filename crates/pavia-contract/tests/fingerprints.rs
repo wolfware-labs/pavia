@@ -10,6 +10,7 @@ fn kind(error: &FingerprintError) -> &'static str {
     FingerprintError::Default { .. } => "default",
     FingerprintError::NotAnArray { .. } => "not_an_array",
     FingerprintError::Unsorted { .. } => "unsorted",
+    FingerprintError::NotADouble { .. } => "not_a_double",
     _ => "other",
   }
 }
