@@ -97,8 +97,7 @@ impl Config {
   /// Checks every setting: every duration from 1 ms to [`Self::MAX_DURATION`], `idle_timeout`
   /// longer than `heartbeat` in whole milliseconds, no zero limit, no empty version or codec list,
   /// an `internal_error_message` of 1 to [`Self::MAX_INTERNAL_ERROR_MESSAGE`] bytes (§8.4),
-  /// `max_frame` and `window` at or above the 64 KiB floor (§4.1, §16), and no
-  /// [`ContractPolicy::Strict`], which is not supported yet (#68).
+  /// and `max_frame` and `window` at or above the 64 KiB floor (§4.1, §16).
   ///
   /// ```
   /// use pavia_proto::session::{Config, ConfigError};
