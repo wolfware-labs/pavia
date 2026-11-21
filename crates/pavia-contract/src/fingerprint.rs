@@ -42,7 +42,7 @@ pub fn fingerprint(manifest: &Value) -> Result<[u8; 32], FingerprintError> {
 /// [`FingerprintError`] for a manifest outside its canonical form.
 pub fn canonical(manifest: &Value) -> Result<String, FingerprintError> {
   let Value::Object(top) = manifest else {
-    return Err(FingerprintError::NotAnObject);
+    return Err(FingerprintError::NotAnObject { at: "$".to_owned() });
   };
   check(manifest)?;
   for (array, key) in SORTED_TOP {
@@ -65,8 +65,11 @@ pub fn canonical(manifest: &Value) -> Result<String, FingerprintError> {
 #[non_exhaustive]
 pub enum FingerprintError {
   /// The manifest is not a JSON object.
-  #[error("a manifest is a JSON object")]
-  NotAnObject,
+  #[error("{at} is not a JSON object; a manifest is one")]
+  NotAnObject {
+    /// Where it is: `$`, the whole manifest.
+    at: String,
+  },
   /// A `null` anywhere: §12.2 omits an absent optional field instead.
   #[error("{at} is null; an absent field is omitted (spec 12.2)")]
   Null {
@@ -101,9 +104,12 @@ impl FingerprintError {
   /// The same problem, one `step` further from the root: [`check`] adds each step on its way back up, so
   /// a manifest in canonical form never pays for a location.
   fn under(mut self, step: &str) -> Self {
-    if let Self::Null { at } | Self::Default { at } | Self::NotADouble { at } | Self::Unsorted { at, .. } = &mut self {
-      at.insert_str(1, step);
-    }
+    let (Self::NotAnObject { at }
+    | Self::Null { at }
+    | Self::Default { at }
+    | Self::NotADouble { at }
+    | Self::Unsorted { at, .. }) = &mut self;
+    at.insert_str(1, step);
     self
   }
 }
@@ -147,15 +153,11 @@ fn sorted(array: Option<&Value>, key: &'static str, at: &str) -> Result<(), Fing
   let Some(Value::Array(entries)) = array else {
     return Ok(());
   };
-  let names: Vec<Option<&str>> = entries.iter().map(|entry| entry.get(key).and_then(Value::as_str)).collect();
-  if names.windows(2).any(|pair| match pair {
-    [Some(left), Some(right)] => left.as_bytes() >= right.as_bytes(),
-    _ => true,
-  }) || names.iter().any(Option::is_none)
-  {
-    return Err(FingerprintError::Unsorted { at: at.to_owned(), key });
+  let names: Option<Vec<&str>> = entries.iter().map(|entry| entry.get(key).and_then(Value::as_str)).collect();
+  match names {
+    Some(names) if names.windows(2).all(|pair| pair[0].as_bytes() < pair[1].as_bytes()) => Ok(()),
+    _ => Err(FingerprintError::Unsorted { at: at.to_owned(), key }),
   }
-  Ok(())
 }
 
 /// The manifest without what §12.5 leaves out of the fingerprint: its top-level `name` and every `docs`

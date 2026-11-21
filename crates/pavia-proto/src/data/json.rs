@@ -214,7 +214,9 @@ impl<T: Text> std::io::Write for TextWriter<'_, T> {
 mod tests {
   use serde::de::{Error as _, Visitor};
 
-  use super::{JsonVisitor, Seed, Value};
+  use std::io::Write as _;
+
+  use super::{Discard, JsonVisitor, Seed, TextWriter, Value};
 
   const SEED: Seed = Seed {
     parent: 0,
@@ -237,5 +239,6 @@ mod tests {
       serde_json::Error::invalid_type(serde::de::Unexpected::Bytes(b"a"), &JsonVisitor(SEED)).to_string()
     );
     assert!(error.to_string().contains("a JSON value"));
+    assert!(TextWriter(&mut Discard).flush().is_ok());
   }
 }

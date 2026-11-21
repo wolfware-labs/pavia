@@ -152,7 +152,7 @@ fn refuses_null_and_default_values() {
       at: "$.services[0]".into()
     })
   );
-  assert_eq!(fingerprint(&json!([])), Err(FingerprintError::NotAnObject));
+  assert_eq!(fingerprint(&json!([])), Err(FingerprintError::NotAnObject { at: "$".into() }));
 }
 
 #[test]
