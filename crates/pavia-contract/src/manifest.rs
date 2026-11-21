@@ -165,6 +165,17 @@ impl Manifest {
     Ok(text)
   }
 
+  /// The contract fingerprint of the manifest (§12.5): the SHA-256 of its canonical form, without its
+  /// `docs` and its `name`. The same contract always gives the same fingerprint.
+  ///
+  /// # Errors
+  ///
+  /// The errors of [`Manifest::validate`].
+  pub fn fingerprint(&self) -> Result<[u8; 32], Vec<ManifestError>> {
+    self.validate()?;
+    Ok(crate::fingerprint::fingerprint(&self.to_json()).expect("the writer's output is in canonical form"))
+  }
+
   fn to_json(&self) -> Value {
     let mut manifest = Map::new();
     manifest.insert("pavia".into(), Value::from(FORMAT_VERSION));

@@ -563,3 +563,23 @@ fn refuses_an_option_of_an_alias_of_unit_and_an_alias_cycle() {
     ]
   );
 }
+
+#[test]
+fn fingerprints_the_example_as_spec_12_5_defines() {
+  let hex: String = spec_example()
+    .fingerprint()
+    .unwrap()
+    .iter()
+    .map(|byte| format!("{byte:02x}"))
+    .collect();
+  assert_eq!(hex, crate::fingerprint::tests::SPEC_EXAMPLE);
+  let renamed = Manifest::new("another-name").docs("Docs.");
+  let plain = Manifest::new("app");
+  assert_eq!(renamed.fingerprint(), plain.fingerprint());
+  assert!(
+    Manifest::new("app")
+      .channel(Channel::new("room:x", string()))
+      .fingerprint()
+      .is_err()
+  );
+}

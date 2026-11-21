@@ -32,6 +32,7 @@
 //! the server's method names follow too.
 #![forbid(unsafe_code)]
 
+pub mod fingerprint;
 pub mod manifest;
 mod mapping;
 pub mod name;
