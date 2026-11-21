@@ -315,7 +315,14 @@ impl<'t> Walk<'t> {
       (Primitive::Unit, Value::Null) | (Primitive::Bool, Value::Bool(_)) | (Primitive::String, Value::Text(_)) => {
         Ok(value.clone())
       }
+      (Primitive::Any, _) if json => {
+        data::encode(value, Codec::Json, &mut Vec::new()).map_err(|error| TypedError::new(Problem::Encode(error)))?;
+        Ok(value.clone())
+      }
       (Primitive::Any, _) => Ok(value.clone()),
+      (Primitive::F32 | Primitive::F64, Value::Float(float)) if json && !float.is_finite() => {
+        Err(TypedError::new(Problem::Encode(data::EncodeError::NotJson)))
+      }
       (Primitive::F32 | Primitive::F64, Value::Float(float)) => {
         if primitive == Primitive::F32 && f64::from(*float as f32) != *float && !float.is_nan() {
           return Err(TypedError::new(Problem::OutOfRange("f32")));

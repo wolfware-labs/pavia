@@ -616,3 +616,23 @@ fn names_a_key_that_appears_twice() {
     ("$".into(), Problem::DuplicateKey("a".into()))
   );
 }
+
+#[test]
+fn names_where_a_value_has_no_json_form() {
+  let holder = Type::Struct(Struct::new(vec![
+    Field::new("payload", primitive(Primitive::Any)),
+    Field::new("ratio", primitive(Primitive::F64)),
+  ]));
+  let value = |payload: Value, ratio: f64| map(&[("payload", payload), ("ratio", Value::Float(ratio))]);
+  let tagged = Value::Array(vec![Value::Tag(2, Box::new(Value::Bytes(vec![1])))]);
+  assert_eq!(
+    problem_of(&holder, &value(tagged.clone(), 1.0), Codec::Json),
+    ("$.payload".into(), Problem::Encode(EncodeError::NotJson))
+  );
+  assert_eq!(
+    problem_of(&holder, &value(Value::Null, f64::INFINITY), Codec::Json),
+    ("$.ratio".into(), Problem::Encode(EncodeError::NotJson))
+  );
+  let limits = DecodeLimits::default();
+  assert!(encode(&holder, &types(), &value(tagged, f64::INFINITY), Codec::Cbor, &limits).is_ok());
+}
