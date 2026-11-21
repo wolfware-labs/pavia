@@ -149,7 +149,8 @@ function describe(field: FieldError): string {
 /**
  * The kinds of {@link EncodeError}.
  *
- * - `out_of_range`: a varint value above 2^62 - 1, or not a non-negative integer.
+ * - `out_of_range`: a varint value above 2^62 - 1, or not a non-negative integer, or a raw
+ *   frame's type or flags outside 0 to 255.
  * - `payload_too_large`: a frame payload no Length varint holds.
  * - `frame_too_large`: a frame above the peer's `max_frame`, or a message above `2 x max_frame`.
  * - `stream_id_out_of_range`: a stream ID that is not a non-negative safe integer.

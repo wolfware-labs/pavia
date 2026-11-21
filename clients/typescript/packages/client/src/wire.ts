@@ -46,12 +46,21 @@ export function payloadLength(frame: RawFrame): number {
   return length;
 }
 
+function checkByte(value: number, field: string): void {
+  if (!Number.isInteger(value) || value < 0 || value > 0xff) {
+    throw new EncodeError("out_of_range", `frame ${field} ${value} is not a byte`);
+  }
+}
+
 /**
  * Appends `frame`: Type, Flags, Length, HeaderLength, header and data.
  *
- * @throws {@link EncodeError} `payload_too_large` when no varint holds the payload length.
+ * @throws {@link EncodeError} `out_of_range` when the type or flags is not an integer from 0 to
+ * 255, and `payload_too_large` when no varint holds the payload length. Nothing is written then.
  */
 export function writeRawFrame(out: ByteWriter, frame: RawFrame): void {
+  checkByte(frame.type, "type");
+  checkByte(frame.flags, "flags");
   const length = payloadLength(frame);
   out.byte(frame.type);
   out.byte(frame.flags);
@@ -64,7 +73,7 @@ export function writeRawFrame(out: ByteWriter, frame: RawFrame): void {
 /**
  * Encodes one frame.
  *
- * @throws {@link EncodeError} `payload_too_large` when no varint holds the payload length.
+ * @throws {@link EncodeError} as {@link writeRawFrame} does.
  */
 export function encodeRawFrame(frame: RawFrame): Uint8Array {
   const out = new ByteWriter(frame.header.length + frame.data.length + 16);

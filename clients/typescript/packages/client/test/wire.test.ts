@@ -159,6 +159,19 @@ describe("WebSocket messages", () => {
     );
   });
 
+  it("refuses a raw type or flags that is not a byte", () => {
+    for (const frame of [
+      { ...raw(0x04, undefined), type: 0x101 },
+      { ...raw(0x04, undefined), type: -1 },
+      { ...raw(0x04, undefined), type: 1.5 },
+      { ...raw(0x04, undefined), flags: 0x100 },
+    ]) {
+      expect(encodeError(() => encodeRawFrame(frame)).kind).toBe("out_of_range");
+      expect(encodeError(() => encodeMessages([{ stream: 0, frame }])).kind).toBe("out_of_range");
+    }
+    expect([...encodeRawFrame({ ...raw(0xff, undefined), flags: 0xff })].slice(0, 2)).toEqual([0xff, 0xff]);
+  });
+
   it("batches frames and splits above 2 x max_frame", () => {
     const small = encodeMessages([
       { stream: 0, frame: raw(0x04, undefined) },
