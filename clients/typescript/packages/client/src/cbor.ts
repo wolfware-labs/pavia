@@ -71,7 +71,7 @@ export function encodeHeaderValue(value: HeaderValue): Uint8Array {
 }
 
 const LONE_SURROGATE = /\p{Surrogate}/u;
-const UTF8 = new TextEncoder();
+const UTF8_ENCODER = new TextEncoder();
 const SCRATCH = new DataView(new ArrayBuffer(8));
 
 function writeValue(out: ByteWriter, value: HeaderValue): void {
@@ -87,7 +87,7 @@ function writeValue(out: ByteWriter, value: HeaderValue): void {
       if (LONE_SURROGATE.test(value.value)) {
         throw new EncodeError("lone_surrogate", "text holds a lone UTF-16 surrogate, which has no UTF-8 form");
       }
-      const utf8 = UTF8.encode(value.value);
+      const utf8 = UTF8_ENCODER.encode(value.value);
       writeHead(out, TEXT, BigInt(utf8.length));
       return out.bytes(utf8);
     }
@@ -221,7 +221,7 @@ function refuse(reason: HeaderErrorReason): ProtocolError {
   return new ProtocolError("malformed_header", { reason });
 }
 
-const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 class Reader {
   pos = 0;
@@ -269,7 +269,7 @@ class Reader {
       case TEXT: {
         const raw = this.take(this.head());
         try {
-          return { kind: "text", value: utf8.decode(raw) };
+          return { kind: "text", value: UTF8_DECODER.decode(raw) };
         } catch {
           throw refuse("malformed");
         }
