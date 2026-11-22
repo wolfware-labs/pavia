@@ -57,7 +57,7 @@ const TYPED_ARRAY_NAME = Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, 
  */
 export function isBytes(value: unknown): value is Uint8Array {
   if (value instanceof Uint8Array) return true;
-  return ArrayBuffer.isView(value) && TYPED_ARRAY_NAME.call(value) === "Uint8Array";
+  return TYPED_ARRAY_NAME.call(value) === "Uint8Array";
 }
 
 /** Orders byte arrays bytewise, a shorter prefix first. */
