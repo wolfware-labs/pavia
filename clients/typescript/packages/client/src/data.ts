@@ -369,13 +369,14 @@ function variantOf(variants: readonly Variant[], value: unknown): [Variant, unkn
   if (typeof kind !== "string") throw encodeFailure("invalid_value", "an enum value takes a string kind");
   const variant = variantNamed(variants, kind);
   if (variant === undefined) throw encodeFailure("unknown_variant", `variant ${kind} is not in the type`);
-  if (variant.type !== undefined && !("value" in object)) {
+  const payload = fieldOf(object, "value");
+  if (variant.type !== undefined && !Object.hasOwn(object, "value")) {
     throw encodeFailure("invalid_value", `variant ${kind} takes a value`);
   }
-  if (variant.type === undefined && object["value"] !== undefined) {
+  if (variant.type === undefined && payload !== undefined) {
     throw encodeFailure("invalid_value", `unit variant ${kind} takes no value`);
   }
-  return [variant, object["value"]];
+  return [variant, payload];
 }
 
 function checkDepth(depth: number, maxDepth: number): number {
@@ -432,7 +433,11 @@ class CborEncoder {
         const keys: { readonly key: string; readonly utf8: Uint8Array }[] = [];
         for (const key of map.keys()) {
           if (typeof key !== "string") throw encodeFailure("invalid_value", "map keys are strings");
-          keys.push({ key, utf8: utf8Of(key) });
+          try {
+            keys.push({ key, utf8: utf8Of(key) });
+          } catch (error) {
+            throw underEncode(error, keySegment(key));
+          }
         }
         keys.sort((a, b) => a.utf8.length - b.utf8.length || compareBytes(a.utf8, b.utf8));
         writeHead(out, MAP, BigInt(keys.length));
@@ -608,8 +613,8 @@ class JsonEncoder {
         out.text += "{";
         keys.forEach((key, i) => {
           if (i > 0) out.text += ",";
-          out.text += `${jsonString(key)}:`;
           try {
+            out.text += `${jsonString(key)}:`;
             this.write(out, shape.inner, map.get(key), inner);
           } catch (error) {
             throw underEncode(error, keySegment(key));

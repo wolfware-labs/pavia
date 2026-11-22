@@ -291,6 +291,20 @@ describe("typed codec", () => {
     }
   });
 
+  it("reads only own payloads of enum values and places a bad map key", () => {
+    const inherited = Object.create({ value: 7 }) as Record<string, unknown>;
+    inherited["kind"] = "Busy";
+    expect(encodeError(() => encodeData({ ref: "Status" }, TYPES, inherited, "cbor")).kind).toBe("invalid_value");
+    const unit = Object.create({ value: 7 }) as Record<string, unknown>;
+    unit["kind"] = "Idle";
+    expect(hex(encodeData({ ref: "Status" }, TYPES, unit, "cbor"))).toBe("64 49 64 6c 65");
+    expect(hex(encodeData({ ref: "Status" }, TYPES, { kind: "Idle", value: undefined }, "cbor"))).toBe("64 49 64 6c 65");
+    for (const codec of ["cbor", "json"] as const) {
+      const bad = encodeError(() => encodeData({ map: "u8" }, TYPES, new Map([["\ud800", 1]]), codec));
+      expect([bad.kind, bad.path]).toEqual(["lone_surrogate", '$["\\ud800"]']);
+    }
+  });
+
   it("refuses undefined for unit and a depth limit that is not a non-negative integer", () => {
     for (const codec of ["cbor", "json"] as const) {
       expect(encodeError(() => encodeData("unit", TYPES, undefined, codec)).kind).toBe("invalid_value");
