@@ -1,4 +1,4 @@
-import { ByteWriter, compareBytes } from "./bytes.js";
+import { ByteWriter, compareBytes, isBytes } from "./bytes.js";
 import {
   ARRAY,
   BYTES,
@@ -491,7 +491,7 @@ class CborEncoder {
         if (typeof value !== "string") throw encodeFailure("invalid_value", "string takes a string");
         return writeText(out, value);
       case "bytes":
-        if (!(value instanceof Uint8Array)) throw encodeFailure("invalid_value", "bytes takes a Uint8Array");
+        if (!isBytes(value)) throw encodeFailure("invalid_value", "bytes takes a Uint8Array");
         writeHead(out, BYTES, BigInt(value.length));
         return out.bytes(value);
       case "timestamp": {
@@ -676,7 +676,7 @@ class JsonEncoder {
         out.text += jsonString(value);
         return;
       case "bytes":
-        if (!(value instanceof Uint8Array)) throw encodeFailure("invalid_value", "bytes takes a Uint8Array");
+        if (!isBytes(value)) throw encodeFailure("invalid_value", "bytes takes a Uint8Array");
         out.text += `"${base64url(value)}"`;
         return;
       case "timestamp":

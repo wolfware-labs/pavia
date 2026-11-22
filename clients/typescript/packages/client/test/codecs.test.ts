@@ -1,3 +1,4 @@
+import { runInNewContext } from "node:vm";
 import { type Diag, hexToBytes, parse } from "@pavia/vectors/diag";
 import { describe, expect, it } from "vitest";
 import {
@@ -7,6 +8,7 @@ import {
   decodeData,
   decodeHeader,
   encodeData,
+  encodeHeader,
   type Field,
   type Types,
 } from "../src/index.js";
@@ -214,6 +216,17 @@ describe("typed codec", () => {
       const missing = dataError(() => decodeData({ list: { ref: "Point" } }, TYPES, input, codec));
       expect([missing.reason, missing.path]).toEqual(["missing_field", "$[0].y"]);
     }
+  });
+
+  it("takes a Uint8Array made in another realm", () => {
+    const foreign = runInNewContext("new Uint8Array([1, 2])") as Uint8Array;
+    expect(foreign instanceof Uint8Array).toBe(false);
+    for (const codec of ["cbor", "json"] as const) {
+      const bytes = encodeData("bytes", TYPES, foreign, codec);
+      expect([...(decodeData("bytes", TYPES, bytes, codec) as Uint8Array)]).toEqual([1, 2]);
+    }
+    expect(hex(encodeData("any", TYPES, { kind: "bytes", value: foreign }, "cbor"))).toBe("42 01 02");
+    expect(hex(encodeHeader([[{ kind: "uint", value: 1n }, { kind: "bytes", value: foreign }]]))).toBe("a1 01 42 01 02");
   });
 
   it("refuses any items with a field missing or of the wrong type", () => {

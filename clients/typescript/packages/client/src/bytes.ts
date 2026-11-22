@@ -44,6 +44,15 @@ export function isByte(value: number): boolean {
   return Number.isInteger(value) && value >= 0 && value <= 0xff;
 }
 
+/**
+ * Whether `value` is a `Uint8Array`, also one made in another realm (an iframe, a `vm` context,
+ * jsdom), where `instanceof` against this realm's constructor is false.
+ */
+export function isBytes(value: unknown): value is Uint8Array {
+  if (value instanceof Uint8Array) return true;
+  return ArrayBuffer.isView(value) && Object.prototype.toString.call(value) === "[object Uint8Array]";
+}
+
 /** Orders byte arrays bytewise, a shorter prefix first. */
 export function compareBytes(a: Uint8Array, b: Uint8Array): number {
   const n = Math.min(a.length, b.length);

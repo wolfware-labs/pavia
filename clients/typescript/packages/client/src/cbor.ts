@@ -1,4 +1,4 @@
-import { ByteWriter, compareBytes, isByte, toHex } from "./bytes.js";
+import { ByteWriter, compareBytes, isByte, isBytes, toHex } from "./bytes.js";
 import { EncodeError, type HeaderErrorReason, ProtocolError } from "./errors.js";
 import { textOfUtf8, utf8Of } from "./utf8.js";
 
@@ -38,7 +38,7 @@ export function hasCborItemShape(value: unknown): value is CborItem {
     case "nint":
       return typeof field === "bigint";
     case "bytes":
-      return field instanceof Uint8Array;
+      return isBytes(field);
     case "text":
       return typeof field === "string";
     case "bool":
