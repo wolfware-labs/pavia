@@ -844,7 +844,7 @@ class CborDecoder {
   private field(field: Field, value: CborItem | undefined): unknown {
     if (value === undefined) {
       if (field.optional === true) return null;
-      throw new DataError("cbor", "missing_field", field.name);
+      throw new DataError("cbor", "missing_field", field.name, `$.${field.name}`);
     }
     try {
       return this.read(field.type, value);
@@ -903,8 +903,14 @@ function isTagged(primitive: Primitive): boolean {
 
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+/**
+ * The longest variant name an open enum's catch-all keeps, in bytes (the name grammar is ASCII), so
+ * a peer cannot put a frame-sized label into application logs or metrics (#70).
+ */
+const MAX_UNKNOWN_NAME = 128;
+
 function unknownVariant(codec: Codec, open: boolean, name: string): void {
-  if (!open || !NAME.test(name)) {
+  if (!open || name.length > MAX_UNKNOWN_NAME || !NAME.test(name)) {
     throw decodeFailure(codec, "unknown_variant", `variant ${JSON.stringify(name)} is not in the type`);
   }
 }
@@ -1033,7 +1039,7 @@ class JsonDecoder {
   private field(field: Field, value: JsonValue | undefined): unknown {
     if (value === undefined) {
       if (field.optional === true) return null;
-      throw new DataError("json", "missing_field", field.name);
+      throw new DataError("json", "missing_field", field.name, `$.${field.name}`);
     }
     try {
       return this.read(field.type, value);

@@ -114,7 +114,7 @@ describe("codec vectors", () => {
   }
 
   it("covers every case", () => {
-    expect(FILES.reduce((n, f) => n + f.cases.length, 0)).toBe(110);
+    expect(FILES.reduce((n, f) => n + f.cases.length, 0)).toBe(113);
   });
 });
 
@@ -197,6 +197,22 @@ describe("typed codec", () => {
     const untagged = hexToBytes("a1 63 5a 65 64 81 01");
     expect(decodeData({ ref: "Status" }, TYPES, untagged, "cbor")).toEqual({ kind: "Unknown", name: "Zed" });
     expect(dataError(() => decodeData({ ref: "Status" }, TYPES, json('"A\\n"'), "json")).message).not.toContain("\n");
+  });
+
+  it("caps an unknown open-enum name at 128 bytes and names a missing field", () => {
+    const long = "a".repeat(128);
+    expect(decodeData({ ref: "Status" }, TYPES, json(JSON.stringify(long)), "json")).toEqual({ kind: "Unknown", name: long });
+    for (const name of [`${long}b`, "a".repeat(65_536)]) {
+      expect(dataError(() => decodeData({ ref: "Status" }, TYPES, json(JSON.stringify(name)), "json")).reason).toBe("unknown_variant");
+      const cbor = encodeData("any", TYPES, { kind: "text", value: name }, "cbor");
+      expect(dataError(() => decodeData({ ref: "Status" }, TYPES, cbor, "cbor")).reason).toBe("unknown_variant");
+    }
+    expect(dataError(() => decodeData({ ref: "Status" }, TYPES, json('{"Zed":1,"Zee":2}'), "json")).reason).toBe("wrong_type");
+    for (const codec of ["cbor", "json"] as const) {
+      const input = codec === "cbor" ? hexToBytes("81 a1 61 78 f9 3c 00") : json('[{"x":1}]');
+      const missing = dataError(() => decodeData({ list: { ref: "Point" } }, TYPES, input, codec));
+      expect([missing.reason, missing.path]).toEqual(["missing_field", "$[0].y"]);
+    }
   });
 
   it("names the place of a type the table does not hold", () => {
