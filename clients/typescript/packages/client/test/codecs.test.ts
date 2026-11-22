@@ -404,6 +404,20 @@ describe("typed codec", () => {
     expect(encodeError(() => encodeData({ option: { ref: "Missing" } }, TYPES, 1, "cbor")).kind).toBe("unknown_type");
   });
 
+  it("calls another tag on a timestamp or uuid undeclared, through options too", () => {
+    for (const [type, input] of [
+      ["timestamp", "c0 61 61"],
+      ["timestamp", "c5 01"],
+      ["uuid", "c1 50 00 11 22 33 44 55 66 77 88 99 aa bb cc dd ee ff"],
+      [{ option: "timestamp" }, "c5 01"],
+      [{ option: { option: "uuid" } }, "c5 01"],
+    ] as const) {
+      expect(dataError(() => decodeData(type, TYPES, hexToBytes(input), "cbor")).reason, input).toBe("undeclared_tag");
+    }
+    expect(dataError(() => decodeData("timestamp", TYPES, hexToBytes("01"), "cbor")).reason).toBe("wrong_type");
+    expect(dataError(() => decodeData("uuid", TYPES, hexToBytes("d8 25 01"), "cbor")).reason).toBe("wrong_type");
+  });
+
   it("decodes tagged types inside an option", () => {
     const extra = { kind: "tag", tag: 5n, item: { kind: "uint", value: 1n } };
     const event = { at: new Date(1000), id: UUID, extra };

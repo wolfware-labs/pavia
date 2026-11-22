@@ -881,7 +881,8 @@ class CborDecoder {
         if (item.kind !== "bytes") throw decodeFailure("cbor", "wrong_type", "bytes takes a byte string");
         return item.value;
       case "timestamp": {
-        if (item.kind !== "tag" || item.tag !== TIMESTAMP_TAG) {
+        refuseOtherTag(item, TIMESTAMP_TAG);
+        if (item.kind !== "tag") {
           throw decodeFailure("cbor", "wrong_type", "timestamp takes tag 1");
         }
         const millis = millisOfEpochSeconds(item.item);
@@ -889,7 +890,8 @@ class CborDecoder {
         return new Date(millis);
       }
       case "uuid": {
-        if (item.kind !== "tag" || item.tag !== UUID_TAG || item.item.kind !== "bytes") {
+        refuseOtherTag(item, UUID_TAG);
+        if (item.kind !== "tag" || item.item.kind !== "bytes") {
           throw decodeFailure("cbor", "wrong_type", "uuid takes tag 37 over a byte string");
         }
         if (item.item.value.length !== 16) throw decodeFailure("cbor", "length", "uuid takes 16 bytes");
@@ -902,6 +904,10 @@ class CborDecoder {
       }
     }
   }
+}
+
+function refuseOtherTag(item: CborItem, declared: bigint): void {
+  if (item.kind === "tag" && item.tag !== declared) throw decodeFailure("cbor", "undeclared_tag", `tag ${item.tag}`);
 }
 
 function isTagged(primitive: Primitive): boolean {
