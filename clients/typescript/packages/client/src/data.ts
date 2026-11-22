@@ -184,7 +184,8 @@ function resolve(type: ContractType, types: Types, followed: Set<string> = new S
     if ("tuple" in current) return { kind: "tuple", items: current.tuple };
     if ("struct" in current) return { kind: "struct", fields: current.struct.fields };
     const named: NamedType | undefined = Object.hasOwn(types, current.ref) ? types[current.ref] : undefined;
-    if (named === undefined || followed.has(current.ref)) throw new UnknownType(current.ref);
+    if (named === undefined) throw new UnknownType(current.ref, "is not in the types table");
+    if (followed.has(current.ref)) throw new UnknownType(current.ref, LOOP);
     followed.add(current.ref);
     if ("struct" in named) return { kind: "struct", fields: named.struct.fields };
     if ("enum" in named) return { kind: "enum", variants: named.enum.variants, open: named.enum.open === true };
@@ -192,17 +193,29 @@ function resolve(type: ContractType, types: Types, followed: Set<string> = new S
   }
 }
 
+const LOOP = "loops back to itself through aliases and options";
+
 /**
- * The error `type` raises when it reaches no type, such as an alias that loops back through
- * options; only a value other than null meets it, as in `pavia-codec`.
+ * The error `type` raises when it reaches no type: a name the table lacks, or an alias that loops
+ * back through any number of options and aliases without a value in between. It follows them with
+ * the one set of names `followed`, as `pavia-codec`'s `Walk::shape` does, and only a value other
+ * than null meets the error.
  */
 function unresolvedIn(type: ContractType, types: Types, followed: Set<string>): UnknownType | undefined {
-  try {
-    resolve(type, types, followed);
-    return undefined;
-  } catch (error) {
-    if (error instanceof UnknownType) return error;
-    throw error;
+  let current: ContractType = type;
+  for (;;) {
+    if (typeof current === "string") return undefined;
+    if ("option" in current) {
+      current = current.option;
+      continue;
+    }
+    if (!("ref" in current)) return undefined;
+    const named: NamedType | undefined = Object.hasOwn(types, current.ref) ? types[current.ref] : undefined;
+    if (named === undefined) return new UnknownType(current.ref, "is not in the types table");
+    if (followed.has(current.ref)) return new UnknownType(current.ref, LOOP);
+    followed.add(current.ref);
+    if (!("alias" in named)) return undefined;
+    current = named.alias;
   }
 }
 
@@ -213,8 +226,11 @@ function someOf(shape: Extract<Shape, { kind: "option" }>): ContractType {
 }
 
 class UnknownType extends Error {
-  constructor(readonly ref: string) {
-    super(`type ${ref} is not in the types table`);
+  constructor(
+    readonly ref: string,
+    why: string,
+  ) {
+    super(`type ${ref} ${why}`);
   }
 }
 
@@ -470,7 +486,7 @@ class CborEncoder {
         return out.bytes(bytes);
       }
       case "any":
-        checkItemDepth(itemOf(value), depth, this.maxDepth);
+        checkItemDepth(value, depth, this.maxDepth);
         return writeCborItem(out, value as CborItem);
       default:
         return writeCborItem(out, integerItem(integerOf(primitive, value)));
@@ -489,7 +505,8 @@ function itemOf(value: unknown): CborItem {
   return value as CborItem;
 }
 
-function checkItemDepth(item: CborItem, depth: number, maxDepth: number, run = 0): void {
+function checkItemDepth(value: unknown, depth: number, maxDepth: number, run = 0): void {
+  const item = itemOf(value);
   switch (item.kind) {
     case "array": {
       const inner = checkDepth(depth, maxDepth);
@@ -645,7 +662,7 @@ class JsonEncoder {
         out.text += `"${value as string}"`;
         return;
       case "any":
-        writeJsonItem(out, value as CborItem, depth, this.maxDepth);
+        writeJsonItem(out, value, depth, this.maxDepth);
         return;
       default:
         out.text += String(integerOf(primitive, value));
@@ -654,7 +671,8 @@ class JsonEncoder {
   }
 }
 
-function writeJsonItem(out: JsonText, item: CborItem, depth: number, maxDepth: number): void {
+function writeJsonItem(out: JsonText, value: unknown, depth: number, maxDepth: number): void {
+  const item = itemOf(value);
   switch (item.kind) {
     case "null":
       out.text += "null";

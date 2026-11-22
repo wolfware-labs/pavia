@@ -373,7 +373,7 @@ class Reader {
 
   private chunk(major: number): Uint8Array {
     const head = this.bytes[this.pos] as number;
-    if (head >> 5 !== major || (head & 0x1f) === 31) throw this.fail("malformed");
+    if (head >> 5 !== major || (head & 0x1f) >= 28) throw this.fail("malformed");
     return this.take(this.head());
   }
 

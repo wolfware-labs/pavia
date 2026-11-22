@@ -127,6 +127,9 @@ const TYPES: Types = {
   Options: { struct: { fields: [{ name: "lang", type: { option: "string" }, optional: true }] } },
   Loop: { alias: { ref: "Loop" } },
   Nested: { alias: { option: { ref: "Nested" } } },
+  PingA: { alias: { option: { ref: "PingB" } } },
+  PingB: { alias: { option: { ref: "PingA" } } },
+  Twice: { alias: { option: { option: { ref: "Twice" } } } },
   Event: {
     struct: {
       fields: [
@@ -319,9 +322,15 @@ describe("typed codec", () => {
     expect(encodeError(() => encodeData({ ref: "Loop" }, TYPES, 1, "cbor")).kind).toBe("unknown_type");
     for (const codec of ["cbor", "json"] as const) {
       const one = hexToBytes(codec === "cbor" ? "01" : "31");
-      expect(encodeError(() => encodeData({ ref: "Nested" }, TYPES, 5, codec)).kind).toBe("unknown_type");
-      expect(dataError(() => decodeData({ ref: "Nested" }, TYPES, one, codec)).reason).toBe("unknown_type");
+      for (const ref of ["Nested", "PingA", "PingB", "Twice"]) {
+        expect(encodeError(() => encodeData({ ref }, TYPES, 5, codec)).kind, ref).toBe("unknown_type");
+        expect(dataError(() => decodeData({ ref }, TYPES, one, codec)).reason, ref).toBe("unknown_type");
+        const list = hexToBytes(codec === "cbor" ? "81 01" : "5b 31 5d");
+        expect(dataError(() => decodeData({ list: { ref } }, TYPES, list, codec)).reason).toBe("unknown_type");
+        both({ ref }, null);
+      }
     }
+    expect(encodeError(() => encodeData({ ref: "Twice" }, TYPES, 5, "cbor")).message).toContain("loops back to itself");
   });
 
   it("reads null through an option whose type never reaches one", () => {
@@ -351,6 +360,7 @@ describe("typed codec", () => {
     expect(cbor({ ref: "Point" }, "bf 61 79 f9 3c 00 61 78 f9 3c 00 ff")).toEqual({ x: 1, y: 1 });
     expect(cbor("any", "9f ff")).toEqual({ kind: "array", items: [] });
     const broken = ["9f 01", "7f 41 01 ff", "5f 61 61 ff", "7f 7f ff ff", "7f 61 c3 61 a9 ff", "bf 61 61 ff", "5f"];
+    broken.push("5f 5d ff", "7f 7c ff", "5f 5c 00 ff", "7f 7e ff");
     for (const input of broken) {
       expect(dataError(() => cbor("any", input)).reason, input).toBe("malformed");
     }
@@ -381,8 +391,9 @@ describe("typed codec", () => {
 
   it("refuses an any that is not an item and a unit variant with a value", () => {
     for (const codec of ["cbor", "json"] as const) {
-      const notAnItem = encodeError(() => encodeData("any", TYPES, 5, codec));
-      expect(notAnItem.kind).toBe(codec === "cbor" ? "invalid_value" : "not_json");
+      for (const value of [5, undefined, null, { kind: "array", items: [undefined] }, { kind: "map", entries: [[{ kind: "text", value: "a" }, undefined]] }]) {
+        expect(encodeError(() => encodeData("any", TYPES, value, codec)).kind).toBe("invalid_value");
+      }
       const unit = encodeError(() => encodeData({ ref: "Closed" }, TYPES, { kind: "A", value: 3 }, codec));
       expect(unit.kind).toBe("invalid_value");
     }
