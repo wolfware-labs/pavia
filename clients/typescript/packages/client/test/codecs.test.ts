@@ -220,9 +220,10 @@ describe("typed codec", () => {
     for (const codec of ["cbor", "json"] as const) {
       expect(encodeError(() => encodeData("unit", TYPES, undefined, codec)).kind).toBe("invalid_value");
       expect(decodeData("unit", TYPES, encodeData("unit", TYPES, null, codec), codec)).toBeNull();
+      const one = hexToBytes(codec === "cbor" ? "01" : "31");
       for (const maxDepth of [Number.NaN, Number.POSITIVE_INFINITY, -1, 1.5]) {
         expect(() => encodeData("u8", TYPES, 1, codec, { maxDepth })).toThrow(RangeError);
-        expect(() => decodeData("u8", TYPES, hexToBytes(codec === "cbor" ? "01" : "31"), codec, { maxDepth })).toThrow(RangeError);
+        expect(() => decodeData("u8", TYPES, one, codec, { maxDepth })).toThrow(RangeError);
       }
     }
   });

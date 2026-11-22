@@ -254,6 +254,16 @@ describe("header sections", () => {
     expect(encodeError(() => encodeHeader([[u(1), { kind: "simple", value: 256 }]])).kind).toBe("out_of_range");
   });
 
+  it("refuses header limits that bound nothing", () => {
+    for (const limits of [
+      { maxSize: Number.NaN, maxDepth: 16 },
+      { maxSize: 16_384, maxDepth: Number.POSITIVE_INFINITY },
+      { maxSize: -1, maxDepth: 16 },
+    ]) {
+      expect(() => decodeHeader(hexToBytes("a1 01 00"), limits)).toThrow(RangeError);
+    }
+  });
+
   it("treats non-integer duplicate keys by their encoded bytes", () => {
     expect(protocolError(() => decodeHeader(hexToBytes("a2 f5 00 f5 01"))).reason).toBe("duplicate_key");
     expect(decodeHeader(hexToBytes("a2 f9 3c 00 00 fa 3f 80 00 00 01"))).toHaveLength(2);

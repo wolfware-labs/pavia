@@ -1,6 +1,7 @@
 import { ByteWriter, compareBytes } from "./bytes.js";
 import {
   ARRAY,
+  checkLimit,
   BYTES,
   type CborItem,
   decodeCborItem,
@@ -82,7 +83,7 @@ export function encodeData(
   codec: Codec,
   limits: DataLimits = DEFAULT_DATA_LIMITS,
 ): Uint8Array {
-  checkLimits(limits);
+  checkLimit("maxDepth", limits.maxDepth);
   try {
     if (codec === "cbor") {
       const out = new ByteWriter();
@@ -115,7 +116,7 @@ export function decodeData(
   codec: Codec,
   limits: DataLimits = DEFAULT_DATA_LIMITS,
 ): unknown {
-  checkLimits(limits);
+  checkLimit("maxDepth", limits.maxDepth);
   try {
     if (codec === "cbor") {
       const item = decodeCborItem(bytes, limits.maxDepth, cborRefusal);
@@ -126,12 +127,6 @@ export function decodeData(
   } catch (error) {
     if (error instanceof UnknownType) throw new DataError(codec, "unknown_type", error.message, error.path);
     throw error;
-  }
-}
-
-function checkLimits(limits: DataLimits): void {
-  if (!Number.isSafeInteger(limits.maxDepth) || limits.maxDepth < 0) {
-    throw new RangeError(`maxDepth ${limits.maxDepth} is not a non-negative integer`);
   }
 }
 

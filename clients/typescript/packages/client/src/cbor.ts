@@ -269,8 +269,11 @@ export function toHalf(x: number): number {
  * returns `undefined`. Unknown keys are kept; the typed frame layer ignores them.
  *
  * @throws {@link ProtocolError} `malformed_header`, with the rule that failed as its `reason`.
+ * @throws RangeError when `limits.maxSize` or `limits.maxDepth` is not a non-negative integer.
  */
 export function decodeHeader(bytes: Uint8Array, limits: HeaderLimits = DEFAULT_HEADER_LIMITS): CborMap | undefined {
+  checkLimit("maxSize", limits.maxSize);
+  checkLimit("maxDepth", limits.maxDepth);
   if (bytes.length === 0) return undefined;
   if (bytes.length > limits.maxSize) throw refuse("too_large");
   const first = bytes[0] as number;
@@ -302,6 +305,16 @@ export function decodeCborItem(
   const item = reader.value(0);
   if (reader.pos < bytes.length) throw fail("trailing_bytes");
   return item;
+}
+
+/**
+ * Refuses a limit that is not a non-negative integer: with NaN or Infinity every comparison against
+ * it is false, so nothing would be bounded.
+ *
+ * @throws RangeError.
+ */
+export function checkLimit(name: string, value: number): void {
+  if (!Number.isSafeInteger(value) || value < 0) throw new RangeError(`${name} ${value} is not a non-negative integer`);
 }
 
 function refuse(reason: HeaderErrorReason): ProtocolError {
