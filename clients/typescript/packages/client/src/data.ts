@@ -183,17 +183,25 @@ function resolve(type: ContractType, types: Types, followed: Set<string> = new S
     if ("map" in current) return { kind: "map", inner: current.map };
     if ("tuple" in current) return { kind: "tuple", items: current.tuple };
     if ("struct" in current) return { kind: "struct", fields: current.struct.fields };
-    const named: NamedType | undefined = Object.hasOwn(types, current.ref) ? types[current.ref] : undefined;
-    if (named === undefined) throw new UnknownType(current.ref, "is not in the types table");
-    if (followed.has(current.ref)) throw new UnknownType(current.ref, LOOP);
-    followed.add(current.ref);
+    const named = follow(current.ref, types, followed);
+    if (named instanceof UnknownType) throw named;
     if ("struct" in named) return { kind: "struct", fields: named.struct.fields };
     if ("enum" in named) return { kind: "enum", variants: named.enum.variants, open: named.enum.open === true };
     current = named.alias;
   }
 }
 
-const LOOP = "loops back to itself through aliases and options";
+/**
+ * The type `ref` names, adding it to `followed`, or the error for a name the table lacks or one
+ * already followed on the way, which is a loop that reads nothing.
+ */
+function follow(ref: string, types: Types, followed: Set<string>): NamedType | UnknownType {
+  const named: NamedType | undefined = Object.hasOwn(types, ref) ? types[ref] : undefined;
+  if (named === undefined) return new UnknownType(ref, "is not in the types table");
+  if (followed.has(ref)) return new UnknownType(ref, "loops back to itself through aliases and options");
+  followed.add(ref);
+  return named;
+}
 
 /**
  * The error `type` raises when it reaches no type: a name the table lacks, or an alias that loops
@@ -210,10 +218,8 @@ function unresolvedIn(type: ContractType, types: Types, followed: Set<string>): 
       continue;
     }
     if (!("ref" in current)) return undefined;
-    const named: NamedType | undefined = Object.hasOwn(types, current.ref) ? types[current.ref] : undefined;
-    if (named === undefined) return new UnknownType(current.ref, "is not in the types table");
-    if (followed.has(current.ref)) return new UnknownType(current.ref, LOOP);
-    followed.add(current.ref);
+    const named = follow(current.ref, types, followed);
+    if (named instanceof UnknownType) return named;
     if (!("alias" in named)) return undefined;
     current = named.alias;
   }
@@ -704,7 +710,8 @@ function writeJsonItem(out: JsonText, value: unknown, depth: number, maxDepth: n
       const inner = checkDepth(depth, maxDepth);
       const keys = new Set<string>();
       out.text += "{";
-      item.entries.forEach(([key, value], i) => {
+      item.entries.forEach(([entryKey, value], i) => {
+        const key = itemOf(entryKey);
         if (key.kind !== "text") throw encodeFailure("not_json", "a JSON object key is text");
         if (keys.has(key.value)) throw encodeFailure("not_json", `duplicate key ${key.value}`);
         keys.add(key.value);

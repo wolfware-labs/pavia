@@ -391,7 +391,15 @@ describe("typed codec", () => {
 
   it("refuses an any that is not an item and a unit variant with a value", () => {
     for (const codec of ["cbor", "json"] as const) {
-      for (const value of [5, undefined, null, { kind: "array", items: [undefined] }, { kind: "map", entries: [[{ kind: "text", value: "a" }, undefined]] }]) {
+      const a = { kind: "text", value: "a" };
+      for (const value of [
+        5,
+        undefined,
+        null,
+        { kind: "array", items: [undefined] },
+        { kind: "map", entries: [[a, undefined]] },
+        { kind: "map", entries: [[undefined, a]] },
+      ]) {
         expect(encodeError(() => encodeData("any", TYPES, value, codec)).kind).toBe("invalid_value");
       }
       const unit = encodeError(() => encodeData({ ref: "Closed" }, TYPES, { kind: "A", value: 3 }, codec));
