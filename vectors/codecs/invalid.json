@@ -683,6 +683,20 @@
         "reason": "too deep"
       },
       "json": "[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]"
+    },
+    {
+      "id": "u8-negative-zero-json",
+      "spec": [
+        "12.3"
+      ],
+      "note": "-0 is a float in json, not an integer.",
+      "type": "u8",
+      "direction": "decode",
+      "error": {
+        "codec": "json",
+        "reason": "float"
+      },
+      "json": "-0"
     }
   ]
 }

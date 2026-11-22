@@ -110,6 +110,38 @@ function write(w: Writer, d: Diag): void {
   }
 }
 
+function atBreak(b: Uint8Array, r: { pos: number }): boolean {
+  if (b[r.pos] !== 0xff) return false;
+  r.pos++;
+  return true;
+}
+
+function readIndefinite(b: Uint8Array, r: { pos: number }, major: number): Diag {
+  if (major === 4) {
+    const items: Diag[] = [];
+    while (!atBreak(b, r)) items.push(read(b, r));
+    return { kind: "array", items };
+  }
+  if (major === 5) {
+    const entries: [Diag, Diag][] = [];
+    while (!atBreak(b, r)) entries.push([read(b, r), read(b, r)]);
+    return { kind: "map", open: false, entries };
+  }
+  const chunks: Uint8Array[] = [];
+  while (!atBreak(b, r)) {
+    if ((b[r.pos] ?? 0) >> 5 !== major) throw new Error("chunk of another major type");
+    const chunk = read(b, r) as { value: Uint8Array | string };
+    chunks.push(typeof chunk.value === "string" ? new TextEncoder().encode(chunk.value) : chunk.value);
+  }
+  const all = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+  let at = 0;
+  for (const c of chunks) {
+    all.set(c, at);
+    at += c.length;
+  }
+  return major === 2 ? { kind: "bytes", value: all } : { kind: "text", value: new TextDecoder("utf-8", { fatal: true }).decode(all) };
+}
+
 /** Decodes one CBOR item that must span all of `bytes`. */
 export function decode(bytes: Uint8Array): Diag {
   const r = { pos: 0 };
@@ -132,6 +164,7 @@ function read(b: Uint8Array, r: { pos: number }): Diag {
     if (info === 27) return { kind: "float", value: view.getFloat64((r.pos += 8) - 8) };
     throw new Error(`unsupported simple value ${info}`);
   }
+  if (info === 31 && major >= 2 && major <= 5) return readIndefinite(b, r, major);
   let n: bigint;
   if (info < 24) n = BigInt(info);
   else if (info <= 27) {

@@ -42,6 +42,25 @@
           }
         ]
       }
+    },
+    "Event": {
+      "struct": {
+        "fields": [
+          {
+            "name": "at",
+            "type": {
+              "option": "timestamp"
+            },
+            "optional": true
+          },
+          {
+            "name": "id",
+            "type": {
+              "option": "uuid"
+            }
+          }
+        ]
+      }
     }
   },
   "cases": [
@@ -676,6 +695,85 @@
       "direction": "decode",
       "value": "[[[[[[[[[[[[[[[[1(0)]]]]]]]]]]]]]]]]",
       "cbor": "81 81 81 81 81 81 81 81 81 81 81 81 81 81 81 81 c1 00"
+    },
+    {
+      "id": "option-timestamp-field",
+      "spec": [
+        "12.1",
+        "12.3"
+      ],
+      "note": "An optional timestamp field and a uuid option: the tag sits inside the option.",
+      "type": {
+        "ref": "Event"
+      },
+      "direction": "both",
+      "value": "{\"at\": 1(1), \"id\": null}",
+      "cbor": "a2 62 61 74 c1 01 62 69 64 f6",
+      "json": "{\"at\":\"1970-01-01T00:00:01.000Z\",\"id\":null}"
+    },
+    {
+      "id": "option-uuid",
+      "spec": [
+        "12.3"
+      ],
+      "note": "A uuid inside an option keeps its tag 37.",
+      "type": {
+        "option": "uuid"
+      },
+      "direction": "both",
+      "value": "37(h'00112233445566778899aabbccddeeff')",
+      "cbor": "d8 25 50 00 11 22 33 44 55 66 77 88 99 aa bb cc dd ee ff",
+      "json": "\"00112233-4455-6677-8899-aabbccddeeff\""
+    },
+    {
+      "id": "list-indefinite-length",
+      "spec": [
+        "12.3"
+      ],
+      "note": "An indefinite-length array is a valid encoding: decoders accept it.",
+      "type": {
+        "list": "u8"
+      },
+      "direction": "decode",
+      "value": "[1, 2]",
+      "cbor": "9f 01 02 ff"
+    },
+    {
+      "id": "string-indefinite-length",
+      "spec": [
+        "12.3"
+      ],
+      "note": "An indefinite-length text string in chunks: decoders accept it.",
+      "type": "string",
+      "direction": "decode",
+      "value": "\"abc\"",
+      "cbor": "7f 61 61 62 62 63 ff"
+    },
+    {
+      "id": "struct-indefinite-length",
+      "spec": [
+        "12.3"
+      ],
+      "note": "A struct as an indefinite-length map: decoders accept it.",
+      "type": {
+        "ref": "Point"
+      },
+      "direction": "decode",
+      "value": "{\"y\": 1.0, \"x\": 1.0}",
+      "cbor": "bf 61 79 f9 3c 00 61 78 f9 3c 00 ff"
+    },
+    {
+      "id": "f32-from-double",
+      "spec": [
+        "12.3"
+      ],
+      "note": "An f32 given a double decodes to the nearest single-precision value.",
+      "type": "f32",
+      "direction": "decode",
+      "normalizes": true,
+      "value": "0.10000000149011612",
+      "cbor": "fb 3f b9 99 99 99 99 99 9a",
+      "json": "0.1"
     }
   ]
 }

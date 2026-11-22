@@ -135,6 +135,8 @@ function writeValue(out: ByteWriter, value: CborItem, data: boolean): void {
       return writeHead(out, SIMPLE, BigInt(value.value));
     case "float":
       return writeFloat(out, value.value);
+    default:
+      throw new EncodeError("invalid_value", `${String((value as { kind?: unknown }).kind)} is not a CBOR item kind`);
   }
 }
 
@@ -320,15 +322,62 @@ class Reader {
 
   map(depth: number): CborMap {
     const length = this.head();
-    const seen = new KeySet();
+    const seen = this.tags ? undefined : new KeySet();
     const entries: (readonly [CborItem, CborItem])[] = [];
     for (let i = 0n; i < length; i++) {
       const start = this.pos;
       const key = this.value(depth);
-      if (!seen.add(key, this.bytes, start, this.pos)) throw this.fail("duplicate_key");
+      if (seen !== undefined && !seen.add(key, this.bytes, start, this.pos)) throw this.fail("duplicate_key");
       entries.push([key, this.value(depth)]);
     }
     return entries;
+  }
+
+  private indefinite(major: number, depth: number): CborItem {
+    this.pos++;
+    switch (major) {
+      case BYTES:
+      case TEXT: {
+        const chunks: Uint8Array[] = [];
+        let text = "";
+        while (!this.atBreak()) {
+          const head = this.bytes[this.pos] as number;
+          if (head >> 5 !== major || (head & 0x1f) === 31) throw this.fail("malformed");
+          const chunk = this.take(this.head());
+          if (major === BYTES) {
+            chunks.push(chunk);
+            continue;
+          }
+          const part = textOfUtf8(chunk);
+          if (part === undefined) throw this.fail("malformed");
+          text += part;
+        }
+        return major === BYTES ? { kind: "bytes", value: concatBytes(chunks) } : { kind: "text", value: text };
+      }
+      case ARRAY: {
+        const inner = this.deeper(depth);
+        const items: CborItem[] = [];
+        while (!this.atBreak()) items.push(this.value(inner));
+        return { kind: "array", items };
+      }
+      default: {
+        const inner = this.deeper(depth);
+        const entries: (readonly [CborItem, CborItem])[] = [];
+        while (!this.atBreak()) {
+          const key = this.value(inner);
+          entries.push([key, this.value(inner)]);
+        }
+        return { kind: "map", entries };
+      }
+    }
+  }
+
+  private atBreak(): boolean {
+    const next = this.bytes[this.pos];
+    if (next === undefined) throw this.fail("malformed");
+    if (next !== 0xff) return false;
+    this.pos++;
+    return true;
   }
 
   value(depth: number, run = 0): CborItem {
@@ -336,7 +385,10 @@ class Reader {
     if (first === undefined) throw this.fail("malformed");
     const major = first >> 5;
     const info = first & 0x1f;
-    if (info === 31 && major >= BYTES && major <= MAP) throw this.fail("indefinite_length");
+    if (info === 31 && major >= BYTES && major <= MAP) {
+      if (!this.tags) throw this.fail("indefinite_length");
+      return this.indefinite(major, depth);
+    }
     if (info >= 28) throw this.fail("malformed");
     if (major === TAG) {
       if (!this.tags) throw this.fail("tag");
@@ -349,8 +401,10 @@ class Reader {
         return { kind: "uint", value: this.head() };
       case NEGATIVE:
         return { kind: "nint", value: this.head() };
-      case BYTES:
-        return { kind: "bytes", value: this.take(this.head()) };
+      case BYTES: {
+        const value = this.take(this.head());
+        return { kind: "bytes", value: this.tags ? value.slice() : value };
+      }
       case TEXT: {
         const value = textOfUtf8(this.take(this.head()));
         if (value === undefined) throw this.fail("malformed");
@@ -460,4 +514,14 @@ function fromHalf(bits: number): number {
   if (exponent === 0) return sign * fraction * 2 ** -24;
   if (exponent === 0x1f) return fraction === 0 ? sign * Infinity : NaN;
   return sign * (1024 + fraction) * 2 ** (exponent - 25);
+}
+
+function concatBytes(chunks: readonly Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(chunks.reduce((n, chunk) => n + chunk.length, 0));
+  let at = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, at);
+    at += chunk.length;
+  }
+  return out;
 }

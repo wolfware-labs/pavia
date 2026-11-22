@@ -173,17 +173,21 @@ function shapeOf(type: ContractType, types: Types): Shape {
   return shape;
 }
 
-function resolve(type: ContractType, types: Types): Shape {
+function resolve(type: ContractType, types: Types, followed: Set<string> = new Set()): Shape {
   let current: ContractType = type;
-  for (let hops = 0; ; hops++) {
+  for (;;) {
     if (typeof current === "string") return { kind: "primitive", primitive: current };
-    if ("option" in current) return { kind: "option", inner: current.option };
+    if ("option" in current) {
+      resolve(current.option, types, followed);
+      return { kind: "option", inner: current.option };
+    }
     if ("list" in current) return { kind: "list", inner: current.list };
     if ("map" in current) return { kind: "map", inner: current.map };
     if ("tuple" in current) return { kind: "tuple", items: current.tuple };
     if ("struct" in current) return { kind: "struct", fields: current.struct.fields };
     const named: NamedType | undefined = Object.hasOwn(types, current.ref) ? types[current.ref] : undefined;
-    if (named === undefined || hops > 64) throw new UnknownType(current.ref);
+    if (named === undefined || followed.has(current.ref)) throw new UnknownType(current.ref);
+    followed.add(current.ref);
     if ("struct" in named) return { kind: "struct", fields: named.struct.fields };
     if ("enum" in named) return { kind: "enum", variants: named.enum.variants, open: named.enum.open === true };
     current = named.alias;
@@ -311,6 +315,9 @@ function variantOf(variants: readonly Variant[], value: unknown): [Variant, unkn
   if (variant.type !== undefined && !("value" in object)) {
     throw encodeFailure("invalid_value", `variant ${kind} takes a value`);
   }
+  if (variant.type === undefined && object["value"] !== undefined) {
+    throw encodeFailure("invalid_value", `unit variant ${kind} takes no value`);
+  }
   return [variant, object["value"]];
 }
 
@@ -431,22 +438,37 @@ class CborEncoder {
         if (!(value instanceof Uint8Array)) throw encodeFailure("invalid_value", "bytes takes a Uint8Array");
         writeHead(out, BYTES, BigInt(value.length));
         return out.bytes(value);
-      case "timestamp":
+      case "timestamp": {
+        const millis = millisOf(value);
+        checkTagRun(1, this.maxDepth);
         writeHead(out, TAG, TIMESTAMP_TAG);
-        return writeCborItem(out, epochSeconds(millisOf(value)));
+        return writeCborItem(out, epochSeconds(millis));
+      }
       case "uuid": {
         const bytes = uuidBytesOf(value);
+        checkTagRun(1, this.maxDepth);
         writeHead(out, TAG, UUID_TAG);
         writeHead(out, BYTES, 16n);
         return out.bytes(bytes);
       }
       case "any":
-        checkItemDepth(value as CborItem, depth, this.maxDepth);
+        checkItemDepth(itemOf(value), depth, this.maxDepth);
         return writeCborItem(out, value as CborItem);
       default:
         return writeCborItem(out, integerItem(integerOf(primitive, value)));
     }
   }
+}
+
+function checkTagRun(run: number, maxDepth: number): void {
+  if (run > maxDepth) throw encodeFailure("too_deep", `a run of ${run} tags is more than ${maxDepth}`);
+}
+
+function itemOf(value: unknown): CborItem {
+  if (typeof value !== "object" || value === null || typeof (value as { kind?: unknown }).kind !== "string") {
+    throw encodeFailure("invalid_value", "any takes a CborItem");
+  }
+  return value as CborItem;
 }
 
 function checkItemDepth(item: CborItem, depth: number, maxDepth: number, run = 0): void {
@@ -465,7 +487,7 @@ function checkItemDepth(item: CborItem, depth: number, maxDepth: number, run = 0
       return;
     }
     case "tag":
-      if (run === maxDepth) throw encodeFailure("too_deep", `a run of more than ${maxDepth} tags`);
+      checkTagRun(run + 1, maxDepth);
       return checkItemDepth(item.item, depth, maxDepth, run + 1);
     default:
       return;
@@ -673,10 +695,10 @@ function checkedInteger(codec: Codec, primitive: Primitive, n: bigint): number |
 }
 
 function checkedFloat(codec: Codec, primitive: Primitive, x: number): number {
-  if (primitive === "f32" && !hasF32Form(x)) {
-    throw decodeFailure(codec, "out_of_range", `${x} has no exact f32 form`);
-  }
-  return x;
+  if (primitive !== "f32") return x;
+  const single = Math.fround(x);
+  if (Number.isFinite(x) && !Number.isFinite(single)) throw decodeFailure(codec, "out_of_range", `${x} is past f32`);
+  return single;
 }
 
 class CborDecoder {
@@ -684,7 +706,7 @@ class CborDecoder {
 
   read(type: ContractType, item: CborItem): unknown {
     const shape = shapeOf(type, this.types);
-    if (item.kind === "tag" && !(shape.kind === "primitive" && isTagged(shape.primitive))) {
+    if (item.kind === "tag" && shape.kind !== "option" && !(shape.kind === "primitive" && isTagged(shape.primitive))) {
       throw decodeFailure("cbor", "undeclared_tag", `tag ${item.tag}`);
     }
     switch (shape.kind) {
@@ -718,6 +740,7 @@ class CborDecoder {
         const map = new Map<string, unknown>();
         for (const [key, value] of item.entries) {
           if (key.kind !== "text") throw decodeFailure("cbor", "wrong_type", "map keys are text");
+          if (map.has(key.value)) throw decodeFailure("cbor", "duplicate_key", key.value);
           try {
             map.set(key.value, this.read(shape.inner, value));
           } catch (error) {
@@ -728,14 +751,14 @@ class CborDecoder {
       }
       case "struct": {
         if (item.kind !== "map") throw decodeFailure("cbor", "wrong_type", "a struct takes a map");
-        for (const [key] of item.entries) {
+        const given = new Map<string, CborItem>();
+        for (const [key, value] of item.entries) {
           if (key.kind !== "text") throw decodeFailure("cbor", "wrong_type", "struct keys are text");
+          if (given.has(key.value)) throw decodeFailure("cbor", "duplicate_key", key.value);
+          given.set(key.value, value);
         }
         const result: Record<string, unknown> = {};
-        for (const field of shape.fields) {
-          const entry = item.entries.find(([key]) => (key as { value: string }).value === field.name);
-          defineField(result, field.name, this.field(field, entry?.[1]));
-        }
+        for (const field of shape.fields) defineField(result, field.name, this.field(field, given.get(field.name)));
         return result;
       }
       case "enum": {
@@ -787,7 +810,7 @@ class CborDecoder {
         return item.value;
       case "bytes":
         if (item.kind !== "bytes") throw decodeFailure("cbor", "wrong_type", "bytes takes a byte string");
-        return item.value.slice();
+        return item.value;
       case "timestamp": {
         if (item.kind !== "tag" || item.tag !== TIMESTAMP_TAG) {
           throw decodeFailure("cbor", "wrong_type", "timestamp takes tag 1");
@@ -836,7 +859,7 @@ function dataVariant(codec: Codec, variants: readonly Variant[], open: boolean, 
   return variant;
 }
 
-const JSON_INTEGER = /^-?(?:0|[1-9][0-9]*)$/;
+const JSON_INTEGER = /^(?:0|-?[1-9][0-9]*)$/;
 
 class JsonDecoder {
   constructor(private readonly types: Types) {}
@@ -883,11 +906,9 @@ class JsonDecoder {
       }
       case "struct": {
         if (json.kind !== "object") throw decodeFailure("json", "wrong_type", "a struct takes an object");
+        const given = new Map(json.entries);
         const result: Record<string, unknown> = {};
-        for (const field of shape.fields) {
-          const entry = json.entries.find(([key]) => key === field.name);
-          defineField(result, field.name, this.field(field, entry?.[1]));
-        }
+        for (const field of shape.fields) defineField(result, field.name, this.field(field, given.get(field.name)));
         return result;
       }
       case "enum": {

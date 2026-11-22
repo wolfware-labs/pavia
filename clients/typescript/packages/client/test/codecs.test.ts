@@ -5,11 +5,12 @@ import {
   type Codec,
   type ContractType,
   decodeData,
+  decodeHeader,
   encodeData,
   type Field,
   type Types,
 } from "../src/index.js";
-import { dataError, encodeError, files, value as itemOf } from "./support.js";
+import { dataError, encodeError, files, protocolError, value as itemOf } from "./support.js";
 
 interface CodecCase {
   readonly id: string;
@@ -113,7 +114,7 @@ describe("codec vectors", () => {
   }
 
   it("covers every case", () => {
-    expect(FILES.reduce((n, f) => n + f.cases.length, 0)).toBe(101);
+    expect(FILES.reduce((n, f) => n + f.cases.length, 0)).toBe(108);
   });
 });
 
@@ -125,6 +126,17 @@ const TYPES: Types = {
   Point: { struct: { fields: [{ name: "x", type: "f64" }, { name: "y", type: "f64" }] } },
   Options: { struct: { fields: [{ name: "lang", type: { option: "string" }, optional: true }] } },
   Loop: { alias: { ref: "Loop" } },
+  Nested: { alias: { option: { ref: "Nested" } } },
+  Event: {
+    struct: {
+      fields: [
+        { name: "at", type: { option: "timestamp" }, optional: true },
+        { name: "id", type: { option: "uuid" } },
+        { name: "extra", type: { option: "any" }, optional: true },
+      ],
+    },
+  },
+  Unit: { enum: { variants: [{ name: "A" }] } },
   Reserved: {
     struct: {
       fields: [
@@ -252,9 +264,10 @@ describe("typed codec", () => {
     both("bytes", Uint8Array.of(0xff));
     expect(dataError(() => decodeData("bytes", TYPES, json('"A"'), "json")).reason).toBe("not_canonical");
     expect(dataError(() => decodeData("bytes", TYPES, json('"A+"'), "json")).reason).toBe("not_canonical");
-    expect(dataError(() => decodeData("f32", TYPES, hexToBytes("fb 3f b9 99 99 99 99 99 9a"), "cbor")).reason).toBe(
-      "out_of_range",
-    );
+    expect(decodeData("f32", TYPES, hexToBytes("fb 3f b9 99 99 99 99 99 9a"), "cbor")).toBe(Math.fround(0.1));
+    expect(decodeData("f32", TYPES, json("-4.1828256"), "json")).toBe(Math.fround(-4.1828256));
+    expect(dataError(() => decodeData("f32", TYPES, json("1e39"), "json")).reason).toBe("out_of_range");
+    expect(decodeData("f32", TYPES, json("1e-50"), "json")).toBe(0);
     expect(dataError(() => decodeData("f64", TYPES, json("1e400"), "json")).reason).toBe("out_of_range");
     expect(decodeData("f64", TYPES, json("-0"), "json")).toBe(-0);
     expect(dataError(() => decodeData("f64", TYPES, hexToBytes("01"), "cbor")).reason).toBe("wrong_type");
@@ -304,5 +317,78 @@ describe("typed codec", () => {
 
   it("refuses an alias that never reaches a type", () => {
     expect(encodeError(() => encodeData({ ref: "Loop" }, TYPES, 1, "cbor")).kind).toBe("unknown_type");
+    for (const codec of ["cbor", "json"] as const) {
+      expect(encodeError(() => encodeData({ ref: "Nested" }, TYPES, 5, codec)).kind).toBe("unknown_type");
+      expect(dataError(() => decodeData({ ref: "Nested" }, TYPES, hexToBytes(codec === "cbor" ? "01" : "31"), codec)).reason).toBe(
+        "unknown_type",
+      );
+    }
+  });
+
+  it("decodes tagged types inside an option", () => {
+    const event = { at: new Date(1000), id: "00112233-4455-6677-8899-aabbccddeeff", extra: { kind: "tag", tag: 5n, item: { kind: "uint", value: 1n } } };
+    expect(decodeData({ ref: "Event" }, TYPES, encodeData({ ref: "Event" }, TYPES, event, "cbor"), "cbor")).toEqual(event);
+    both({ ref: "Event" }, { at: null, id: null, extra: null });
+    expect(decodeData({ option: "timestamp" }, TYPES, hexToBytes("c1 01"), "cbor")).toEqual(new Date(1000));
+    expect(dataError(() => decodeData({ option: "u8" }, TYPES, hexToBytes("c1 01"), "cbor")).reason).toBe("undeclared_tag");
+  });
+
+  it("accepts indefinite lengths in data sections", () => {
+    expect(decodeData({ list: "u8" }, TYPES, hexToBytes("9f 01 02 ff"), "cbor")).toEqual([1, 2]);
+    expect(decodeData("string", TYPES, hexToBytes("7f 61 61 62 62 63 ff"), "cbor")).toBe("abc");
+    expect(decodeData("bytes", TYPES, hexToBytes("5f 41 01 42 02 03 ff"), "cbor")).toEqual(Uint8Array.of(1, 2, 3));
+    expect(decodeData({ map: "u8" }, TYPES, hexToBytes("bf 61 61 01 ff"), "cbor")).toEqual(new Map([["a", 1]]));
+    expect(decodeData({ ref: "Point" }, TYPES, hexToBytes("bf 61 79 f9 3c 00 61 78 f9 3c 00 ff"), "cbor")).toEqual({ x: 1, y: 1 });
+    expect(decodeData("any", TYPES, hexToBytes("9f ff"), "cbor")).toEqual({ kind: "array", items: [] });
+    for (const input of ["9f 01", "7f 41 01 ff", "7f 7f ff ff", "bf 61 61 ff", "5f", "7f 61 ff ff"]) {
+      expect(dataError(() => decodeData("any", TYPES, hexToBytes(input), "cbor")).reason, input).toBe("malformed");
+    }
+    expect(protocolError(() => decodeHeader(hexToBytes("a1 01 9f ff"))).reason).toBe("indefinite_length");
+  });
+
+  it("passes duplicate keys of any through and refuses them in typed maps and structs", () => {
+    expect(decodeData("any", TYPES, hexToBytes("a2 61 61 01 61 61 02"), "cbor")).toEqual({
+      kind: "map",
+      entries: [
+        [{ kind: "text", value: "a" }, { kind: "uint", value: 1n }],
+        [{ kind: "text", value: "a" }, { kind: "uint", value: 2n }],
+      ],
+    });
+    expect(dataError(() => decodeData({ map: "u8" }, TYPES, hexToBytes("a2 61 61 01 78 01 61 02"), "cbor")).reason).toBe(
+      "duplicate_key",
+    );
+    expect(dataError(() => decodeData({ ref: "Point" }, TYPES, hexToBytes("bf 61 78 01 61 78 01 ff"), "cbor")).reason).toBe(
+      "duplicate_key",
+    );
+  });
+
+  it("reads JSON -0 as a float", () => {
+    expect(dataError(() => decodeData("u8", TYPES, json("-0"), "json")).reason).toBe("wrong_type");
+    expect(decodeData("any", TYPES, json("-0"), "json")).toEqual({ kind: "float", value: -0 });
+    expect(decodeData("any", TYPES, json("0"), "json")).toEqual({ kind: "uint", value: 0n });
+  });
+
+  it("refuses an any that is not an item and a unit variant with a value", () => {
+    for (const codec of ["cbor", "json"] as const) {
+      expect(encodeError(() => encodeData("any", TYPES, 5, codec)).kind).toBe(codec === "cbor" ? "invalid_value" : "not_json");
+      expect(encodeError(() => encodeData({ ref: "Unit" }, TYPES, { kind: "A", value: 3 }, codec)).kind).toBe("invalid_value");
+    }
+    expect(encodeError(() => encodeData("any", TYPES, { kind: "nope" }, "cbor")).kind).toBe("invalid_value");
+    expect(encodeError(() => encodeData("any", TYPES, undefined, "cbor")).kind).toBe("invalid_value");
+  });
+
+  it("refuses a typed tag where the limit admits no tag run", () => {
+    expect(encodeError(() => encodeData("timestamp", TYPES, new Date(0), "cbor", { maxDepth: 0 })).kind).toBe("too_deep");
+    expect(encodeError(() => encodeData("uuid", TYPES, "00112233-4455-6677-8899-aabbccddeeff", "cbor", { maxDepth: 0 })).kind).toBe(
+      "too_deep",
+    );
+  });
+
+  it("copies decoded any bytes out of the input", () => {
+    const input = hexToBytes("42 01 02");
+    const item = decodeData("any", TYPES, input, "cbor") as { value: Uint8Array };
+    input[1] = 9;
+    expect([...item.value]).toEqual([1, 2]);
   });
 });
+
