@@ -186,11 +186,16 @@ describe("typed codec", () => {
       expect(dataError(() => decodeData({ ref: "Status" }, TYPES, data, "json")).reason, name).toBe("unknown_variant");
     }
     expect(decodeData({ ref: "Status" }, TYPES, json('"_Later2"'), "json")).toEqual({ kind: "Unknown", name: "_Later2" });
-    for (const input of ["a1 63 5a 65 64 c5 01", "a1 63 5a 65 64 81 c1 01", "a1 63 5a 65 64 a1 61 78 d8 25 40"]) {
+    for (const [input, path] of [
+      ["a1 63 5a 65 64 c5 01", "$.Zed"],
+      ["a1 63 5a 65 64 81 c1 01", "$.Zed[0]"],
+      ["a1 63 5a 65 64 a1 61 78 d8 25 40", '$.Zed["x"]'],
+    ] as const) {
       const refused = dataError(() => decodeData({ ref: "Status" }, TYPES, hexToBytes(input), "cbor"));
-      expect([refused.reason, refused.path.startsWith("$.Zed")], input).toEqual(["undeclared_tag", true]);
+      expect([refused.reason, refused.path], input).toEqual(["undeclared_tag", path]);
     }
-    expect(decodeData({ ref: "Status" }, TYPES, hexToBytes("a1 63 5a 65 64 81 01"), "cbor")).toEqual({ kind: "Unknown", name: "Zed" });
+    const untagged = hexToBytes("a1 63 5a 65 64 81 01");
+    expect(decodeData({ ref: "Status" }, TYPES, untagged, "cbor")).toEqual({ kind: "Unknown", name: "Zed" });
     expect(dataError(() => decodeData({ ref: "Status" }, TYPES, json('"A\\n"'), "json")).message).not.toContain("\n");
   });
 
