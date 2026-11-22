@@ -201,13 +201,14 @@ describe("typed codec", () => {
 
   it("caps an unknown open-enum name at 128 bytes and names a missing field", () => {
     const long = "a".repeat(128);
-    expect(decodeData({ ref: "Status" }, TYPES, json(JSON.stringify(long)), "json")).toEqual({ kind: "Unknown", name: long });
+    const status = (input: Uint8Array, codec: Codec): unknown => decodeData({ ref: "Status" }, TYPES, input, codec);
+    expect(status(json(JSON.stringify(long)), "json")).toEqual({ kind: "Unknown", name: long });
     for (const name of [`${long}b`, "a".repeat(65_536)]) {
-      expect(dataError(() => decodeData({ ref: "Status" }, TYPES, json(JSON.stringify(name)), "json")).reason).toBe("unknown_variant");
+      expect(dataError(() => status(json(JSON.stringify(name)), "json")).reason).toBe("unknown_variant");
       const cbor = encodeData("any", TYPES, { kind: "text", value: name }, "cbor");
-      expect(dataError(() => decodeData({ ref: "Status" }, TYPES, cbor, "cbor")).reason).toBe("unknown_variant");
+      expect(dataError(() => status(cbor, "cbor")).reason).toBe("unknown_variant");
     }
-    expect(dataError(() => decodeData({ ref: "Status" }, TYPES, json('{"Zed":1,"Zee":2}'), "json")).reason).toBe("wrong_type");
+    expect(dataError(() => status(json('{"Zed":1,"Zee":2}'), "json")).reason).toBe("wrong_type");
     for (const codec of ["cbor", "json"] as const) {
       const input = codec === "cbor" ? hexToBytes("81 a1 61 78 f9 3c 00") : json('[{"x":1}]');
       const missing = dataError(() => decodeData({ list: { ref: "Point" } }, TYPES, input, codec));
