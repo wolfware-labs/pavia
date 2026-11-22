@@ -218,6 +218,15 @@ describe("typed codec", () => {
     }
   });
 
+  it("does not take a view that only names itself a Uint8Array", () => {
+    for (const view of [new Uint16Array([0x0102, 0x0304]), new DataView(new ArrayBuffer(2))]) {
+      Object.defineProperty(view, Symbol.toStringTag, { value: "Uint8Array" });
+      for (const codec of ["cbor", "json"] as const) {
+        expect(encodeError(() => encodeData("bytes", TYPES, view, codec)).kind).toBe("invalid_value");
+      }
+    }
+  });
+
   it("takes a Uint8Array made in another realm", () => {
     const foreign = runInNewContext("new Uint8Array([1, 2])") as Uint8Array;
     expect(foreign instanceof Uint8Array).toBe(false);

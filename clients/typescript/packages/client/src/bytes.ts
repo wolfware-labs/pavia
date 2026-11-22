@@ -44,13 +44,20 @@ export function isByte(value: number): boolean {
   return Number.isInteger(value) && value >= 0 && value <= 0xff;
 }
 
+const TYPED_ARRAY_PROTOTYPE: object = Object.getPrototypeOf(Uint8Array.prototype);
+const TYPED_ARRAY_NAME = Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, Symbol.toStringTag)?.get as (
+  this: unknown,
+) => string | undefined;
+
 /**
  * Whether `value` is a `Uint8Array`, also one made in another realm (an iframe, a `vm` context,
- * jsdom), where `instanceof` against this realm's constructor is false.
+ * jsdom), where `instanceof` against this realm's constructor is false. The type name is read
+ * through the typed-array getter, which reports the array's own kind, so a `Uint16Array` or a
+ * `DataView` that sets its own `Symbol.toStringTag` to `"Uint8Array"` is not taken for one.
  */
 export function isBytes(value: unknown): value is Uint8Array {
   if (value instanceof Uint8Array) return true;
-  return ArrayBuffer.isView(value) && Object.prototype.toString.call(value) === "[object Uint8Array]";
+  return ArrayBuffer.isView(value) && TYPED_ARRAY_NAME.call(value) === "Uint8Array";
 }
 
 /** Orders byte arrays bytewise, a shorter prefix first. */
