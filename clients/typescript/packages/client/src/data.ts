@@ -707,6 +707,9 @@ function writeJsonItem(out: JsonText, value: unknown, depth: number, maxDepth: n
       return;
     case "uint":
     case "nint":
+      if (item.value < 0n || item.value > MAX_U64) {
+        throw encodeFailure("out_of_range", `CBOR argument ${item.value} is outside 0 to 2^64 - 1`);
+      }
       out.text += String(integerOfItem(item));
       return;
     case "float":

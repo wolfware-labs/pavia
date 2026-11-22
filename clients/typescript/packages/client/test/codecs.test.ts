@@ -247,6 +247,22 @@ describe("typed codec", () => {
     }
   });
 
+  it("sorts json map keys by their UTF-8 bytes, past the BMP too", () => {
+    const keys = ["\u{1F600}", "\uFFFF", "\uE000", "a", "\u00e9"];
+    const text = textOf(encodeData({ map: "u8" }, TYPES, new Map(keys.map((k, i) => [k, i])), "json"));
+    const order = [...keys].sort((x, y) => Buffer.compare(Buffer.from(x), Buffer.from(y)));
+    expect(Object.keys(JSON.parse(text) as object)).toEqual(order);
+  });
+
+  it("keeps any integers within the 64-bit CBOR range in json", () => {
+    for (const item of [{ kind: "uint", value: 2n ** 64n }, { kind: "nint", value: 2n ** 64n }, { kind: "uint", value: -1n }]) {
+      for (const codec of ["cbor", "json"] as const) {
+        expect(encodeError(() => encodeData("any", TYPES, item, codec)).kind).toBe("out_of_range");
+      }
+    }
+    expect(textOf(encodeData("any", TYPES, { kind: "nint", value: 2n ** 64n - 1n }, "json"))).toBe("-18446744073709551616");
+  });
+
   it("refuses any items with a field missing or of the wrong type", () => {
     const malformed = [
       { kind: "array" },
