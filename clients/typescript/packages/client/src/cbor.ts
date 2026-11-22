@@ -1,5 +1,6 @@
-import { ByteWriter, compareBytes, isByte } from "./bytes.js";
+import { ByteWriter, compareBytes, isByte, toHex } from "./bytes.js";
 import { EncodeError, type HeaderErrorReason, ProtocolError } from "./errors.js";
+import { textOfUtf8, utf8Of } from "./utf8.js";
 
 /**
  * One CBOR item of a header section (spec 5.4.1) or a data section (spec 12.3). Integers are
@@ -36,11 +37,15 @@ export const DEFAULT_HEADER_LIMITS: HeaderLimits = { maxSize: 16_384, maxDepth: 
 
 const UNSIGNED = 0;
 const NEGATIVE = 1;
-const BYTES = 2;
+/** CBOR major type 2, byte strings. */
+export const BYTES = 2;
 const TEXT = 3;
-const ARRAY = 4;
-const MAP = 5;
-const TAG = 6;
+/** CBOR major type 4, arrays. */
+export const ARRAY = 4;
+/** CBOR major type 5, maps. */
+export const MAP = 5;
+/** CBOR major type 6, tags. */
+export const TAG = 6;
 const SIMPLE = 7;
 /** The largest CBOR integer argument, 2^64 - 1. */
 export const MAX_U64 = (1n << 64n) - 1n;
@@ -85,8 +90,6 @@ export function writeCborItem(out: ByteWriter, value: CborItem): void {
   writeValue(out, value, true);
 }
 
-const LONE_SURROGATE = /\p{Surrogate}/u;
-const UTF8_ENCODER = new TextEncoder();
 const SCRATCH = new DataView(new ArrayBuffer(8));
 
 function writeValue(out: ByteWriter, value: CborItem, data: boolean): void {
@@ -150,19 +153,6 @@ export function writeUtf8(out: ByteWriter, utf8: Uint8Array): void {
   out.bytes(utf8);
 }
 
-/**
- * The UTF-8 bytes of `text`.
- *
- * @throws {@link EncodeError} `lone_surrogate` when `text` holds a lone UTF-16 surrogate, which
- * `TextEncoder` would replace with U+FFFD.
- */
-export function utf8Of(text: string): Uint8Array {
-  if (LONE_SURROGATE.test(text)) {
-    throw new EncodeError("lone_surrogate", "text holds a lone UTF-16 surrogate, which has no UTF-8 form");
-  }
-  return UTF8_ENCODER.encode(text);
-}
-
 function writeMap(out: ByteWriter, entries: CborMap): void {
   if (entries.every(([key]) => key.kind === "uint")) return writeUintKeyedMap(out, entries);
   const encoded = entries.map(([key, value]) => ({ key: encodeCborItem(key), value }));
@@ -219,7 +209,7 @@ export function writeFloat(out: ByteWriter, x: number): void {
     out.byte(0xf9);
     out.byte(half >>> 8);
     out.byte(half & 0xff);
-  } else if (Math.fround(x) === x) {
+  } else if (hasF32Form(x)) {
     out.byte(0xfa);
     SCRATCH.setFloat32(0, x);
     writeScratch(out, 4);
@@ -235,7 +225,7 @@ function writeScratch(out: ByteWriter, length: number): void {
 }
 
 function halfBits(x: number): number | undefined {
-  if (Math.fround(x) !== x) return undefined;
+  if (!hasF32Form(x)) return undefined;
   SCRATCH.setFloat32(0, x);
   const bits = SCRATCH.getUint32(0);
   const sign = bits >>> 31 ? 0x8000 : 0;
@@ -249,6 +239,26 @@ function halfBits(x: number): number | undefined {
   const significand = 0x80_0000 + mantissa;
   const divisor = 2 ** -(e + 1);
   return significand % divisor === 0 ? sign | (significand / divisor) : undefined;
+}
+
+/** Whether `x` has an exact single-precision form; NaN has one. */
+export function hasF32Form(x: number): boolean {
+  return Math.fround(x) === x || Number.isNaN(x);
+}
+
+/** `x` rounded to the nearest IEEE 754 half-precision value, ties to even, as `f16::from_f64` does. */
+export function toHalf(x: number): number {
+  if (!Number.isFinite(x) || x === 0) return x;
+  const a = Math.abs(x);
+  if (a >= 65_520) return Math.sign(x) * Infinity;
+  SCRATCH.setFloat64(0, a);
+  const exponent = ((SCRATCH.getUint16(0) >> 4) & 0x7ff) - 1023;
+  const ulp = 2 ** (Math.max(exponent, -14) - 10);
+  const q = a / ulp;
+  const floor = Math.floor(q);
+  const rest = q - floor;
+  const rounded = rest > 0.5 || (rest === 0.5 && floor % 2 === 1) ? floor + 1 : floor;
+  return Math.sign(x) * rounded * ulp;
 }
 
 /**
@@ -272,7 +282,8 @@ export function decodeHeader(bytes: Uint8Array, limits: HeaderLimits = DEFAULT_H
 
 /**
  * Decodes one CBOR item that fills `bytes`, tags allowed and adding no depth, as a data section
- * (spec 12.3) is read before its type is applied. A top-level array or map has depth 1.
+ * (spec 12.3) is read before its type is applied. A top-level array or map has depth 1, and a run
+ * of tags directly around one item holds at most `maxDepth` tags, as `pavia-proto` reads them.
  *
  * @throws the error `fail` returns for the first rule that fails, with the same reasons as
  * {@link decodeHeader} but `not_a_map`, `too_large` and `tag`.
@@ -291,8 +302,6 @@ export function decodeCborItem(
 function refuse(reason: HeaderErrorReason): ProtocolError {
   return new ProtocolError("malformed_header", { reason });
 }
-
-const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 class Reader {
   pos = 0;
@@ -322,7 +331,7 @@ class Reader {
     return entries;
   }
 
-  value(depth: number): CborItem {
+  value(depth: number, run = 0): CborItem {
     const first = this.bytes[this.pos];
     if (first === undefined) throw this.fail("malformed");
     const major = first >> 5;
@@ -331,8 +340,9 @@ class Reader {
     if (info >= 28) throw this.fail("malformed");
     if (major === TAG) {
       if (!this.tags) throw this.fail("tag");
+      if (run === this.maxDepth) throw this.fail("too_deep");
       const tag = this.head();
-      return { kind: "tag", tag, item: this.value(depth) };
+      return { kind: "tag", tag, item: this.value(depth, run + 1) };
     }
     switch (major) {
       case UNSIGNED:
@@ -342,12 +352,9 @@ class Reader {
       case BYTES:
         return { kind: "bytes", value: this.take(this.head()) };
       case TEXT: {
-        const raw = this.take(this.head());
-        try {
-          return { kind: "text", value: UTF8_DECODER.decode(raw) };
-        } catch {
-          throw this.fail("malformed");
-        }
+        const value = textOfUtf8(this.take(this.head()));
+        if (value === undefined) throw this.fail("malformed");
+        return { kind: "text", value };
       }
       case ARRAY: {
         const inner = this.deeper(depth);
@@ -433,9 +440,9 @@ class KeySet {
       case "text":
         return addNew((this.texts ??= new Set()), key.value);
       case "bytes":
-        return addNew((this.byteStrings ??= new Set()), hex(key.value));
+        return addNew((this.byteStrings ??= new Set()), toHex(key.value));
       default:
-        return addNew((this.raws ??= new Set()), hex(bytes.subarray(start, end)));
+        return addNew((this.raws ??= new Set()), toHex(bytes.subarray(start, end)));
     }
   }
 }
@@ -444,12 +451,6 @@ function addNew<T>(set: Set<T>, value: T): boolean {
   if (set.has(value)) return false;
   set.add(value);
   return true;
-}
-
-function hex(bytes: Uint8Array): string {
-  let s = "";
-  for (const b of bytes) s += b.toString(16).padStart(2, "0");
-  return s;
 }
 
 function fromHalf(bits: number): number {

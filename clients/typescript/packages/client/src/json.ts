@@ -1,4 +1,5 @@
 import { EncodeError } from "./errors.js";
+import { refuseLoneSurrogate, textOfUtf8 } from "./utf8.js";
 
 /**
  * One JSON value as read from a data section (spec 12.3). A number keeps its text, so the typed
@@ -15,7 +16,6 @@ export type JsonValue =
 /** Why a JSON data section was refused. */
 export type JsonErrorReason = "malformed" | "too_deep" | "duplicate_key";
 
-const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const NUMBER = /-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/y;
 
 /**
@@ -30,12 +30,8 @@ export function parseJson(
   maxDepth: number,
   fail: (reason: JsonErrorReason) => Error,
 ): JsonValue {
-  let text: string;
-  try {
-    text = UTF8_DECODER.decode(bytes);
-  } catch {
-    throw fail("malformed");
-  }
+  const text = textOfUtf8(bytes);
+  if (text === undefined) throw fail("malformed");
   const parser = new Parser(text, maxDepth, fail);
   parser.space();
   const value = parser.value(0);
@@ -204,7 +200,6 @@ class Parser {
   }
 }
 
-const LONE_SURROGATE = /\p{Surrogate}/u;
 const SHORT_ESCAPES: Readonly<Record<number, string>> = {
   0x22: '\\"',
   0x5c: "\\\\",
@@ -222,9 +217,7 @@ const SHORT_ESCAPES: Readonly<Record<number, string>> = {
  * @throws {@link EncodeError} `lone_surrogate` for text with no UTF-8 form.
  */
 export function jsonString(text: string): string {
-  if (LONE_SURROGATE.test(text)) {
-    throw new EncodeError("lone_surrogate", "text holds a lone UTF-16 surrogate, which has no UTF-8 form");
-  }
+  refuseLoneSurrogate(text);
   let out = '"';
   let start = 0;
   for (let i = 0; i < text.length; i++) {

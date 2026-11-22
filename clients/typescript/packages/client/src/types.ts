@@ -35,22 +35,25 @@ export type ContractType =
 export interface Field {
   readonly name: string;
   readonly type: ContractType;
-  readonly optional?: boolean;
-  readonly docs?: string;
+  readonly optional?: boolean | undefined;
+  readonly docs?: string | undefined;
 }
 
 /** An enum variant; one without `type` is a unit variant. */
 export interface Variant {
   readonly name: string;
-  readonly type?: ContractType;
-  readonly docs?: string;
+  readonly type?: ContractType | undefined;
+  readonly docs?: string | undefined;
 }
 
 /** A named type of the manifest's `types` table. */
 export type NamedType =
-  | { readonly struct: { readonly fields: readonly Field[] }; readonly docs?: string }
-  | { readonly enum: { readonly variants: readonly Variant[]; readonly open?: boolean }; readonly docs?: string }
-  | { readonly alias: ContractType; readonly docs?: string };
+  | { readonly struct: { readonly fields: readonly Field[] }; readonly docs?: string | undefined }
+  | {
+      readonly enum: { readonly variants: readonly Variant[]; readonly open?: boolean | undefined };
+      readonly docs?: string | undefined;
+    }
+  | { readonly alias: ContractType; readonly docs?: string | undefined };
 
 /** The manifest's `types` table, by name. */
 export type Types = Readonly<Record<string, NamedType>>;

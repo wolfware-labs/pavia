@@ -1,4 +1,5 @@
-import type { CborItem } from "./cbor.js";
+import { toHex } from "./bytes.js";
+import { type CborItem, toHalf } from "./cbor.js";
 
 /** The first instant RFC 3339 can write, 0000-01-01T00:00:00.000Z, in milliseconds since the epoch. */
 export const MIN_MILLIS = -62_167_219_200_000;
@@ -6,7 +7,6 @@ export const MIN_MILLIS = -62_167_219_200_000;
 export const MAX_MILLIS = 253_402_300_799_999;
 
 const MILLIS_PER_DAY = 86_400_000;
-const F64 = new DataView(new ArrayBuffer(8));
 
 /**
  * The tag 1 content for `millis` (spec 12.3): whole seconds as an integer, otherwise the narrowest
@@ -15,10 +15,7 @@ const F64 = new DataView(new ArrayBuffer(8));
  * never chosen.
  */
 export function epochSeconds(millis: number): CborItem {
-  if (millis % 1000 === 0) {
-    const seconds = BigInt(millis / 1000);
-    return seconds < 0n ? { kind: "nint", value: -1n - seconds } : { kind: "uint", value: seconds };
-  }
+  if (millis % 1000 === 0) return integerItem(BigInt(millis / 1000));
   const seconds = millis / 1000;
   for (const candidate of [toHalf(seconds), Math.fround(seconds)]) {
     if (Math.abs(candidate * 1000 - millis) < 0.5) return { kind: "float", value: candidate };
@@ -35,13 +32,12 @@ export function millisOfEpochSeconds(content: CborItem): number | undefined {
   if (content.kind === "float") {
     const exact = content.value * 1000;
     millis = Math.sign(exact) * Math.round(Math.abs(exact)) + 0;
-  } else if (content.kind === "uint" || content.kind === "nint") {
-    const seconds = content.kind === "uint" ? content.value : -1n - content.value;
+  } else {
+    const seconds = integerOfItem(content);
+    if (seconds === undefined) return undefined;
     const big = seconds * 1000n;
     if (big < BigInt(MIN_MILLIS) || big > BigInt(MAX_MILLIS)) return undefined;
     millis = Number(big);
-  } else {
-    return undefined;
   }
   return Number.isFinite(millis) && millis >= MIN_MILLIS && millis <= MAX_MILLIS ? millis : undefined;
 }
@@ -114,6 +110,17 @@ function civilFromDays(days: number): [number, number, number] {
   return [yearOfEra + era * 400 + (month <= 2 ? 1 : 0), month, day];
 }
 
+/** The integer of a `uint` or `nint` item, or `undefined` for any other item. */
+export function integerOfItem(item: CborItem): bigint | undefined {
+  if (item.kind === "uint") return item.value;
+  return item.kind === "nint" ? -1n - item.value : undefined;
+}
+
+/** `n` as a `uint` or `nint` item. It must lie in -2^64 to 2^64 - 1, as every contract integer does. */
+export function integerItem(n: bigint): CborItem {
+  return n < 0n ? { kind: "nint", value: -1n - n } : { kind: "uint", value: n };
+}
+
 /**
  * The integer of a decimal string in the one form `json` writes 64-bit integers in:
  * `0|-?[1-9][0-9]*`, with no sign on zero, no leading zeros and nothing around it.
@@ -124,8 +131,7 @@ export function integerOfText(text: string): bigint | undefined {
 
 /** `bytes` as a lowercase hyphenated UUID: `7d444840-9dc0-11d1-b245-5ffdce74fad2`. */
 export function uuidText(bytes: Uint8Array): string {
-  let hex = "";
-  for (const b of bytes) hex += b.toString(16).padStart(2, "0");
+  const hex = toHex(bytes);
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
@@ -177,19 +183,4 @@ export function bytesOfBase64url(text: string): Uint8Array | undefined {
     }
   }
   return (acc & ((1 << bits) - 1)) === 0 ? out : undefined;
-}
-
-/** `x` rounded to the nearest IEEE 754 half-precision value, ties to even, as `f16::from_f64` does. */
-export function toHalf(x: number): number {
-  if (!Number.isFinite(x) || x === 0) return x;
-  const a = Math.abs(x);
-  if (a >= 65_520) return Math.sign(x) * Infinity;
-  F64.setFloat64(0, a);
-  const exponent = ((F64.getUint16(0) >> 4) & 0x7ff) - 1023;
-  const ulp = 2 ** (Math.max(exponent, -14) - 10);
-  const q = a / ulp;
-  const floor = Math.floor(q);
-  const rest = q - floor;
-  const rounded = rest > 0.5 || (rest === 0.5 && floor % 2 === 1) ? floor + 1 : floor;
-  return Math.sign(x) * rounded * ulp;
 }

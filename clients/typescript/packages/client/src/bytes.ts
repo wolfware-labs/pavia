@@ -53,3 +53,10 @@ export function compareBytes(a: Uint8Array, b: Uint8Array): number {
   }
   return a.length - b.length;
 }
+
+/** `bytes` as lowercase hex, two digits per byte: `0aff`. */
+export function toHex(bytes: Uint8Array): string {
+  let hex = "";
+  for (const b of bytes) hex += b.toString(16).padStart(2, "0");
+  return hex;
+}

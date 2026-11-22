@@ -1,9 +1,13 @@
 import { ByteWriter, compareBytes } from "./bytes.js";
 import {
+  ARRAY,
+  BYTES,
   type CborItem,
   decodeCborItem,
+  hasF32Form,
+  MAP,
   MAX_U64,
-  utf8Of,
+  TAG,
   writeCborItem,
   writeFloat,
   writeHead,
@@ -16,6 +20,8 @@ import {
   base64url,
   bytesOfBase64url,
   epochSeconds,
+  integerItem,
+  integerOfItem,
   integerOfText,
   MAX_MILLIS,
   MIN_MILLIS,
@@ -26,6 +32,7 @@ import {
   uuidText,
 } from "./scalars.js";
 import type { ContractType, EnumValue, Field, NamedType, Primitive, Types, Variant } from "./types.js";
+import { utf8Of } from "./utf8.js";
 
 /** The data codec of a session (spec 6.1): `cbor` or `json`. */
 export type Codec = "cbor" | "json";
@@ -41,12 +48,6 @@ export const DEFAULT_DATA_LIMITS: DataLimits = { maxDepth: 16 };
 
 const TIMESTAMP_TAG = 1n;
 const UUID_TAG = 37n;
-const UNSIGNED = 0;
-const NEGATIVE = 1;
-const ARRAY = 4;
-const MAP = 5;
-const TAG = 6;
-const UTF8_ENCODER = new TextEncoder();
 
 const INTEGER_RANGE: Readonly<Partial<Record<Primitive, readonly [bigint, bigint]>>> = {
   i8: [-(2n ** 7n), 2n ** 7n - 1n],
@@ -88,9 +89,10 @@ export function encodeData(
     }
     const out = new JsonText();
     new JsonEncoder(types, limits.maxDepth).write(out, type, value, 0);
-    return UTF8_ENCODER.encode(out.text);
+    return utf8Of(out.text);
   } catch (error) {
     if (error instanceof UnknownType) throw new EncodeError("unknown_type", error.message);
+    if (error instanceof EncodeError && error.path === undefined) throw placed(error, "$");
     throw error;
   }
 }
@@ -207,12 +209,13 @@ function under(path: string, segment: string): string {
   return `$${segment}${path.slice(1)}`;
 }
 
+function placed(error: EncodeError, path: string): EncodeError {
+  const message = error.path === undefined ? error.message : error.message.slice(0, -` at ${error.path}`.length);
+  return new EncodeError(error.kind, message, path);
+}
+
 function underEncode(error: unknown, segment: string): unknown {
-  if (error instanceof EncodeError && error.path !== undefined) {
-    const message = error.message.slice(0, error.message.length - ` at ${error.path}`.length);
-    return new EncodeError(error.kind, message, under(error.path, segment));
-  }
-  return error;
+  return error instanceof EncodeError ? placed(error, under(error.path ?? "$", segment)) : error;
 }
 
 function underDecode(error: unknown, segment: string): unknown {
@@ -242,7 +245,7 @@ function integerOf(primitive: Primitive, value: unknown): bigint {
 
 function floatOf(primitive: Primitive, value: unknown): number {
   if (typeof value !== "number") throw encodeFailure("invalid_value", `${primitive} takes a number`);
-  if (primitive === "f32" && Math.fround(value) !== value && !Number.isNaN(value)) {
+  if (primitive === "f32" && !hasF32Form(value)) {
     throw encodeFailure("out_of_range", `${value} has no exact f32 form`);
   }
   return value;
@@ -280,16 +283,20 @@ function mapOf(value: unknown): ReadonlyMap<unknown, unknown> {
   return value;
 }
 
+function fieldOf(object: Readonly<Record<string, unknown>>, name: string): unknown {
+  return Object.hasOwn(object, name) ? object[name] : undefined;
+}
+
+function defineField(object: Record<string, unknown>, name: string, value: unknown): void {
+  Object.defineProperty(object, name, { value, enumerable: true, writable: true, configurable: true });
+}
+
 function presentFields(fields: readonly Field[], object: Readonly<Record<string, unknown>>): Field[] {
   const present: Field[] = [];
   for (const field of fields) {
-    const value = object[field.name];
-    if (value === undefined || (value === null && field.optional === true)) {
-      if (field.optional === true) continue;
-      if (value === undefined) {
-        throw new EncodeError("missing_field", `missing field ${field.name}`, `$.${field.name}`);
-      }
-    }
+    const value = fieldOf(object, field.name);
+    if (field.optional === true && (value === undefined || value === null)) continue;
+    if (value === undefined) throw new EncodeError("missing_field", `missing field ${field.name}`, `$.${field.name}`);
     present.push(field);
   }
   return present;
@@ -383,7 +390,7 @@ class CborEncoder {
         for (const field of fields) {
           writeText(out, field.name);
           try {
-            this.write(out, field.type, object[field.name], inner);
+            this.write(out, field.type, fieldOf(object, field.name), inner);
           } catch (error) {
             throw underEncode(error, `.${field.name}`);
           }
@@ -422,7 +429,7 @@ class CborEncoder {
         return writeText(out, value);
       case "bytes":
         if (!(value instanceof Uint8Array)) throw encodeFailure("invalid_value", "bytes takes a Uint8Array");
-        writeHead(out, 2, BigInt(value.length));
+        writeHead(out, BYTES, BigInt(value.length));
         return out.bytes(value);
       case "timestamp":
         writeHead(out, TAG, TIMESTAMP_TAG);
@@ -430,21 +437,19 @@ class CborEncoder {
       case "uuid": {
         const bytes = uuidBytesOf(value);
         writeHead(out, TAG, UUID_TAG);
-        writeHead(out, 2, 16n);
+        writeHead(out, BYTES, 16n);
         return out.bytes(bytes);
       }
       case "any":
         checkItemDepth(value as CborItem, depth, this.maxDepth);
         return writeCborItem(out, value as CborItem);
-      default: {
-        const n = integerOf(primitive, value);
-        return n < 0n ? writeHead(out, NEGATIVE, -1n - n) : writeHead(out, UNSIGNED, n);
-      }
+      default:
+        return writeCborItem(out, integerItem(integerOf(primitive, value)));
     }
   }
 }
 
-function checkItemDepth(item: CborItem, depth: number, maxDepth: number): void {
+function checkItemDepth(item: CborItem, depth: number, maxDepth: number, run = 0): void {
   switch (item.kind) {
     case "array": {
       const inner = checkDepth(depth, maxDepth);
@@ -460,7 +465,8 @@ function checkItemDepth(item: CborItem, depth: number, maxDepth: number): void {
       return;
     }
     case "tag":
-      return checkItemDepth(item.item, depth, maxDepth);
+      if (run === maxDepth) throw encodeFailure("too_deep", `a run of more than ${maxDepth} tags`);
+      return checkItemDepth(item.item, depth, maxDepth, run + 1);
     default:
       return;
   }
@@ -538,7 +544,7 @@ class JsonEncoder {
           if (i > 0) out.text += ",";
           out.text += `${jsonString(field.name)}:`;
           try {
-            this.write(out, field.type, object[field.name], inner);
+            this.write(out, field.type, fieldOf(object, field.name), inner);
           } catch (error) {
             throw underEncode(error, `.${field.name}`);
           }
@@ -617,10 +623,8 @@ function writeJsonItem(out: JsonText, item: CborItem, depth: number, maxDepth: n
       out.text += item.value ? "true" : "false";
       return;
     case "uint":
-      out.text += String(item.value);
-      return;
     case "nint":
-      out.text += String(-1n - item.value);
+      out.text += String(integerOfItem(item));
       return;
     case "float":
       out.text += jsonNumber(item.value);
@@ -669,7 +673,7 @@ function checkedInteger(codec: Codec, primitive: Primitive, n: bigint): number |
 }
 
 function checkedFloat(codec: Codec, primitive: Primitive, x: number): number {
-  if (primitive === "f32" && Math.fround(x) !== x && !Number.isNaN(x)) {
+  if (primitive === "f32" && !hasF32Form(x)) {
     throw decodeFailure(codec, "out_of_range", `${x} has no exact f32 form`);
   }
   return x;
@@ -730,7 +734,7 @@ class CborDecoder {
         const result: Record<string, unknown> = {};
         for (const field of shape.fields) {
           const entry = item.entries.find(([key]) => (key as { value: string }).value === field.name);
-          result[field.name] = this.field(field, entry?.[1]);
+          defineField(result, field.name, this.field(field, entry?.[1]));
         }
         return result;
       }
@@ -800,9 +804,9 @@ class CborDecoder {
         return uuidText(item.item.value);
       }
       default: {
-        if (item.kind === "uint") return checkedInteger("cbor", primitive, item.value);
-        if (item.kind === "nint") return checkedInteger("cbor", primitive, -1n - item.value);
-        throw decodeFailure("cbor", "wrong_type", `${primitive} takes an integer`);
+        const n = integerOfItem(item);
+        if (n === undefined) throw decodeFailure("cbor", "wrong_type", `${primitive} takes an integer`);
+        return checkedInteger("cbor", primitive, n);
       }
     }
   }
@@ -882,7 +886,7 @@ class JsonDecoder {
         const result: Record<string, unknown> = {};
         for (const field of shape.fields) {
           const entry = json.entries.find(([key]) => key === field.name);
-          result[field.name] = this.field(field, entry?.[1]);
+          defineField(result, field.name, this.field(field, entry?.[1]));
         }
         return result;
       }
@@ -989,8 +993,7 @@ function itemOfJson(json: JsonValue): CborItem {
     case "number": {
       if (JSON_INTEGER.test(json.text)) {
         const n = BigInt(json.text);
-        if (n >= 0n && n < U64_LIMIT) return { kind: "uint", value: n };
-        if (n < 0n && n >= -U64_LIMIT) return { kind: "nint", value: -1n - n };
+        if (n >= -U64_LIMIT && n < U64_LIMIT) return integerItem(n);
       }
       const x = Number(json.text);
       if (!Number.isFinite(x)) throw decodeFailure("json", "out_of_range", `${json.text} is not a finite double`);

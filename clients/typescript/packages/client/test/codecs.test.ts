@@ -1,19 +1,15 @@
-import { readdirSync, readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { type Diag, hexToBytes, parse } from "@pavia/vectors/diag";
 import { describe, expect, it } from "vitest";
 import {
+  type CborItem,
   type Codec,
   type ContractType,
-  DataError,
   decodeData,
   encodeData,
   type Field,
   type Types,
 } from "../src/index.js";
-import { encodeError, value as itemOf } from "./support.js";
-
-const VECTORS = fileURLToPath(new URL("../../../../../vectors/codecs/", import.meta.url));
+import { dataError, encodeError, files, value as itemOf } from "./support.js";
 
 interface CodecCase {
   readonly id: string;
@@ -25,12 +21,10 @@ interface CodecCase {
   readonly error?: { readonly codec: Codec; readonly reason?: string };
 }
 
-const FILES = readdirSync(VECTORS)
-  .filter((f) => f.endsWith(".json"))
-  .sort()
-  .map((file) => JSON.parse(readFileSync(VECTORS + file, "utf8")) as { group: string; types?: Types; cases: CodecCase[] });
+const FILES = files("codecs").map(({ doc }) => doc as unknown as { group: string; types?: Types; cases: CodecCase[] });
 
 const TEXT = new TextEncoder();
+const textOf = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
 
 function hex(bytes: Uint8Array): string {
   return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join(" ");
@@ -100,14 +94,7 @@ describe("codec vectors", () => {
       it(`${file.group}#${c.id}`, () => {
         if (c.error !== undefined) {
           const input = c.error.codec === "cbor" ? hexToBytes(c.cbor as string) : TEXT.encode(c.json as string);
-          let error: unknown;
-          try {
-            decodeData(c.type, types, input, c.error.codec);
-          } catch (e) {
-            error = e;
-          }
-          expect(error).toBeInstanceOf(DataError);
-          expect((error as DataError).codec).toBe(c.error.codec);
+          expect(dataError(() => decodeData(c.type, types, input, c.error?.codec as Codec)).codec).toBe(c.error.codec);
           return;
         }
         const expected = typed(c.type, types, parse(c.value as string));
@@ -118,7 +105,7 @@ describe("codec vectors", () => {
         if (c.json !== undefined) {
           expect(decodeData(c.type, types, TEXT.encode(c.json), "json")).toEqual(expected);
           if (c.direction === "both") {
-            expect(new TextDecoder().decode(encodeData(c.type, types, expected, "json"))).toBe(c.json);
+            expect(textOf(encodeData(c.type, types, expected, "json"))).toBe(c.json);
           }
         }
       });
@@ -138,23 +125,20 @@ const TYPES: Types = {
   Point: { struct: { fields: [{ name: "x", type: "f64" }, { name: "y", type: "f64" }] } },
   Options: { struct: { fields: [{ name: "lang", type: { option: "string" }, optional: true }] } },
   Loop: { alias: { ref: "Loop" } },
+  Reserved: {
+    struct: {
+      fields: [
+        { name: "__proto__", type: { ref: "Point" } },
+        { name: "constructor", type: { option: "string" }, optional: true },
+      ],
+    },
+  },
 };
 
 function both(type: ContractType, value: unknown): void {
   for (const codec of ["cbor", "json"] as const) {
     expect(decodeData(type, TYPES, encodeData(type, TYPES, value, codec), codec)).toEqual(value);
   }
-}
-
-function dataError(f: () => unknown): DataError {
-  let error: unknown;
-  try {
-    f();
-  } catch (e) {
-    error = e;
-  }
-  expect(error).toBeInstanceOf(DataError);
-  return error as DataError;
 }
 
 const json = (text: string): Uint8Array => TEXT.encode(text);
@@ -182,8 +166,8 @@ describe("typed codec", () => {
   });
 
   it("omits optional fields that are null or absent, and writes null for a required option", () => {
-    expect(new TextDecoder().decode(encodeData({ ref: "Options" }, TYPES, { lang: null }, "json"))).toBe("{}");
-    expect(new TextDecoder().decode(encodeData({ ref: "Options" }, TYPES, {}, "json"))).toBe("{}");
+    expect(textOf(encodeData({ ref: "Options" }, TYPES, { lang: null }, "json"))).toBe("{}");
+    expect(textOf(encodeData({ ref: "Options" }, TYPES, {}, "json"))).toBe("{}");
     expect(hex(encodeData({ option: "string" }, TYPES, undefined, "cbor"))).toBe("f6");
     expect(encodeError(() => encodeData({ ref: "Point" }, TYPES, { x: 1 }, "json")).path).toBe("$.y");
   });
@@ -235,7 +219,7 @@ describe("typed codec", () => {
     expect(hex(encodeData("timestamp", TYPES, new Date(-1000), "cbor"))).toBe("c1 20");
     both("timestamp", new Date(-62_167_219_200_000));
     both("timestamp", new Date(253_402_300_799_999));
-    expect(new TextDecoder().decode(encodeData("timestamp", TYPES, new Date(-62_167_219_200_000), "json"))).toBe(
+    expect(textOf(encodeData("timestamp", TYPES, new Date(-62_167_219_200_000), "json"))).toBe(
       '"0000-01-01T00:00:00.000Z"',
     );
     expect(dataError(() => decodeData("timestamp", TYPES, json('"2025-02-29T00:00:00.000Z"'), "json")).reason).toBe(
@@ -245,7 +229,7 @@ describe("typed codec", () => {
 
   it("keeps any values as CBOR items in both codecs", () => {
     const item = { kind: "map", entries: [[{ kind: "text", value: "b" }, { kind: "float", value: 0.5 }], [{ kind: "text", value: "a" }, { kind: "nint", value: 0n }]] };
-    expect(new TextDecoder().decode(encodeData("any", TYPES, item, "json"))).toBe('{"b":0.5,"a":-1}');
+    expect(textOf(encodeData("any", TYPES, item, "json"))).toBe('{"b":0.5,"a":-1}');
     both("any", item);
     const tagged = { kind: "tag", tag: 5n, item: { kind: "uint", value: 1n } };
     expect(decodeData("any", TYPES, encodeData("any", TYPES, tagged, "cbor"), "cbor")).toEqual(tagged);
@@ -281,6 +265,41 @@ describe("typed codec", () => {
     const bytes = decodeData("bytes", TYPES, input, "cbor") as Uint8Array;
     input[1] = 9;
     expect([...bytes]).toEqual([1, 2]);
+  });
+
+  it("caps a run of tags directly around one item at the depth limit", () => {
+    const run = (n: number): Uint8Array => hexToBytes(`${"c5 ".repeat(n)}00`);
+    expect(() => decodeData("any", TYPES, run(16), "cbor")).not.toThrow();
+    const runs = hexToBytes(`${"c5 ".repeat(16)}81 ${"c5 ".repeat(16)}00`);
+    expect(() => decodeData("any", TYPES, runs, "cbor")).not.toThrow();
+    expect(dataError(() => decodeData("any", TYPES, run(17), "cbor")).reason).toBe("too_deep");
+    expect(dataError(() => decodeData("any", TYPES, run(100_000), "cbor")).reason).toBe("too_deep");
+    let tagged: CborItem = { kind: "uint", value: 0n };
+    for (let i = 0; i < 16; i++) tagged = { kind: "tag", tag: 5n, item: tagged };
+    expect(() => encodeData("any", TYPES, tagged, "cbor")).not.toThrow();
+    tagged = { kind: "tag", tag: 5n, item: tagged };
+    expect(encodeError(() => encodeData("any", TYPES, tagged, "cbor")).kind).toBe("too_deep");
+  });
+
+  it("names the place of an error a scalar writer finds", () => {
+    expect(encodeError(() => encodeData({ ref: "Point" }, TYPES, { x: Number.NaN, y: 1 }, "json")).path).toBe("$.x");
+    expect(encodeError(() => encodeData("f64", TYPES, Number.NaN, "json")).path).toBe("$");
+    expect(encodeError(() => encodeData({ list: "string" }, TYPES, ["a", "\ud800"], "cbor")).path).toBe("$[1]");
+  });
+
+  it("keeps struct fields named like Object.prototype members as own fields", () => {
+    for (const codec of ["cbor", "json"] as const) {
+      const cbor = "a1 69 5f 5f 70 72 6f 74 6f 5f 5f a2 61 78 f9 3c 00 61 79 f9 40 00";
+      const bytes = codec === "json" ? json('{"__proto__":{"x":1,"y":2}}') : hexToBytes(cbor);
+      const value = decodeData({ ref: "Reserved" }, TYPES, bytes, codec) as Record<string, unknown>;
+      expect(Object.getPrototypeOf(value), codec).toBe(Object.prototype);
+      expect(Object.keys(value), codec).toEqual(["__proto__", "constructor"]);
+      expect(value["constructor"], codec).toBeNull();
+      expect(textOf(encodeData({ ref: "Reserved" }, TYPES, value, "json")), codec).toBe('{"__proto__":{"x":1,"y":2}}');
+    }
+    const own = Object.fromEntries([["__proto__", { x: 1, y: 2 }]]);
+    expect(textOf(encodeData({ ref: "Reserved" }, TYPES, own, "json"))).toBe('{"__proto__":{"x":1,"y":2}}');
+    expect(encodeError(() => encodeData({ ref: "Reserved" }, TYPES, {}, "json")).path).toBe("$.__proto__");
   });
 
   it("refuses an alias that never reaches a type", () => {

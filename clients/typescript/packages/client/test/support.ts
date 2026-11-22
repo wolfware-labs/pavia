@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { type Diag, hexToBytes, parse } from "@pavia/vectors/diag";
 import { expect } from "vitest";
-import { EncodeError, type CborMap, type CborItem, ProtocolError } from "../src/index.js";
+import { type CborItem, type CborMap, DataError, EncodeError, ProtocolError } from "../src/index.js";
 
 const VECTORS = fileURLToPath(new URL("../../../../../vectors/", import.meta.url));
 
@@ -13,11 +13,17 @@ export interface Case {
   readonly c: Json;
 }
 
+export function files(kind: string): { readonly file: string; readonly doc: Json }[] {
+  return readdirSync(VECTORS + kind)
+    .filter((f) => f.endsWith(".json"))
+    .sort()
+    .map((file) => ({ file, doc: JSON.parse(readFileSync(`${VECTORS}${kind}/${file}`, "utf8")) as Json }));
+}
+
 export function cases(kind: string): Case[] {
   const out: Case[] = [];
-  for (const file of readdirSync(VECTORS + kind).filter((f) => f.endsWith(".json")).sort()) {
-    const doc = JSON.parse(readFileSync(`${VECTORS}${kind}/${file}`, "utf8")) as { cases: Json[] };
-    for (const c of doc.cases) out.push({ id: `${kind}/${file}#${String(c.id)}`, c });
+  for (const { file, doc } of files(kind)) {
+    for (const c of doc["cases"] as Json[]) out.push({ id: `${kind}/${file}#${String(c["id"])}`, c });
   }
   return out;
 }
@@ -73,6 +79,12 @@ export function encodeError(f: () => unknown): EncodeError {
   const error = thrown(f);
   expect(error).toBeInstanceOf(EncodeError);
   return error as EncodeError;
+}
+
+export function dataError(f: () => unknown): DataError {
+  const error = thrown(f);
+  expect(error).toBeInstanceOf(DataError);
+  return error as DataError;
 }
 
 export function concat(parts: readonly Uint8Array[]): Uint8Array {
