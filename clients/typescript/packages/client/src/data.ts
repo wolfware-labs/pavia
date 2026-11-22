@@ -71,6 +71,8 @@ const INTEGER_RANGE: Readonly<Partial<Record<Primitive, readonly [bigint, bigint
  * floats, `bigint` for `i64` and `u64`, `Uint8Array` for `bytes`, `Date` for `timestamp`, a
  * lowercase hyphenated string for `uuid`, arrays for `list` and `tuple`, `Map` for `map`, objects
  * keyed by field name for structs, {@link EnumValue} for enums and a {@link CborItem} for `any`.
+ * `unit` takes `null` only, so a function that returns nothing has its `undefined` mapped to
+ * `null` before it is encoded; an `option` alone reads `undefined` as absent.
  *
  * @throws {@link EncodeError} when `value` does not fit `type` or a receiver within `limits` would
  * refuse it, with the place in `path` (`$.sent_at`, `$[2]`).

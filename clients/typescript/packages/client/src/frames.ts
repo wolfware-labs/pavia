@@ -630,6 +630,7 @@ function sequencing(f: Fields): Sequencing {
  * @throws {@link ProtocolError} `frame_type_not_allowed`, `unexpected_data_section`,
  * `heartbeat_too_large`, `malformed_header`, `invalid_header_field` or
  * `invalid_control_request_field`.
+ * @throws RangeError when `headerLimits` holds a limit that is not a non-negative integer.
  */
 export function decodeFrame(raw: RawFrame, headerLimits: HeaderLimits = DEFAULT_HEADER_LIMITS): Frame {
   const name = TYPE_NAMES.get(raw.type);
