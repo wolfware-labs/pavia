@@ -59,7 +59,8 @@ const WIDTH_INFO: Readonly<Record<number, number>> = { 1: 24, 2: 25, 4: 26, 8: 2
  *
  * @throws {@link EncodeError} `duplicate_key` when two keys of one map encode the same,
  * `reserved_simple_value` for a simple value from 24 to 31, `out_of_range` for an integer
- * outside 0 to 2^64 - 1, and `tag_in_header` for a tag.
+ * outside 0 to 2^64 - 1, `tag_in_header` for a tag, and `invalid_value` for an item whose `kind`
+ * is not a {@link CborItem} kind.
  */
 export function encodeHeader(header: CborMap): Uint8Array {
   const out = new ByteWriter();
@@ -83,8 +84,8 @@ export function encodeCborItem(value: CborItem): Uint8Array {
  * order they have, since the typed layer has put them in theirs. Integers, lengths and floats
  * take their shortest form.
  *
- * @throws {@link EncodeError} `reserved_simple_value`, `out_of_range` or `lone_surrogate`, as
- * {@link encodeHeader}.
+ * @throws {@link EncodeError} `reserved_simple_value`, `out_of_range`, `lone_surrogate` or
+ * `invalid_value`, as {@link encodeHeader}.
  */
 export function writeCborItem(out: ByteWriter, value: CborItem): void {
   writeValue(out, value, true);
@@ -283,12 +284,14 @@ export function decodeHeader(bytes: Uint8Array, limits: HeaderLimits = DEFAULT_H
 }
 
 /**
- * Decodes one CBOR item that fills `bytes`, tags allowed and adding no depth, as a data section
- * (spec 12.3) is read before its type is applied. A top-level array or map has depth 1, and a run
- * of tags directly around one item holds at most `maxDepth` tags, as `pavia-proto` reads them.
+ * Decodes one CBOR item that fills `bytes`, as a data section (spec 12.3) is read before its type
+ * is applied: tags are allowed and add no depth, indefinite lengths are read, map keys are kept as
+ * given, twice included, for the typed layer to judge, and byte strings are copied out of `bytes`.
+ * A top-level array or map has depth 1, and a run of tags directly around one item holds at most
+ * `maxDepth` tags, as `pavia-proto` reads them.
  *
  * @throws the error `fail` returns for the first rule that fails, with the same reasons as
- * {@link decodeHeader} but `not_a_map`, `too_large` and `tag`.
+ * {@link decodeHeader} but `not_a_map`, `too_large`, `tag`, `indefinite_length` and `duplicate_key`.
  */
 export function decodeCborItem(
   bytes: Uint8Array,
@@ -311,7 +314,7 @@ class Reader {
   constructor(
     private readonly bytes: Uint8Array,
     private readonly maxDepth: number,
-    private readonly tags: boolean,
+    private readonly data: boolean,
     private readonly fail: (reason: HeaderErrorReason) => Error,
   ) {}
 
@@ -322,7 +325,7 @@ class Reader {
 
   map(depth: number): CborMap {
     const length = this.head();
-    const seen = this.tags ? undefined : new KeySet();
+    const seen = this.data ? undefined : new KeySet();
     const entries: (readonly [CborItem, CborItem])[] = [];
     for (let i = 0n; i < length; i++) {
       const start = this.pos;
@@ -336,23 +339,19 @@ class Reader {
   private indefinite(major: number, depth: number): CborItem {
     this.pos++;
     switch (major) {
-      case BYTES:
+      case BYTES: {
+        const out = new ByteWriter();
+        while (!this.atBreak()) out.bytes(this.chunk(BYTES));
+        return { kind: "bytes", value: out.finish() };
+      }
       case TEXT: {
-        const chunks: Uint8Array[] = [];
         let text = "";
         while (!this.atBreak()) {
-          const head = this.bytes[this.pos] as number;
-          if (head >> 5 !== major || (head & 0x1f) === 31) throw this.fail("malformed");
-          const chunk = this.take(this.head());
-          if (major === BYTES) {
-            chunks.push(chunk);
-            continue;
-          }
-          const part = textOfUtf8(chunk);
+          const part = textOfUtf8(this.chunk(TEXT));
           if (part === undefined) throw this.fail("malformed");
           text += part;
         }
-        return major === BYTES ? { kind: "bytes", value: concatBytes(chunks) } : { kind: "text", value: text };
+        return { kind: "text", value: text };
       }
       case ARRAY: {
         const inner = this.deeper(depth);
@@ -372,6 +371,12 @@ class Reader {
     }
   }
 
+  private chunk(major: number): Uint8Array {
+    const head = this.bytes[this.pos] as number;
+    if (head >> 5 !== major || (head & 0x1f) === 31) throw this.fail("malformed");
+    return this.take(this.head());
+  }
+
   private atBreak(): boolean {
     const next = this.bytes[this.pos];
     if (next === undefined) throw this.fail("malformed");
@@ -386,12 +391,12 @@ class Reader {
     const major = first >> 5;
     const info = first & 0x1f;
     if (info === 31 && major >= BYTES && major <= MAP) {
-      if (!this.tags) throw this.fail("indefinite_length");
+      if (!this.data) throw this.fail("indefinite_length");
       return this.indefinite(major, depth);
     }
     if (info >= 28) throw this.fail("malformed");
     if (major === TAG) {
-      if (!this.tags) throw this.fail("tag");
+      if (!this.data) throw this.fail("tag");
       if (run === this.maxDepth) throw this.fail("too_deep");
       const tag = this.head();
       return { kind: "tag", tag, item: this.value(depth, run + 1) };
@@ -403,7 +408,7 @@ class Reader {
         return { kind: "nint", value: this.head() };
       case BYTES: {
         const value = this.take(this.head());
-        return { kind: "bytes", value: this.tags ? value.slice() : value };
+        return { kind: "bytes", value: this.data ? value.slice() : value };
       }
       case TEXT: {
         const value = textOfUtf8(this.take(this.head()));
@@ -514,14 +519,4 @@ function fromHalf(bits: number): number {
   if (exponent === 0) return sign * fraction * 2 ** -24;
   if (exponent === 0x1f) return fraction === 0 ? sign * Infinity : NaN;
   return sign * (1024 + fraction) * 2 ** (exponent - 25);
-}
-
-function concatBytes(chunks: readonly Uint8Array[]): Uint8Array {
-  const out = new Uint8Array(chunks.reduce((n, chunk) => n + chunk.length, 0));
-  let at = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, at);
-    at += chunk.length;
-  }
-  return out;
 }

@@ -167,7 +167,8 @@ function describe(field: FieldError): string {
  * - `missing_field`: a struct value without a field that is not `optional`.
  * - `unknown_variant`: an enum value whose `kind` the type does not declare, the open-enum
  *   catch-all among them, since it is decode-only.
- * - `unknown_type`: a `ref` to a name the types table does not hold.
+ * - `unknown_type`: a `ref` to a name the types table does not hold, or to an alias that loops
+ *   back to itself without reaching a type.
  * - `not_json`: a value `json` cannot hold: NaN, an infinity, or an `any` item that is a byte
  *   string, a tag, `undefined`, a simple value, or a map with a key that is not text or appears twice.
  * - `too_deep`: a data value nested deeper than the receiver's depth limit.
@@ -212,13 +213,13 @@ export class EncodeError extends Error {
  * Why a data section was refused (spec 12.3).
  *
  * - `malformed`: bytes that are not one complete CBOR item or JSON text, with the CBOR rule that
- *   failed, such as `indefinite_length`, as `detail`.
+ *   failed, such as `trailing_bytes`, as `detail`.
  * - `too_deep`: arrays and maps nested deeper than the depth limit.
  * - `duplicate_key`: a map or object with a key twice.
  * - `undeclared_tag`: a CBOR tag where the type declares none (spec 12.3).
  * - `wrong_type`: an item of another kind than the type takes, such as a float for a `u8`.
- * - `out_of_range`: an integer outside its type, a float with no exact `f32` form, a number
- *   past the doubles, or a timestamp outside what RFC 3339 writes.
+ * - `out_of_range`: an integer outside its type, a finite float past the `f32` range for an
+ *   `f32`, a number past the doubles, or a timestamp outside what RFC 3339 writes.
  * - `not_canonical`: text in a form `json` does not write: a 64-bit integer with a sign or
  *   leading zeros, padded base64url, a timestamp without milliseconds or not in UTC, an uppercase
  *   uuid.
@@ -226,7 +227,8 @@ export class EncodeError extends Error {
  * - `unknown_variant`: a variant a closed enum does not declare, a unit variant with a value or a
  *   data variant without one.
  * - `length`: a tuple with another number of items, or a uuid that is not 16 bytes.
- * - `unknown_type`: a `ref` to a name the types table does not hold.
+ * - `unknown_type`: a `ref` to a name the types table does not hold, or to an alias that loops
+ *   back to itself without reaching a type.
  */
 export type DataErrorReason =
   | "malformed"

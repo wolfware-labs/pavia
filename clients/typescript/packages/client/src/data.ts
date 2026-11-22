@@ -128,7 +128,6 @@ export function decodeData(
 function cborRefusal(reason: HeaderErrorReason): DataError {
   switch (reason) {
     case "too_deep":
-    case "duplicate_key":
       return new DataError("cbor", reason);
     default:
       return new DataError("cbor", "malformed", reason);
@@ -141,7 +140,7 @@ function jsonRefusal(reason: JsonErrorReason): DataError {
 
 type Shape =
   | { readonly kind: "primitive"; readonly primitive: Primitive }
-  | { readonly kind: "option"; readonly inner: ContractType }
+  | { readonly kind: "option"; readonly inner: ContractType; readonly unresolved: UnknownType | undefined }
   | { readonly kind: "list"; readonly inner: ContractType }
   | { readonly kind: "map"; readonly inner: ContractType }
   | { readonly kind: "tuple"; readonly items: readonly ContractType[] }
@@ -178,8 +177,7 @@ function resolve(type: ContractType, types: Types, followed: Set<string> = new S
   for (;;) {
     if (typeof current === "string") return { kind: "primitive", primitive: current };
     if ("option" in current) {
-      resolve(current.option, types, followed);
-      return { kind: "option", inner: current.option };
+      return { kind: "option", inner: current.option, unresolved: unresolvedIn(current.option, types, followed) };
     }
     if ("list" in current) return { kind: "list", inner: current.list };
     if ("map" in current) return { kind: "map", inner: current.map };
@@ -192,6 +190,26 @@ function resolve(type: ContractType, types: Types, followed: Set<string> = new S
     if ("enum" in named) return { kind: "enum", variants: named.enum.variants, open: named.enum.open === true };
     current = named.alias;
   }
+}
+
+/**
+ * The error `type` raises when it reaches no type, such as an alias that loops back through
+ * options; only a value other than null meets it, as in `pavia-codec`.
+ */
+function unresolvedIn(type: ContractType, types: Types, followed: Set<string>): UnknownType | undefined {
+  try {
+    resolve(type, types, followed);
+    return undefined;
+  } catch (error) {
+    if (error instanceof UnknownType) return error;
+    throw error;
+  }
+}
+
+/** The type of the value an option holds when it is not null. */
+function someOf(shape: Extract<Shape, { kind: "option" }>): ContractType {
+  if (shape.unresolved !== undefined) throw shape.unresolved;
+  return shape.inner;
 }
 
 class UnknownType extends Error {
@@ -339,7 +357,7 @@ class CborEncoder {
         return this.primitive(out, shape.primitive, value, depth);
       case "option":
         if (value === null || value === undefined) return out.byte(0xf6);
-        return this.write(out, shape.inner, value, depth);
+        return this.write(out, someOf(shape), value, depth);
       case "list": {
         const items = arrayOf(value, "list");
         const inner = checkDepth(depth, this.maxDepth);
@@ -514,7 +532,7 @@ class JsonEncoder {
           out.text += "null";
           return;
         }
-        return this.write(out, shape.inner, value, depth);
+        return this.write(out, someOf(shape), value, depth);
       case "list":
       case "tuple": {
         const items = arrayOf(value, shape.kind);
@@ -713,7 +731,7 @@ class CborDecoder {
       case "primitive":
         return this.primitive(shape.primitive, item);
       case "option":
-        return item.kind === "null" ? null : this.read(shape.inner, item);
+        return item.kind === "null" ? null : this.read(someOf(shape), item);
       case "list":
         if (item.kind !== "array") throw decodeFailure("cbor", "wrong_type", "list takes an array");
         return item.items.map((element, i) => {
@@ -870,7 +888,7 @@ class JsonDecoder {
       case "primitive":
         return this.primitive(shape.primitive, json);
       case "option":
-        return json.kind === "null" ? null : this.read(shape.inner, json);
+        return json.kind === "null" ? null : this.read(someOf(shape), json);
       case "list":
         if (json.kind !== "array") throw decodeFailure("json", "wrong_type", "list takes an array");
         return json.items.map((element, i) => {
