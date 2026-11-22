@@ -242,14 +242,23 @@ function writeUintKeyedMap(out: ByteWriter, entries: CborMap): void {
 }
 
 /**
+ * Refuses a CBOR head argument outside 0 to 2^64 - 1, the integers a `uint` or `nint` item holds.
+ *
+ * @throws {@link EncodeError} `out_of_range`.
+ */
+export function checkArgument(argument: bigint): void {
+  if (argument < 0n || argument > MAX_U64) {
+    throw new EncodeError("out_of_range", `CBOR argument ${argument} is outside 0 to 2^64 - 1`);
+  }
+}
+
+/**
  * Appends a CBOR head in its shortest form.
  *
  * @throws {@link EncodeError} `out_of_range` for an argument outside 0 to 2^64 - 1.
  */
 export function writeHead(out: ByteWriter, major: number, argument: bigint): void {
-  if (argument < 0n || argument > MAX_U64) {
-    throw new EncodeError("out_of_range", `CBOR argument ${argument} is outside 0 to 2^64 - 1`);
-  }
+  checkArgument(argument);
   const type = major * 32;
   if (argument < 24n) return out.byte(type + Number(argument));
   const width = argument < 0x100n ? 1 : argument < 0x1_0000n ? 2 : argument < 0x1_0000_0000n ? 4 : 8;

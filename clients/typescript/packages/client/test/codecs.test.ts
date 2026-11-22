@@ -255,12 +255,18 @@ describe("typed codec", () => {
   });
 
   it("keeps any integers within the 64-bit CBOR range in json", () => {
-    for (const item of [{ kind: "uint", value: 2n ** 64n }, { kind: "nint", value: 2n ** 64n }, { kind: "uint", value: -1n }]) {
+    const outside = [
+      { kind: "uint", value: 2n ** 64n },
+      { kind: "nint", value: 2n ** 64n },
+      { kind: "uint", value: -1n },
+    ];
+    for (const item of outside) {
       for (const codec of ["cbor", "json"] as const) {
         expect(encodeError(() => encodeData("any", TYPES, item, codec)).kind).toBe("out_of_range");
       }
     }
-    expect(textOf(encodeData("any", TYPES, { kind: "nint", value: 2n ** 64n - 1n }, "json"))).toBe("-18446744073709551616");
+    const lowest = encodeData("any", TYPES, { kind: "nint", value: 2n ** 64n - 1n }, "json");
+    expect(textOf(lowest)).toBe("-18446744073709551616");
   });
 
   it("refuses any items with a field missing or of the wrong type", () => {
