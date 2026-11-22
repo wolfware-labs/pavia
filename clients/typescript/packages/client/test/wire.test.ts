@@ -269,6 +269,15 @@ describe("header sections", () => {
     expect(encodeError(() => encodeCborItem({ kind: "bool", value: "no" } as never)).kind).toBe("invalid_value");
   });
 
+  it("refuses a tag anywhere in a header key, as in its values", () => {
+    const tag = { kind: "tag", tag: 1n, item: { kind: "text", value: "k" } } as const;
+    const nil = { kind: "null" } as const;
+    for (const key of [tag, { kind: "array", items: [tag] }, { kind: "map", entries: [[tag, nil]] }] as const) {
+      expect(encodeError(() => encodeHeader([[key, nil]])).kind).toBe("tag_in_header");
+    }
+    expect(encodeError(() => encodeCborItem(tag)).kind).toBe("tag_in_header");
+  });
+
   it("refuses header limits that bound nothing", () => {
     for (const limits of [
       { maxSize: Number.NaN, maxDepth: 16 },
