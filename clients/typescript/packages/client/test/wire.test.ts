@@ -260,8 +260,9 @@ describe("header sections", () => {
   });
 
   it("keeps keys of different kinds apart and finds duplicates within each kind", () => {
-    expect(decodeHeader(hexToBytes("a5 01 00 21 00 61 31 00 41 01 00 e1 00"))).toHaveLength(5);
-    for (const map of ["a2 01 00 18 01 01", "a2 21 00 38 01 01", "a2 61 31 00 61 31 01", "a2 41 01 00 41 01 01"]) {
+    expect(decodeHeader(hexToBytes("a5 01 00 21 00 61 31 00 41 e1 00 e1 00"))).toHaveLength(5);
+    const duplicates = ["a2 01 00 18 01 01", "a2 21 00 38 01 01", "a2 61 31 00 78 01 31 01", "a2 41 01 00 58 01 01 01"];
+    for (const map of duplicates) {
       expect(protocolError(() => decodeHeader(hexToBytes(map))).reason).toBe("duplicate_key");
     }
   });

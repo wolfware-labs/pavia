@@ -344,7 +344,8 @@ class KeySet {
   private uints: Set<bigint> | undefined;
   private nints: Set<bigint> | undefined;
   private texts: Set<string> | undefined;
-  private others: Set<string> | undefined;
+  private byteStrings: Set<string> | undefined;
+  private raws: Set<string> | undefined;
 
   add(key: HeaderValue, bytes: Uint8Array, start: number, end: number): boolean {
     switch (key.kind) {
@@ -355,9 +356,9 @@ class KeySet {
       case "text":
         return addNew((this.texts ??= new Set()), key.value);
       case "bytes":
-        return addNew((this.others ??= new Set()), `b${hex(key.value)}`);
+        return addNew((this.byteStrings ??= new Set()), hex(key.value));
       default:
-        return addNew((this.others ??= new Set()), `r${hex(bytes.subarray(start, end))}`);
+        return addNew((this.raws ??= new Set()), hex(bytes.subarray(start, end)));
     }
   }
 }
