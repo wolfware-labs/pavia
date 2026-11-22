@@ -181,8 +181,6 @@ function writeValue(out: ByteWriter, value: CborItem, data: boolean): void {
       return writeHead(out, SIMPLE, BigInt(value.value));
     case "float":
       return writeFloat(out, value.value);
-    default:
-      throw new EncodeError("invalid_value", `${String((value as { kind?: unknown }).kind)} is not a CBOR item kind`);
   }
 }
 
