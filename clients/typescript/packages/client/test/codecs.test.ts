@@ -299,6 +299,8 @@ describe("typed codec", () => {
     unit["kind"] = "Idle";
     expect(hex(encodeData({ ref: "Status" }, TYPES, unit, "cbor"))).toBe("64 49 64 6c 65");
     expect(hex(encodeData({ ref: "Status" }, TYPES, { kind: "Idle", value: undefined }, "cbor"))).toBe("64 49 64 6c 65");
+    const kindless = Object.create({ kind: "Idle" }) as Record<string, unknown>;
+    expect(encodeError(() => encodeData({ ref: "Status" }, TYPES, kindless, "cbor")).kind).toBe("invalid_value");
     for (const codec of ["cbor", "json"] as const) {
       const bad = encodeError(() => encodeData({ map: "u8" }, TYPES, new Map([["\ud800", 1]]), codec));
       expect([bad.kind, bad.path]).toEqual(["lone_surrogate", '$["\\ud800"]']);

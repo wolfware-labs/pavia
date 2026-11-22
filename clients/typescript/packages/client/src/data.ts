@@ -365,7 +365,7 @@ function presentFields(fields: readonly Field[], object: Readonly<Record<string,
 
 function variantOf(variants: readonly Variant[], value: unknown): [Variant, unknown] {
   const object = objectOf(value, "an enum");
-  const kind = object["kind"];
+  const kind = fieldOf(object, "kind");
   if (typeof kind !== "string") throw encodeFailure("invalid_value", "an enum value takes a string kind");
   const variant = variantNamed(variants, kind);
   if (variant === undefined) throw encodeFailure("unknown_variant", `variant ${kind} is not in the type`);
