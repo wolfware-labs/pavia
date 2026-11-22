@@ -239,6 +239,11 @@ class UnknownType extends Error {
   ) {
     super(`type ${ref} ${why}`);
   }
+
+  /** This error one `segment` further out. */
+  under(segment: string): UnknownType {
+    return new UnknownType(this.ref, this.why, under(this.path, segment));
+  }
 }
 
 function variantNamed(variants: readonly Variant[], name: string): Variant | undefined {
@@ -260,12 +265,12 @@ function placed(error: EncodeError, path: string): EncodeError {
 }
 
 function underEncode(error: unknown, segment: string): unknown {
-  if (error instanceof UnknownType) return new UnknownType(error.ref, error.why, under(error.path, segment));
+  if (error instanceof UnknownType) return error.under(segment);
   return error instanceof EncodeError ? placed(error, under(error.path ?? "$", segment)) : error;
 }
 
 function underDecode(error: unknown, segment: string): unknown {
-  if (error instanceof UnknownType) return new UnknownType(error.ref, error.why, under(error.path, segment));
+  if (error instanceof UnknownType) return error.under(segment);
   if (error instanceof DataError) return new DataError(error.codec, error.reason, error.detail, under(error.path, segment));
   return error;
 }
@@ -808,7 +813,13 @@ class CborDecoder {
           defineField(result, field.name, this.field(field, given.get(field.name)));
           given.delete(field.name);
         }
-        for (const [name, value] of given) refuseTags(value, `.${name}`);
+        for (const [name, value] of given) {
+          try {
+            refuseTags(value);
+          } catch (error) {
+            throw underDecode(error, NAME.test(name) ? `.${name}` : keySegment(name));
+          }
+        }
         return result;
       }
       case "enum": {
@@ -897,19 +908,29 @@ function unknownVariant(codec: Codec, open: boolean, name: string): void {
 
 /**
  * Refuses any tag inside the value of a struct field the type does not declare: such a value has
- * no declared type, so it may hold none of spec 12.3's tags.
+ * no declared type, so it may hold none of spec 12.3's tags. The path is built only on a refusal.
  */
-function refuseTags(item: CborItem, path: string): void {
+function refuseTags(item: CborItem): void {
   switch (item.kind) {
     case "tag":
-      throw new DataError("cbor", "undeclared_tag", `tag ${item.tag}`, `$${path}`);
+      throw decodeFailure("cbor", "undeclared_tag", `tag ${item.tag}`);
     case "array":
-      item.items.forEach((element, i) => refuseTags(element, `${path}[${i}]`));
+      item.items.forEach((element, i) => {
+        try {
+          refuseTags(element);
+        } catch (error) {
+          throw underDecode(error, `[${i}]`);
+        }
+      });
       return;
     case "map":
       for (const [key, value] of item.entries) {
-        refuseTags(key, path);
-        refuseTags(value, path);
+        refuseTags(key);
+        try {
+          refuseTags(value);
+        } catch (error) {
+          throw key.kind === "text" ? underDecode(error, keySegment(key.value)) : error;
+        }
       }
       return;
     default:
@@ -922,7 +943,6 @@ function unitVariant(codec: Codec, variants: readonly Variant[], open: boolean, 
   if (variant === undefined) {
     unknownVariant(codec, open, name);
     return { kind: "Unknown", name };
-    throw decodeFailure(codec, "unknown_variant", `variant ${name} is not in the type`);
   }
   if (variant.type !== undefined) throw decodeFailure(codec, "unknown_variant", `variant ${name} takes a value`);
   return { kind: name };

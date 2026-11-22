@@ -175,7 +175,9 @@ describe("typed codec", () => {
   it("refuses tags inside unknown struct fields and names outside the name rule in open enums", () => {
     const tagged = hexToBytes("a3 61 7a 81 a1 61 61 c5 01 61 78 f9 3c 00 61 79 f9 40 00");
     const error = dataError(() => decodeData({ ref: "Point" }, TYPES, tagged, "cbor"));
-    expect([error.reason, error.path]).toEqual(["undeclared_tag", "$.z[0]"]);
+    expect([error.reason, error.path]).toEqual(["undeclared_tag", '$.z[0]["a"]']);
+    const odd = hexToBytes("a3 63 61 2d 62 c5 01 61 78 f9 3c 00 61 79 f9 40 00");
+    expect(dataError(() => decodeData({ ref: "Point" }, TYPES, odd, "cbor")).path).toBe('$["a-b"]');
     for (const name of ["", "1a", "a-b", "a\nb", "é"]) {
       expect(dataError(() => decodeData({ ref: "Status" }, TYPES, json(JSON.stringify(name)), "json")).reason, name).toBe(
         "unknown_variant",
