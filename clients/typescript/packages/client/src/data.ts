@@ -73,6 +73,7 @@ const INTEGER_RANGE: Readonly<Partial<Record<Primitive, readonly [bigint, bigint
  *
  * @throws {@link EncodeError} when `value` does not fit `type` or a receiver within `limits` would
  * refuse it, with the place in `path` (`$.sent_at`, `$[2]`).
+ * @throws RangeError when `limits.maxDepth` is not a non-negative integer.
  */
 export function encodeData(
   type: ContractType,
@@ -81,6 +82,7 @@ export function encodeData(
   codec: Codec,
   limits: DataLimits = DEFAULT_DATA_LIMITS,
 ): Uint8Array {
+  checkLimits(limits);
   try {
     if (codec === "cbor") {
       const out = new ByteWriter();
@@ -104,6 +106,7 @@ export function encodeData(
  * declare becomes `{ kind: "Unknown", name }`.
  *
  * @throws {@link DataError} for bytes that are not one valid item of `type` within `limits`.
+ * @throws RangeError when `limits.maxDepth` is not a non-negative integer.
  */
 export function decodeData(
   type: ContractType,
@@ -112,6 +115,7 @@ export function decodeData(
   codec: Codec,
   limits: DataLimits = DEFAULT_DATA_LIMITS,
 ): unknown {
+  checkLimits(limits);
   try {
     if (codec === "cbor") {
       const item = decodeCborItem(bytes, limits.maxDepth, cborRefusal);
@@ -122,6 +126,12 @@ export function decodeData(
   } catch (error) {
     if (error instanceof UnknownType) throw new DataError(codec, "unknown_type", error.message, error.path);
     throw error;
+  }
+}
+
+function checkLimits(limits: DataLimits): void {
+  if (!Number.isSafeInteger(limits.maxDepth) || limits.maxDepth < 0) {
+    throw new RangeError(`maxDepth ${limits.maxDepth} is not a non-negative integer`);
   }
 }
 
@@ -471,7 +481,7 @@ class CborEncoder {
   private primitive(out: ByteWriter, primitive: Primitive, value: unknown, depth: number): void {
     switch (primitive) {
       case "unit":
-        if (value !== null && value !== undefined) throw encodeFailure("invalid_value", "unit takes null");
+        if (value !== null) throw encodeFailure("invalid_value", "unit takes null");
         return out.byte(0xf6);
       case "bool":
         if (typeof value !== "boolean") throw encodeFailure("invalid_value", "bool takes a boolean");
@@ -645,7 +655,7 @@ class JsonEncoder {
   private primitive(out: JsonText, primitive: Primitive, value: unknown, depth: number): void {
     switch (primitive) {
       case "unit":
-        if (value !== null && value !== undefined) throw encodeFailure("invalid_value", "unit takes null");
+        if (value !== null) throw encodeFailure("invalid_value", "unit takes null");
         out.text += "null";
         return;
       case "bool":
