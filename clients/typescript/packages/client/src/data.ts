@@ -1,9 +1,9 @@
 import { ByteWriter, compareBytes } from "./bytes.js";
 import {
   ARRAY,
-  checkLimit,
   BYTES,
   type CborItem,
+  checkLimit,
   decodeCborItem,
   hasF32Form,
   MAP,
