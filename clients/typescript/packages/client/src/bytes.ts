@@ -56,7 +56,6 @@ const TYPED_ARRAY_NAME = Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, 
  * `DataView` that sets its own `Symbol.toStringTag` to `"Uint8Array"` is not taken for one.
  */
 export function isBytes(value: unknown): value is Uint8Array {
-  if (value instanceof Uint8Array) return true;
   return TYPED_ARRAY_NAME.call(value) === "Uint8Array";
 }
 

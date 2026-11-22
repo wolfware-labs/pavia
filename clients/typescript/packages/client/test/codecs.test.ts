@@ -219,6 +219,12 @@ describe("typed codec", () => {
   });
 
   it("does not take a view that only names itself a Uint8Array", () => {
+    const shells = [Object.create(Uint8Array.prototype), new Proxy(Uint8Array.of(1), {})];
+    for (const shell of shells) {
+      for (const codec of ["cbor", "json"] as const) {
+        expect(encodeError(() => encodeData("bytes", TYPES, shell, codec)).kind).toBe("invalid_value");
+      }
+    }
     for (const view of [new Uint16Array([0x0102, 0x0304]), new DataView(new ArrayBuffer(2))]) {
       Object.defineProperty(view, Symbol.toStringTag, { value: "Uint8Array" });
       for (const codec of ["cbor", "json"] as const) {
