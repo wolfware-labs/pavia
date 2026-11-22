@@ -227,6 +227,9 @@ describe("typed codec", () => {
     }
     expect(hex(encodeData("any", TYPES, { kind: "bytes", value: foreign }, "cbor"))).toBe("42 01 02");
     expect(hex(encodeHeader([[{ kind: "uint", value: 1n }, { kind: "bytes", value: foreign }]]))).toBe("a1 01 42 01 02");
+    for (const other of [Uint16Array.of(1), new DataView(new ArrayBuffer(2)), runInNewContext("new Uint16Array(1)")]) {
+      expect(encodeError(() => encodeData("bytes", TYPES, other, "cbor")).kind).toBe("invalid_value");
+    }
   });
 
   it("refuses any items with a field missing or of the wrong type", () => {

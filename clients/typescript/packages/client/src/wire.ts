@@ -1,4 +1,4 @@
-import { ByteWriter, isByte } from "./bytes.js";
+import { ByteWriter, isByte, isBytes } from "./bytes.js";
 import { EncodeError, ProtocolError } from "./errors.js";
 import { decodeVarint, MAX_VARINT, varintLength, writeVarint } from "./varint.js";
 
@@ -132,7 +132,7 @@ export function takeFrame(
  */
 export function decodeMessage(message: Uint8Array | ArrayBuffer | string, maxFrame: number): WsFrame[] {
   if (typeof message === "string") throw new ProtocolError("text_message");
-  const bytes = message instanceof Uint8Array ? message : new Uint8Array(message);
+  const bytes = isBytes(message) ? message : new Uint8Array(message);
   if (bytes.length > messageLimit(maxFrame)) throw new ProtocolError("message_too_large");
   if (bytes.length === 0) throw new ProtocolError("malformed_message");
   const frames: WsFrame[] = [];
