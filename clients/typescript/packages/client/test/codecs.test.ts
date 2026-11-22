@@ -114,7 +114,7 @@ describe("codec vectors", () => {
   }
 
   it("covers every case", () => {
-    expect(FILES.reduce((n, f) => n + f.cases.length, 0)).toBe(109);
+    expect(FILES.reduce((n, f) => n + f.cases.length, 0)).toBe(110);
   });
 });
 
@@ -186,6 +186,12 @@ describe("typed codec", () => {
       expect(dataError(() => decodeData({ ref: "Status" }, TYPES, data, "json")).reason, name).toBe("unknown_variant");
     }
     expect(decodeData({ ref: "Status" }, TYPES, json('"_Later2"'), "json")).toEqual({ kind: "Unknown", name: "_Later2" });
+    for (const input of ["a1 63 5a 65 64 c5 01", "a1 63 5a 65 64 81 c1 01", "a1 63 5a 65 64 a1 61 78 d8 25 40"]) {
+      const refused = dataError(() => decodeData({ ref: "Status" }, TYPES, hexToBytes(input), "cbor"));
+      expect([refused.reason, refused.path.startsWith("$.Zed")], input).toEqual(["undeclared_tag", true]);
+    }
+    expect(decodeData({ ref: "Status" }, TYPES, hexToBytes("a1 63 5a 65 64 81 01"), "cbor")).toEqual({ kind: "Unknown", name: "Zed" });
+    expect(dataError(() => decodeData({ ref: "Status" }, TYPES, json('"A\\n"'), "json")).message).not.toContain("\n");
   });
 
   it("names the place of a type the table does not hold", () => {

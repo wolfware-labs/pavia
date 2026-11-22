@@ -791,7 +791,7 @@ class CborDecoder {
         const map = new Map<string, unknown>();
         for (const [key, value] of item.entries) {
           if (key.kind !== "text") throw decodeFailure("cbor", "wrong_type", "map keys are text");
-          if (map.has(key.value)) throw decodeFailure("cbor", "duplicate_key", key.value);
+          if (map.has(key.value)) throw decodeFailure("cbor", "duplicate_key", JSON.stringify(key.value));
           try {
             map.set(key.value, this.read(shape.inner, value));
           } catch (error) {
@@ -805,7 +805,7 @@ class CborDecoder {
         const given = new Map<string, CborItem>();
         for (const [key, value] of item.entries) {
           if (key.kind !== "text") throw decodeFailure("cbor", "wrong_type", "struct keys are text");
-          if (given.has(key.value)) throw decodeFailure("cbor", "duplicate_key", key.value);
+          if (given.has(key.value)) throw decodeFailure("cbor", "duplicate_key", JSON.stringify(key.value));
           given.set(key.value, value);
         }
         const result: Record<string, unknown> = {};
@@ -830,9 +830,10 @@ class CborDecoder {
         const [key, payload] = item.entries[0] as readonly [CborItem, CborItem];
         const name = (key as { value: string }).value;
         const variant = dataVariant("cbor", shape.variants, shape.open, name);
-        if (variant === undefined) return { kind: "Unknown", name };
         try {
-          return { kind: name, value: this.read(variant.type as ContractType, payload) };
+          if (variant !== undefined) return { kind: name, value: this.read(variant.type as ContractType, payload) };
+          refuseTags(payload);
+          return { kind: "Unknown", name };
         } catch (error) {
           throw underDecode(error, `.${name}`);
         }
@@ -903,7 +904,9 @@ function isTagged(primitive: Primitive): boolean {
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 function unknownVariant(codec: Codec, open: boolean, name: string): void {
-  if (!open || !NAME.test(name)) throw decodeFailure(codec, "unknown_variant", `variant ${name} is not in the type`);
+  if (!open || !NAME.test(name)) {
+    throw decodeFailure(codec, "unknown_variant", `variant ${JSON.stringify(name)} is not in the type`);
+  }
 }
 
 /**

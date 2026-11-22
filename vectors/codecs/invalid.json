@@ -42,6 +42,16 @@
           }
         ]
       }
+    },
+    "Mode": {
+      "enum": {
+        "variants": [
+          {
+            "name": "Idle"
+          }
+        ],
+        "open": true
+      }
     }
   },
   "cases": [
@@ -713,6 +723,23 @@
         "reason": "tag 5"
       },
       "cbor": "a3 61 79 f9 3c 00 61 78 f9 3c 00 61 7a c5 01"
+    },
+    {
+      "id": "open-enum-unknown-payload-with-tag",
+      "spec": [
+        "12.1",
+        "12.3"
+      ],
+      "note": "An open enum's unknown variant has no declared payload type, so a tag inside its payload is refused.",
+      "type": {
+        "ref": "Mode"
+      },
+      "direction": "decode",
+      "error": {
+        "codec": "cbor",
+        "reason": "tag 5"
+      },
+      "cbor": "a1 63 5a 65 64 c5 01"
     }
   ]
 }
