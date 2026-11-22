@@ -4,8 +4,8 @@ import {
   decodeHeader,
   encodeHeader,
   type HeaderLimits,
-  type HeaderMap,
-  type HeaderValue,
+  type CborMap,
+  type CborItem,
   MAX_U64,
 } from "./cbor.js";
 import { EncodeError, type FieldProblem, ProtocolError } from "./errors.js";
@@ -485,13 +485,13 @@ class Bad {
   ) {}
 }
 
-type Read<T> = (value: HeaderValue) => T | undefined;
+type Read<T> = (value: CborItem) => T | undefined;
 
 class Fields {
-  private constructor(private readonly entries: ReadonlyMap<bigint, HeaderValue>) {}
+  private constructor(private readonly entries: ReadonlyMap<bigint, CborItem>) {}
 
-  static of(map: HeaderMap): Fields | undefined {
-    const entries = new Map<bigint, HeaderValue>();
+  static of(map: CborMap): Fields | undefined {
+    const entries = new Map<bigint, CborItem>();
     for (const [key, value] of map) {
       if (key.kind !== "uint") return undefined;
       entries.set(key.value, value);
@@ -842,9 +842,9 @@ function typed(name: FrameTypeName, f: Fields, data: Uint8Array): Frame {
   }
 }
 
-type Entries = [number, HeaderValue | undefined][];
+type Entries = [number, CborItem | undefined][];
 
-function uintValue(value: bigint | undefined): HeaderValue | undefined {
+function uintValue(value: bigint | undefined): CborItem | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "bigint" || value < 0n || value > MAX_U64) {
     throw new EncodeError("invalid_field", `${String(value)} is not an unsigned 64-bit integer`);
@@ -852,63 +852,63 @@ function uintValue(value: bigint | undefined): HeaderValue | undefined {
   return { kind: "uint", value };
 }
 
-function textValue(value: string | undefined): HeaderValue | undefined {
+function textValue(value: string | undefined): CborItem | undefined {
   return value === undefined ? undefined : { kind: "text", value };
 }
 
-function boolValue(value: boolean | undefined): HeaderValue | undefined {
+function boolValue(value: boolean | undefined): CborItem | undefined {
   return value === undefined ? undefined : { kind: "bool", value };
 }
 
-function tokenValue(value: Token | undefined): HeaderValue | undefined {
+function tokenValue(value: Token | undefined): CborItem | undefined {
   if (value === undefined) return undefined;
   return typeof value === "string" ? { kind: "text", value } : { kind: "bytes", value };
 }
 
-function fingerprintValue(value: Uint8Array | undefined): HeaderValue | undefined {
+function fingerprintValue(value: Uint8Array | undefined): CborItem | undefined {
   if (value === undefined) return undefined;
   if (value.length !== 32) throw new EncodeError("invalid_field", "contract fingerprint is not 32 bytes");
   return { kind: "bytes", value };
 }
 
-function uintArrayValue(values: readonly bigint[] | undefined): HeaderValue | undefined {
-  return values === undefined ? undefined : { kind: "array", items: values.map((v) => uintValue(v) as HeaderValue) };
+function uintArrayValue(values: readonly bigint[] | undefined): CborItem | undefined {
+  return values === undefined ? undefined : { kind: "array", items: values.map((v) => uintValue(v) as CborItem) };
 }
 
-function textArrayValue(values: readonly string[] | undefined): HeaderValue | undefined {
+function textArrayValue(values: readonly string[] | undefined): CborItem | undefined {
   return values === undefined ? undefined : { kind: "array", items: values.map((v) => ({ kind: "text", value: v })) };
 }
 
-function nestedValue(entries: Entries): HeaderValue {
+function nestedValue(entries: Entries): CborItem {
   return { kind: "map", entries: toMap(entries) };
 }
 
-function toMap(entries: Entries): HeaderMap {
-  const out: [HeaderValue, HeaderValue][] = [];
+function toMap(entries: Entries): CborMap {
+  const out: [CborItem, CborItem][] = [];
   for (const [key, value] of entries) if (value !== undefined) out.push([{ kind: "uint", value: BigInt(key) }, value]);
   return out;
 }
 
-function ackMapValue(value: AckMap | undefined): HeaderValue | undefined {
+function ackMapValue(value: AckMap | undefined): CborItem | undefined {
   if (value === undefined) return undefined;
-  const entries = [...value].map(([lane, seq]) => [uintValue(lane), uintValue(seq)] as [HeaderValue, HeaderValue]);
+  const entries = [...value].map(([lane, seq]) => [uintValue(lane), uintValue(seq)] as [CborItem, CborItem]);
   return { kind: "map", entries };
 }
 
-function metaValue(value: Meta | undefined): HeaderValue | undefined {
+function metaValue(value: Meta | undefined): CborItem | undefined {
   if (value === undefined) return undefined;
-  const entries: [HeaderValue, HeaderValue][] = [];
+  const entries: [CborItem, CborItem][] = [];
   for (const [name, v] of value) {
     if (!isMetaName(name)) {
       throw new EncodeError("invalid_field", `metadata name ${JSON.stringify(name)} is outside [a-z0-9-]`);
     }
-    const item: HeaderValue = typeof v === "string" ? { kind: "text", value: v } : { kind: "bytes", value: v };
+    const item: CborItem = typeof v === "string" ? { kind: "text", value: v } : { kind: "bytes", value: v };
     entries.push([{ kind: "text", value: name }, item]);
   }
   return { kind: "map", entries };
 }
 
-function limitsValue(value: Limits | ServerLimits | undefined): HeaderValue | undefined {
+function limitsValue(value: Limits | ServerLimits | undefined): CborItem | undefined {
   if (value === undefined) return undefined;
   return nestedValue([
     [Key.WINDOW, uintValue(value.window)],
@@ -919,7 +919,7 @@ function limitsValue(value: Limits | ServerLimits | undefined): HeaderValue | un
   ]);
 }
 
-function authValue(value: Auth | undefined): HeaderValue | undefined {
+function authValue(value: Auth | undefined): CborItem | undefined {
   if (value === undefined) return undefined;
   return nestedValue([
     [Key.TOKEN, tokenValue(value.token)],

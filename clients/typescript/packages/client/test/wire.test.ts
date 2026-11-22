@@ -13,8 +13,8 @@ import {
   encodeRawFrame,
   encodeVarint,
   type Frame,
-  type HeaderMap,
-  type HeaderValue,
+  type CborMap,
+  type CborItem,
   MAX_FRAME_FLOOR,
   MAX_VARINT,
   type RawFrame,
@@ -25,10 +25,10 @@ import {
 } from "../src/index.js";
 import { concat, encodeError, hexToBytes, protocolError } from "./support.js";
 
-const u = (n: number | bigint): HeaderValue => ({ kind: "uint", value: BigInt(n) });
-const t = (value: string): HeaderValue => ({ kind: "text", value });
+const u = (n: number | bigint): CborItem => ({ kind: "uint", value: BigInt(n) });
+const t = (value: string): CborItem => ({ kind: "text", value });
 
-function raw(type: number, header: HeaderMap | undefined, data: number[] = []): RawFrame {
+function raw(type: number, header: CborMap | undefined, data: number[] = []): RawFrame {
   return { type, flags: 0, header: header ? encodeHeader(header) : new Uint8Array(0), data: Uint8Array.from(data) };
 }
 
@@ -210,7 +210,7 @@ describe("header sections", () => {
   });
 
   it("keeps 64-bit integers exact", () => {
-    const header: HeaderMap = [
+    const header: CborMap = [
       [u(1), u(2n ** 64n - 1n)],
       [u(2), { kind: "nint", value: 2n ** 64n - 1n }],
     ];
@@ -404,14 +404,14 @@ describe("typed frames", () => {
   });
 
   it("reports a bad entry of a nested map as its outer key", () => {
-    const limits: HeaderMap = [
+    const limits: CborMap = [
       [u(48), u(100)],
       [u(49), u(65_536)],
       [u(50), u(10)],
       [u(51), u(1_200)],
       [t("window"), u(65_536)],
     ];
-    const header: HeaderMap = [
+    const header: CborMap = [
       [u(15), u(1)],
       [u(17), t("cbor")],
       [u(18), { kind: "array", items: [] }],
@@ -448,8 +448,8 @@ describe("typed frames", () => {
   });
 
   it("refuses UNSUBSCRIBED that mixes or lacks its forms", () => {
-    const c: [HeaderValue, HeaderValue] = [u(9), t("c")];
-    const cases: [HeaderMap, number, string][] = [
+    const c: [CborItem, CborItem] = [u(9), t("c")];
+    const cases: [CborMap, number, string][] = [
       [[c], 6, "missing"],
       [[c, [u(6), u(2)]], 7, "missing"],
       [[c, [u(1), u(4)], [u(6), u(2)], [u(7), t("m")]], 6, "unexpected"],
@@ -490,7 +490,7 @@ describe("close codes", () => {
 
 describe("text with a lone surrogate", () => {
   it("is refused rather than rewritten as U+FFFD", () => {
-    const header: HeaderMap = [[{ kind: "uint", value: 1n }, { kind: "text", value: "room-\uD83D" }]];
+    const header: CborMap = [[{ kind: "uint", value: 1n }, { kind: "text", value: "room-\uD83D" }]];
     expect(encodeError(() => encodeHeader(header)).kind).toBe("lone_surrogate");
     const subscribe = { type: "SUBSCRIBE", rid: 1n, channel: "room-\uD83D", data: new Uint8Array() } as Frame;
     expect(encodeError(() => encodeFrame(subscribe)).kind).toBe("lone_surrogate");
@@ -499,7 +499,7 @@ describe("text with a lone surrogate", () => {
   });
 
   it("does not catch a well-formed surrogate pair", () => {
-    const header: HeaderMap = [[{ kind: "uint", value: 1n }, { kind: "text", value: "😀" }]];
+    const header: CborMap = [[{ kind: "uint", value: 1n }, { kind: "text", value: "😀" }]];
     expect(Array.from(encodeHeader(header), (byte) => byte.toString(16).padStart(2, "0")).join("")).toBe(
       "a10164f09f9880",
     );

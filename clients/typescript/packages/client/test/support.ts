@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { type Diag, hexToBytes, parse } from "@pavia/vectors/diag";
 import { expect } from "vitest";
-import { EncodeError, type HeaderMap, type HeaderValue, ProtocolError } from "../src/index.js";
+import { EncodeError, type CborMap, type CborItem, ProtocolError } from "../src/index.js";
 
 const VECTORS = fileURLToPath(new URL("../../../../../vectors/", import.meta.url));
 
@@ -24,7 +24,7 @@ export function cases(kind: string): Case[] {
 
 export { hexToBytes };
 
-export function value(d: Diag): HeaderValue {
+export function value(d: Diag): CborItem {
   switch (d.kind) {
     case "uint":
     case "nint":
@@ -32,7 +32,7 @@ export function value(d: Diag): HeaderValue {
     case "bytes":
     case "bool":
     case "float":
-      return { kind: d.kind, value: d.value } as HeaderValue;
+      return { kind: d.kind, value: d.value } as CborItem;
     case "null":
       return { kind: "null" };
     case "array":
@@ -44,13 +44,13 @@ export function value(d: Diag): HeaderValue {
   }
 }
 
-export function headerOf(diag: string): HeaderMap {
+export function headerOf(diag: string): CborMap {
   const v = value(parse(diag));
   if (v.kind !== "map") throw new Error("header is not a map");
   return v.entries;
 }
 
-export function valueOf(diag: string): HeaderValue {
+export function valueOf(diag: string): CborItem {
   return value(parse(diag));
 }
 
