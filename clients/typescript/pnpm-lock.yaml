@@ -30,7 +30,14 @@ importers:
         specifier: ^5.1.0
         version: 5.1.0(@types/node@26.6.6)(vite@8.3.6(@types/node@26.6.6))
 
-  packages/client: {}
+  packages/client:
+    devDependencies:
+      '@pavia/vectors':
+        specifier: workspace:*
+        version: link:../vectors
+      '@types/node':
+        specifier: ^26.6.6
+        version: 26.6.6
 
   packages/vectors:
     devDependencies:
