@@ -216,7 +216,8 @@ export class EncodeError extends Error {
  *   failed, such as `trailing_bytes`, as `detail`.
  * - `too_deep`: arrays and maps nested deeper than the depth limit.
  * - `duplicate_key`: a map or object with a key twice.
- * - `undeclared_tag`: a CBOR tag where the type declares none (spec 12.3).
+ * - `undeclared_tag`: a CBOR tag where the type declares none, or another tag than the one a
+ *   `timestamp` or `uuid` declares (spec 12.3).
  * - `wrong_type`: an item of another kind than the type takes, such as a float for a `u8`.
  * - `out_of_range`: an integer outside its type, a finite float past the `f32` range for an
  *   `f32`, a number past the doubles, or a timestamp outside what RFC 3339 writes.
