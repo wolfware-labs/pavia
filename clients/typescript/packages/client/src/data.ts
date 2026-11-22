@@ -91,7 +91,7 @@ export function encodeData(
     new JsonEncoder(types, limits.maxDepth).write(out, type, value, 0);
     return utf8Of(out.text);
   } catch (error) {
-    if (error instanceof UnknownType) throw new EncodeError("unknown_type", error.message);
+    if (error instanceof UnknownType) throw new EncodeError("unknown_type", error.message, error.path);
     if (error instanceof EncodeError && error.path === undefined) throw placed(error, "$");
     throw error;
   }
@@ -120,7 +120,7 @@ export function decodeData(
     const json = parseJson(bytes, limits.maxDepth, jsonRefusal);
     return new JsonDecoder(types).read(type, json);
   } catch (error) {
-    if (error instanceof UnknownType) throw new DataError(codec, "unknown_type", error.message);
+    if (error instanceof UnknownType) throw new DataError(codec, "unknown_type", error.message, error.path);
     throw error;
   }
 }
@@ -234,7 +234,8 @@ function someOf(shape: Extract<Shape, { kind: "option" }>): ContractType {
 class UnknownType extends Error {
   constructor(
     readonly ref: string,
-    why: string,
+    readonly why: string,
+    readonly path = "$",
   ) {
     super(`type ${ref} ${why}`);
   }
@@ -259,10 +260,12 @@ function placed(error: EncodeError, path: string): EncodeError {
 }
 
 function underEncode(error: unknown, segment: string): unknown {
+  if (error instanceof UnknownType) return new UnknownType(error.ref, error.why, under(error.path, segment));
   return error instanceof EncodeError ? placed(error, under(error.path ?? "$", segment)) : error;
 }
 
 function underDecode(error: unknown, segment: string): unknown {
+  if (error instanceof UnknownType) return new UnknownType(error.ref, error.why, under(error.path, segment));
   if (error instanceof DataError) return new DataError(error.codec, error.reason, error.detail, under(error.path, segment));
   return error;
 }
@@ -801,7 +804,11 @@ class CborDecoder {
           given.set(key.value, value);
         }
         const result: Record<string, unknown> = {};
-        for (const field of shape.fields) defineField(result, field.name, this.field(field, given.get(field.name)));
+        for (const field of shape.fields) {
+          defineField(result, field.name, this.field(field, given.get(field.name)));
+          given.delete(field.name);
+        }
+        for (const [name, value] of given) refuseTags(value, `.${name}`);
         return result;
       }
       case "enum": {
@@ -882,10 +889,39 @@ function isTagged(primitive: Primitive): boolean {
   return primitive === "timestamp" || primitive === "uuid" || primitive === "any";
 }
 
+const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function unknownVariant(codec: Codec, open: boolean, name: string): void {
+  if (!open || !NAME.test(name)) throw decodeFailure(codec, "unknown_variant", `variant ${name} is not in the type`);
+}
+
+/**
+ * Refuses any tag inside the value of a struct field the type does not declare: such a value has
+ * no declared type, so it may hold none of spec 12.3's tags.
+ */
+function refuseTags(item: CborItem, path: string): void {
+  switch (item.kind) {
+    case "tag":
+      throw new DataError("cbor", "undeclared_tag", `tag ${item.tag}`, `$${path}`);
+    case "array":
+      item.items.forEach((element, i) => refuseTags(element, `${path}[${i}]`));
+      return;
+    case "map":
+      for (const [key, value] of item.entries) {
+        refuseTags(key, path);
+        refuseTags(value, path);
+      }
+      return;
+    default:
+      return;
+  }
+}
+
 function unitVariant(codec: Codec, variants: readonly Variant[], open: boolean, name: string): EnumValue {
   const variant = variantNamed(variants, name);
   if (variant === undefined) {
-    if (open) return { kind: "Unknown", name };
+    unknownVariant(codec, open, name);
+    return { kind: "Unknown", name };
     throw decodeFailure(codec, "unknown_variant", `variant ${name} is not in the type`);
   }
   if (variant.type !== undefined) throw decodeFailure(codec, "unknown_variant", `variant ${name} takes a value`);
@@ -895,8 +931,8 @@ function unitVariant(codec: Codec, variants: readonly Variant[], open: boolean, 
 function dataVariant(codec: Codec, variants: readonly Variant[], open: boolean, name: string): Variant | undefined {
   const variant = variantNamed(variants, name);
   if (variant === undefined) {
-    if (open) return undefined;
-    throw decodeFailure(codec, "unknown_variant", `variant ${name} is not in the type`);
+    unknownVariant(codec, open, name);
+    return undefined;
   }
   if (variant.type === undefined) throw decodeFailure(codec, "unknown_variant", `unit variant ${name} with a value`);
   return variant;

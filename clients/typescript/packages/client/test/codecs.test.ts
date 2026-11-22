@@ -114,7 +114,7 @@ describe("codec vectors", () => {
   }
 
   it("covers every case", () => {
-    expect(FILES.reduce((n, f) => n + f.cases.length, 0)).toBe(108);
+    expect(FILES.reduce((n, f) => n + f.cases.length, 0)).toBe(109);
   });
 });
 
@@ -170,6 +170,29 @@ describe("typed codec", () => {
     expect(dataError(() => decodeData({ ref: "Status" }, TYPES, json('{"Idle":1}'), "json")).reason).toBe("unknown_variant");
     expect(dataError(() => decodeData({ ref: "Status" }, TYPES, json('"Busy"'), "json")).reason).toBe("unknown_variant");
     both({ ref: "Status" }, { kind: "Busy", value: 7 });
+  });
+
+  it("refuses tags inside unknown struct fields and names outside the name rule in open enums", () => {
+    const tagged = hexToBytes("a3 61 7a 81 a1 61 61 c5 01 61 78 f9 3c 00 61 79 f9 40 00");
+    const error = dataError(() => decodeData({ ref: "Point" }, TYPES, tagged, "cbor"));
+    expect([error.reason, error.path]).toEqual(["undeclared_tag", "$.z[0]"]);
+    for (const name of ["", "1a", "a-b", "a\nb", "é"]) {
+      expect(dataError(() => decodeData({ ref: "Status" }, TYPES, json(JSON.stringify(name)), "json")).reason, name).toBe(
+        "unknown_variant",
+      );
+      const data = json(`{${JSON.stringify(name)}:1}`);
+      expect(dataError(() => decodeData({ ref: "Status" }, TYPES, data, "json")).reason, name).toBe("unknown_variant");
+    }
+    expect(decodeData({ ref: "Status" }, TYPES, json('"_Later2"'), "json")).toEqual({ kind: "Unknown", name: "_Later2" });
+  });
+
+  it("names the place of a type the table does not hold", () => {
+    const type: ContractType = { list: { map: { ref: "Missing" } } };
+    const value = [new Map(), new Map([["b", 1]])];
+    const encode = encodeError(() => encodeData(type, TYPES, value, "cbor"));
+    expect([encode.kind, encode.path]).toEqual(["unknown_type", '$[1]["b"]']);
+    const decode = dataError(() => decodeData(type, TYPES, json('[{},{"b":1}]'), "json"));
+    expect([decode.reason, decode.path]).toEqual(["unknown_type", '$[1]["b"]']);
   });
 
   it("ignores unknown struct fields", () => {

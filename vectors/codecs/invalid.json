@@ -697,6 +697,22 @@
         "reason": "float"
       },
       "json": "-0"
+    },
+    {
+      "id": "unknown-field-with-tag",
+      "spec": [
+        "12.3"
+      ],
+      "note": "A struct field the type does not declare has no type to declare a tag, so a tag inside it is refused.",
+      "type": {
+        "ref": "Point"
+      },
+      "direction": "decode",
+      "error": {
+        "codec": "cbor",
+        "reason": "tag 5"
+      },
+      "cbor": "a3 61 79 f9 3c 00 61 78 f9 3c 00 61 7a c5 01"
     }
   ]
 }
