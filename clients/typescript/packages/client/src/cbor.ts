@@ -24,6 +24,44 @@ export type CborItem =
 /** The entries of a CBOR map, in the order they were decoded or given. */
 export type CborMap = readonly (readonly [CborItem, CborItem])[];
 
+/**
+ * Whether `value` has the fields its `kind` needs as a {@link CborItem}: a `bigint` for `uint` and
+ * `nint`, a `Uint8Array`, a string, a boolean or a number for the scalar kinds, an `items` array, an
+ * `entries` array of pairs, a `bigint` tag with an item. Children are not checked.
+ */
+export function hasCborItemShape(value: unknown): value is CborItem {
+  if (typeof value !== "object" || value === null) return false;
+  const item = value as Readonly<Record<string, unknown>>;
+  const field = item["value"];
+  switch (item["kind"]) {
+    case "uint":
+    case "nint":
+      return typeof field === "bigint";
+    case "bytes":
+      return field instanceof Uint8Array;
+    case "text":
+      return typeof field === "string";
+    case "bool":
+      return typeof field === "boolean";
+    case "simple":
+    case "float":
+      return typeof field === "number";
+    case "null":
+    case "undefined":
+      return true;
+    case "array":
+      return Array.isArray(item["items"]);
+    case "map": {
+      const entries = item["entries"];
+      return Array.isArray(entries) && entries.every((entry) => Array.isArray(entry) && entry.length === 2);
+    }
+    case "tag":
+      return typeof item["tag"] === "bigint" && item["item"] !== undefined;
+    default:
+      return false;
+  }
+}
+
 /** The limits a receiver applies to a header section (spec 5.4.1, 16). */
 export interface HeaderLimits {
   /** The largest header in bytes, inclusive. Default 16384. */
@@ -93,7 +131,14 @@ export function writeCborItem(out: ByteWriter, value: CborItem): void {
 
 const SCRATCH = new DataView(new ArrayBuffer(8));
 
+function checkItem(value: unknown): void {
+  if (!hasCborItemShape(value)) {
+    throw new EncodeError("invalid_value", "not a CBOR item: a field is missing or of the wrong type");
+  }
+}
+
 function writeValue(out: ByteWriter, value: CborItem, data: boolean): void {
+  checkItem(value);
   switch (value.kind) {
     case "uint":
       return writeHead(out, UNSIGNED, value.value);
@@ -157,6 +202,15 @@ export function writeUtf8(out: ByteWriter, utf8: Uint8Array): void {
 }
 
 function writeMap(out: ByteWriter, entries: CborMap): void {
+  if (!Array.isArray(entries)) {
+    throw new EncodeError("invalid_value", "a CBOR map takes an array of entries");
+  }
+  for (const entry of entries as readonly unknown[]) {
+    if (!Array.isArray(entry) || entry.length !== 2) {
+      throw new EncodeError("invalid_value", "a CBOR map entry is a pair");
+    }
+    checkItem(entry[0]);
+  }
   if (entries.every(([key]) => key.kind === "uint")) return writeUintKeyedMap(out, entries);
   const encoded = entries.map(([key, value]) => ({ key: encodeCborItem(key), value }));
   encoded.sort((a, b) => compareBytes(a.key, b.key));

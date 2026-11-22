@@ -5,6 +5,7 @@ import {
   type CborItem,
   checkLimit,
   decodeCborItem,
+  hasCborItemShape,
   hasF32Form,
   MAP,
   MAX_U64,
@@ -525,39 +526,8 @@ function checkTagRun(run: number, maxDepth: number): void {
  * or another value on the wire. Children are checked as the walk reaches them.
  */
 function itemOf(value: unknown): CborItem {
-  if (typeof value !== "object" || value === null || !itemHasShape(value as Record<string, unknown>)) {
-    throw encodeFailure("invalid_value", "any takes a CborItem");
-  }
-  return value as CborItem;
-}
-
-function itemHasShape(item: Readonly<Record<string, unknown>>): boolean {
-  const field = item["value"];
-  switch (item["kind"]) {
-    case "uint":
-    case "nint":
-      return typeof field === "bigint";
-    case "bytes":
-      return field instanceof Uint8Array;
-    case "text":
-      return typeof field === "string";
-    case "bool":
-      return typeof field === "boolean";
-    case "simple":
-    case "float":
-      return typeof field === "number";
-    case "null":
-    case "undefined":
-      return true;
-    case "array":
-      return Array.isArray(item["items"]);
-    case "map":
-      return Array.isArray(item["entries"]) && item["entries"].every((entry) => Array.isArray(entry) && entry.length === 2);
-    case "tag":
-      return typeof item["tag"] === "bigint" && item["item"] !== undefined;
-    default:
-      return false;
-  }
+  if (!hasCborItemShape(value)) throw encodeFailure("invalid_value", "any takes a CborItem");
+  return value;
 }
 
 function checkItemDepth(value: unknown, depth: number, maxDepth: number, run = 0): void {

@@ -8,6 +8,7 @@ import {
   decodeMessage,
   decodeVarint,
   encodeFrame,
+  encodeCborItem,
   encodeHeader,
   encodeMessages,
   encodeRawFrame,
@@ -252,6 +253,20 @@ describe("header sections", () => {
     expect(encodeError(() => encodeHeader([[u(1), u(0)], [u(1), u(1)]])).kind).toBe("duplicate_key");
     expect(encodeError(() => encodeHeader([[u(1), { kind: "simple", value: 24 }]])).kind).toBe("reserved_simple_value");
     expect(encodeError(() => encodeHeader([[u(1), { kind: "simple", value: 256 }]])).kind).toBe("out_of_range");
+  });
+
+  it("refuses header items with a field missing or of the wrong type", () => {
+    const one = { kind: "uint", value: 1n } as const;
+    for (const header of [
+      [[one, { kind: "bool", value: "no" }]],
+      [[{ kind: "uint", value: 1 }, one]],
+      [[one]],
+      [[{ kind: "text", value: 5 }, one]],
+      [[one, { kind: "array", items: [{ kind: "nope" }] }]],
+    ]) {
+      expect(encodeError(() => encodeHeader(header as never)).kind).toBe("invalid_value");
+    }
+    expect(encodeError(() => encodeCborItem({ kind: "bool", value: "no" } as never)).kind).toBe("invalid_value");
   });
 
   it("refuses header limits that bound nothing", () => {

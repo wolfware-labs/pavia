@@ -232,9 +232,8 @@ describe("typed codec", () => {
     ];
     for (const codec of ["cbor", "json"] as const) {
       for (const item of [...malformed, { kind: "array", items: malformed.slice(0, 1) }]) {
-        expect(encodeError(() => encodeData("any", TYPES, item, codec)).kind, JSON.stringify(item, (_, v) => String(v))).toBe(
-          "invalid_value",
-        );
+        const label = JSON.stringify(item, (_, v) => String(v));
+        expect(encodeError(() => encodeData("any", TYPES, item, codec)).kind, label).toBe("invalid_value");
       }
     }
   });
