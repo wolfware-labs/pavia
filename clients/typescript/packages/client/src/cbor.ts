@@ -238,14 +238,12 @@ class Reader {
 
   map(depth: number): HeaderMap {
     const length = this.head();
-    const seen = new Set<string>();
+    const seen = new KeySet();
     const entries: (readonly [HeaderValue, HeaderValue])[] = [];
     for (let i = 0n; i < length; i++) {
       const start = this.pos;
       const key = this.value(depth);
-      const id = identity(key, this.bytes.subarray(start, this.pos));
-      if (seen.has(id)) throw refuse("duplicate_key");
-      seen.add(id);
+      if (!seen.add(key, this.bytes, start, this.pos)) throw refuse("duplicate_key");
       entries.push([key, this.value(depth)]);
     }
     return entries;
@@ -342,19 +340,32 @@ class Reader {
   }
 }
 
-function identity(key: HeaderValue, raw: Uint8Array): string {
-  switch (key.kind) {
-    case "uint":
-      return `u${key.value}`;
-    case "nint":
-      return `n${key.value}`;
-    case "text":
-      return `t${key.value}`;
-    case "bytes":
-      return `b${hex(key.value)}`;
-    default:
-      return `r${hex(raw)}`;
+class KeySet {
+  private uints: Set<bigint> | undefined;
+  private nints: Set<bigint> | undefined;
+  private texts: Set<string> | undefined;
+  private others: Set<string> | undefined;
+
+  add(key: HeaderValue, bytes: Uint8Array, start: number, end: number): boolean {
+    switch (key.kind) {
+      case "uint":
+        return addNew((this.uints ??= new Set()), key.value);
+      case "nint":
+        return addNew((this.nints ??= new Set()), key.value);
+      case "text":
+        return addNew((this.texts ??= new Set()), key.value);
+      case "bytes":
+        return addNew((this.others ??= new Set()), `b${hex(key.value)}`);
+      default:
+        return addNew((this.others ??= new Set()), `r${hex(bytes.subarray(start, end))}`);
+    }
   }
+}
+
+function addNew<T>(set: Set<T>, value: T): boolean {
+  if (set.has(value)) return false;
+  set.add(value);
+  return true;
 }
 
 function hex(bytes: Uint8Array): string {
