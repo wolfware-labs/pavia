@@ -519,11 +519,45 @@ function checkTagRun(run: number, maxDepth: number): void {
   if (run > maxDepth) throw encodeFailure("too_deep", `a run of ${run} tags is more than ${maxDepth}`);
 }
 
+/**
+ * `value` as a {@link CborItem}, checking the fields its `kind` needs, so that an item built at run
+ * time with a field missing or of the wrong type is an {@link EncodeError} instead of a `TypeError`
+ * or another value on the wire. Children are checked as the walk reaches them.
+ */
 function itemOf(value: unknown): CborItem {
-  if (typeof value !== "object" || value === null || typeof (value as { kind?: unknown }).kind !== "string") {
+  if (typeof value !== "object" || value === null || !itemHasShape(value as Record<string, unknown>)) {
     throw encodeFailure("invalid_value", "any takes a CborItem");
   }
   return value as CborItem;
+}
+
+function itemHasShape(item: Readonly<Record<string, unknown>>): boolean {
+  const field = item["value"];
+  switch (item["kind"]) {
+    case "uint":
+    case "nint":
+      return typeof field === "bigint";
+    case "bytes":
+      return field instanceof Uint8Array;
+    case "text":
+      return typeof field === "string";
+    case "bool":
+      return typeof field === "boolean";
+    case "simple":
+    case "float":
+      return typeof field === "number";
+    case "null":
+    case "undefined":
+      return true;
+    case "array":
+      return Array.isArray(item["items"]);
+    case "map":
+      return Array.isArray(item["entries"]) && item["entries"].every((entry) => Array.isArray(entry) && entry.length === 2);
+    case "tag":
+      return typeof item["tag"] === "bigint" && item["item"] !== undefined;
+    default:
+      return false;
+  }
 }
 
 function checkItemDepth(value: unknown, depth: number, maxDepth: number, run = 0): void {

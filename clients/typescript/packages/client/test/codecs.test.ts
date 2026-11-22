@@ -216,6 +216,29 @@ describe("typed codec", () => {
     }
   });
 
+  it("refuses any items with a field missing or of the wrong type", () => {
+    const malformed = [
+      { kind: "array" },
+      { kind: "map", entries: [[{ kind: "null" }]] },
+      { kind: "map" },
+      { kind: "bool", value: "no" },
+      { kind: "uint", value: 1 },
+      { kind: "text", value: 5 },
+      { kind: "bytes", value: [1] },
+      { kind: "float", value: "1" },
+      { kind: "tag", tag: 1, item: { kind: "null" } },
+      { kind: "tag", tag: 1n },
+      { kind: "nope" },
+    ];
+    for (const codec of ["cbor", "json"] as const) {
+      for (const item of [...malformed, { kind: "array", items: malformed.slice(0, 1) }]) {
+        expect(encodeError(() => encodeData("any", TYPES, item, codec)).kind, JSON.stringify(item, (_, v) => String(v))).toBe(
+          "invalid_value",
+        );
+      }
+    }
+  });
+
   it("refuses undefined for unit and a depth limit that is not a non-negative integer", () => {
     for (const codec of ["cbor", "json"] as const) {
       expect(encodeError(() => encodeData("unit", TYPES, undefined, codec)).kind).toBe("invalid_value");
