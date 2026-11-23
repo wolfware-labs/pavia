@@ -1,40 +1,18 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  CLIENT_INFO,
   ClientSession,
   CloseCode,
   closeReason,
   decodeFrame,
-  decodeMessage,
-  encodeMessages,
   type Frame,
   type SessionOptions,
   type SessionOutput,
   toRawFrame,
   type Welcome,
 } from "../src/index.js";
-import { encodeError } from "./support.js";
-
-const HB = 50;
-const IDLE = 200;
-const CONTRACT = new Uint8Array(32).fill(7);
-
-function welcome(fields: Partial<Welcome> = {}): Welcome {
-  return {
-    type: "WELCOME",
-    version: 1n,
-    codec: "cbor",
-    caps: [],
-    session: "s1",
-    limits: { maxCalls: 100n, maxFrame: 1_048_576n, maxSubs: 256n, maxDgram: 1100n },
-    hb: BigInt(HB),
-    idle: BigInt(IDLE),
-    ...fields,
-  };
-}
-
-function message(frame: Frame, stream = 0): Uint8Array {
-  return encodeMessages([{ stream, frame: toRawFrame(frame) }], 1 << 20)[0] as Uint8Array;
-}
+import { CONTRACT, encodeError, framesOf, HB, IDLE, message, welcome } from "./support.js";
 
 function drain(session: ClientSession): SessionOutput[] {
   const out: SessionOutput[] = [];
@@ -44,7 +22,7 @@ function drain(session: ClientSession): SessionOutput[] {
 
 function sent(outputs: readonly SessionOutput[]): Frame[] {
   return outputs.flatMap((o) =>
-    o.kind === "transmit" ? decodeMessage(o.data, 1 << 20).map(({ frame }) => decodeFrame(frame)) : [],
+    o.kind === "transmit" ? framesOf(o.data) : [],
   );
 }
 
@@ -72,11 +50,21 @@ describe("client session", () => {
     expect(drain(session)).toEqual([]);
     session.handleInput({ kind: "open" }, 1);
     const [hello] = sent(drain(session));
-    expect(hello).toMatchObject({ type: "HELLO", versions: [1n], codecs: ["cbor", "json"], client: { name: "pavia-ts" } });
+    expect(hello).toMatchObject({
+      type: "HELLO",
+      versions: [1n],
+      codecs: ["cbor", "json"],
+      client: { name: "pavia-ts" },
+    });
     session.handleInput({ kind: "message", data: message(welcome()) }, 5);
     expect(kinds(drain(session))).toEqual(["established"]);
     expect(session.welcome?.session).toBe("s1");
     expect(session.pollTimeout()).toBe(5 + HB);
+  });
+
+  it("names this package and its version in HELLO", () => {
+    const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
+    expect(CLIENT_INFO).toEqual({ name: "pavia-ts", version: manifest.version });
   });
 
   it("refuses options no server accepts before anything is sent", () => {
@@ -113,7 +101,10 @@ describe("client session", () => {
     const out = drain(session);
     expect(sent(out)).toEqual([{ type: "CLOSE", code: BigInt(CloseCode.IDLE_TIMEOUT) }]);
     expect(closeOf(out)).toEqual({ code: 4000 + CloseCode.IDLE_TIMEOUT, reason: "" });
-    expect(out.at(-1)).toEqual({ kind: "ended", ending: { kind: "closed", code: CloseCode.IDLE_TIMEOUT, by: "local" } });
+    expect(out.at(-1)).toEqual({
+      kind: "ended",
+      ending: { kind: "closed", code: CloseCode.IDLE_TIMEOUT, by: "local" },
+    });
     expect(session.pollTimeout()).toBeUndefined();
   });
 
@@ -151,14 +142,15 @@ describe("client session", () => {
       const session = established();
       session.handleInput({ kind: "message", data }, 20);
       const out = drain(session);
-      expect(closeOf(out)?.code, typeof data === "string" ? data : String(data.length)).toBe(4000 + CloseCode.PROTOCOL_ERROR);
+      const label = typeof data === "string" ? data : String(data.length);
+      expect(closeOf(out)?.code, label).toBe(4000 + CloseCode.PROTOCOL_ERROR);
     }
   });
 
   it("closes with FRAME_TOO_LARGE for a frame above this side's max_frame", () => {
     const session = established({ limits: { maxFrame: 65_536n } });
-    const big = encodeMessages([{ stream: 2, frame: toRawFrame({ type: "ITEM", data: new Uint8Array(70_000) } as Frame) }], 1 << 20);
-    session.handleInput({ kind: "message", data: big[0] as Uint8Array }, 20);
+    const big = message({ type: "ITEM", data: new Uint8Array(70_000) } as Frame, 2);
+    session.handleInput({ kind: "message", data: big }, 20);
     expect(closeOf(drain(session))?.code).toBe(4000 + CloseCode.FRAME_TOO_LARGE);
   });
 
@@ -167,7 +159,10 @@ describe("client session", () => {
     session.handleInput({ kind: "message", data: message({ type: "CLOSE", code: 99n, msg: "bye" }) }, 20);
     const out = drain(session);
     expect(closeOf(out)).toEqual({ code: 4000 + CloseCode.INTERNAL, reason: "bye" });
-    expect(out.at(-1)).toEqual({ kind: "ended", ending: { kind: "closed", code: CloseCode.INTERNAL, msg: "bye", by: "peer" } });
+    expect(out.at(-1)).toEqual({
+      kind: "ended",
+      ending: { kind: "closed", code: CloseCode.INTERNAL, msg: "bye", by: "peer" },
+    });
     session.handleInput({ kind: "message", data: message({ type: "PING", data: new Uint8Array(0) }) }, 30);
     expect(drain(session)).toEqual([]);
   });
@@ -175,10 +170,12 @@ describe("client session", () => {
   it("reads a WebSocket close code of 4000 + code, and any other close as a lost transport", () => {
     const going = established();
     going.handleInput({ kind: "transport_closed", code: 4000 + CloseCode.GOING_AWAY }, 20);
-    expect(drain(going)).toEqual([{ kind: "ended", ending: { kind: "closed", code: CloseCode.GOING_AWAY, by: "peer" } }]);
+    const goingAway = { kind: "closed", code: CloseCode.GOING_AWAY, by: "peer" };
+    expect(drain(going)).toEqual([{ kind: "ended", ending: goingAway }]);
     const unknown = established();
     unknown.handleInput({ kind: "transport_closed", code: 4999 }, 20);
-    expect(drain(unknown)).toEqual([{ kind: "ended", ending: { kind: "closed", code: CloseCode.INTERNAL, by: "peer" } }]);
+    const internal = { kind: "closed", code: CloseCode.INTERNAL, by: "peer" };
+    expect(drain(unknown)).toEqual([{ kind: "ended", ending: internal }]);
     const lost = established();
     lost.handleInput({ kind: "transport_closed", code: 1006 }, 20);
     expect(drain(lost)).toEqual([{ kind: "ended", ending: { kind: "transport_lost" } }]);
@@ -193,6 +190,7 @@ describe("client session", () => {
     expect(closeOf(out)).toEqual({ code: 4000 + CloseCode.GOING_AWAY, reason: `${"a".repeat(121)}é` });
     expect(new TextEncoder().encode(closeReason("€".repeat(50))).length).toBe(123);
     expect(closeReason("\ud800")).toBe("");
+    expect(closeReason(`\ufeff${"a".repeat(200)}`)).toBe(`\ufeff${"a".repeat(120)}`);
   });
 
   it("drops frames still queued when it closes, and sends CLOSE first", () => {
@@ -214,7 +212,8 @@ describe("client session", () => {
       const session = new ClientSession(local === undefined ? {} : { contract: local }, 0);
       session.handleInput({ kind: "open" }, 0);
       drain(session);
-      session.handleInput({ kind: "message", data: message(welcome(remote === undefined ? {} : { contract: remote })) }, 1);
+      const fields = remote === undefined ? {} : { contract: remote };
+      session.handleInput({ kind: "message", data: message(welcome(fields)) }, 1);
       const out = drain(session);
       expect(kinds(out)).toEqual(mismatch ? ["contract_mismatch", "established"] : ["established"]);
     }

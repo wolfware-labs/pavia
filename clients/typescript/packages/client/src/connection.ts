@@ -73,7 +73,7 @@ export function connect(url: string | URL, options: ConnectOptions = {}): Promis
  */
 export class Connection extends EventTarget {
   private timer: ReturnType<typeof setTimeout> | undefined;
-  private established = false;
+  private welcomed: Welcome | undefined;
   private mismatch: ContractMismatch | undefined;
   private ending: Ending | undefined;
   private readonly closed: Promise<Ending>;
@@ -100,9 +100,9 @@ export class Connection extends EventTarget {
     this.arm();
   }
 
-  /** The WELCOME the server sent. */
+  /** The WELCOME the server sent; it stays readable after the session ends. */
   get welcome(): Welcome {
-    return this.session.welcome as Welcome;
+    return this.welcomed as Welcome;
   }
 
   /** The contract mismatch WELCOME showed, if any. */
@@ -163,7 +163,7 @@ export class Connection extends EventTarget {
           this.warn(`pavia: contract mismatch, client ${toHex(output.local)}, server ${toHex(output.remote)}`);
           break;
         case "established":
-          this.established = true;
+          this.welcomed = output.welcome;
           this.resolveConnect(this);
           if (this.mismatch !== undefined) {
             const detail = this.mismatch;
@@ -175,7 +175,7 @@ export class Connection extends EventTarget {
           break;
         case "ended":
           this.ending = output.ending;
-          if (!this.established) this.rejectConnect(new ConnectError(output.ending));
+          if (this.welcomed === undefined) this.rejectConnect(new ConnectError(output.ending));
           this.settleClosed(output.ending);
           this.dispatchEvent(new CustomEvent("close", { detail: output.ending }));
           break;
@@ -187,7 +187,8 @@ export class Connection extends EventTarget {
   private arm(): void {
     clearTimeout(this.timer);
     const at = this.session.pollTimeout();
-    this.timer = at === undefined ? undefined : setTimeout(() => this.feed({ kind: "timeout" }), Math.max(0, at - this.now()));
+    if (at === undefined) return;
+    this.timer = setTimeout(() => this.feed({ kind: "timeout" }), Math.max(0, at - this.now()));
   }
 }
 

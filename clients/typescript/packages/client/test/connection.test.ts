@@ -4,18 +4,12 @@ import {
   ConnectError,
   type ConnectOptions,
   connect,
-  decodeFrame,
-  decodeMessage,
-  encodeMessages,
   type Ending,
   type Frame,
-  toRawFrame,
   type WebSocketLike,
   type Welcome,
 } from "../src/index.js";
-import { encodeError } from "./support.js";
-
-const CONTRACT = new Uint8Array(32).fill(7);
+import { CONTRACT, encodeError, framesOf, HB, IDLE, message, welcome } from "./support.js";
 
 class FakeSocket implements WebSocketLike {
   static last: FakeSocket | undefined;
@@ -38,7 +32,7 @@ class FakeSocket implements WebSocketLike {
   }
 
   send(data: Uint8Array): void {
-    for (const { frame } of decodeMessage(data, 1 << 20)) this.sent.push(decodeFrame(frame));
+    this.sent.push(...framesOf(data));
   }
 
   close(code?: number, reason?: string): void {
@@ -51,27 +45,13 @@ class FakeSocket implements WebSocketLike {
   }
 
   receive(frame: Frame, stream = 0): void {
-    const data = encodeMessages([{ stream, frame: toRawFrame(frame) }], 1 << 20)[0] as Uint8Array;
+    const data = message(frame, stream);
     this.onmessage?.({ data: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) });
   }
 
   drop(code: number): void {
     this.onclose?.({ code });
   }
-}
-
-function welcome(fields: Partial<Welcome> = {}): Welcome {
-  return {
-    type: "WELCOME",
-    version: 1n,
-    codec: "cbor",
-    caps: [],
-    session: "s1",
-    limits: { maxCalls: 100n, maxFrame: 1_048_576n, maxSubs: 256n, maxDgram: 1100n },
-    hb: 50n,
-    idle: 200n,
-    ...fields,
-  };
 }
 
 function options(extra: Partial<ConnectOptions> = {}): ConnectOptions {
@@ -120,7 +100,8 @@ describe("connect", () => {
     const rejected = connect("wss://example.test/rt", options());
     socket().open();
     socket().receive({ type: "REJECT", code: BigInt(CloseCode.FORBIDDEN), msg: "no" });
-    await expect(rejected).rejects.toMatchObject({ ending: { kind: "rejected", code: CloseCode.FORBIDDEN, msg: "no" } });
+    const ending = { kind: "rejected", code: CloseCode.FORBIDDEN, msg: "no" };
+    await expect(rejected).rejects.toMatchObject({ ending });
 
     const closed = connect("wss://example.test/rt", options());
     socket().open();
@@ -178,9 +159,9 @@ describe("connection", () => {
     connection.addEventListener("close", ended);
     ws.receive({ type: "PING", data: Uint8Array.of(5) });
     expect(ws.sent.at(-1)).toEqual({ type: "PONG", data: Uint8Array.of(5) });
-    vi.advanceTimersByTime(50);
+    vi.advanceTimersByTime(HB);
     expect(ws.sent.at(-1)).toEqual({ type: "PING", data: new Uint8Array(0) });
-    vi.advanceTimersByTime(150);
+    vi.advanceTimersByTime(IDLE - HB);
     expect(ws.closedWith).toEqual({ code: 4000 + CloseCode.IDLE_TIMEOUT, reason: "" });
     expect((ended.mock.calls[0]?.[0] as CustomEvent<Ending>).detail).toEqual({
       kind: "closed",
@@ -196,6 +177,7 @@ describe("connection", () => {
     expect(ws.closedWith).toEqual({ code: 4000 + CloseCode.GOING_AWAY, reason: "deploy" });
     expect(ending).toEqual({ kind: "closed", code: CloseCode.GOING_AWAY, msg: "deploy", by: "local" });
     expect(connection.closedWith).toEqual(ending);
+    expect(connection.welcome.session).toBe("s1");
   });
 
   it("ends when the server closes, mapping an unknown code to INTERNAL", async () => {

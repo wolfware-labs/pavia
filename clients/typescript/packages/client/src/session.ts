@@ -1,3 +1,4 @@
+import { compareBytes } from "./bytes.js";
 import { DEFAULT_HEADER_LIMITS } from "./cbor.js";
 import type { Codec } from "./data.js";
 import { CloseCode, closeCodeFromWire, EncodeError, ProtocolError } from "./errors.js";
@@ -13,8 +14,8 @@ import {
   toRawFrame,
   type Welcome,
 } from "./frames.js";
-import { utf8Of } from "./utf8.js";
-import { decodeMessage, encodeMessages, MAX_FRAME_FLOOR } from "./wire.js";
+import { textOfUtf8, utf8Of } from "./utf8.js";
+import { decodeMessage, encodeMessages, MAX_FRAME_FLOOR, type RawFrame } from "./wire.js";
 
 /** The `max_frame` this runtime accepts when the options set none (spec 16). */
 export const DEFAULT_MAX_FRAME = 1_048_576;
@@ -23,7 +24,7 @@ export const DEFAULT_MAX_FRAME = 1_048_576;
 export const DEFAULT_HANDSHAKE_TIMEOUT = 10_000;
 
 /** The `client` map sent in HELLO when the options set none. */
-export const CLIENT_INFO: ClientInfo = { name: "pavia-ts", version: "0.1.0" };
+export const CLIENT_INFO: ClientInfo = { name: "pavia-ts", version: "0.1.0-alpha.0" };
 
 /** What the session offers in HELLO and how it bounds what it receives. */
 export interface SessionOptions {
@@ -55,7 +56,12 @@ export type SessionInput =
 
 /** How a session ended. */
 export type Ending =
-  | { readonly kind: "closed"; readonly code: CloseCode; readonly msg?: string | undefined; readonly by: "local" | "peer" }
+  | {
+      readonly kind: "closed";
+      readonly code: CloseCode;
+      readonly msg?: string | undefined;
+      readonly by: "local" | "peer";
+    }
   | {
       readonly kind: "rejected";
       readonly code: CloseCode;
@@ -91,7 +97,6 @@ const CONTROL_STREAM = 0;
 const VERSION = 1n;
 const WEBSOCKET_CLOSE_BASE = 4000;
 const CLOSE_REASON_BYTES = 123;
-const UTF8_DECODER = new TextDecoder();
 
 /**
  * The client side of one session (spec 7) without I/O, after the driver loop of the C0.7 design
@@ -217,7 +222,7 @@ export class ClientSession {
       throw new EncodeError("frame_too_large", `header of ${raw.header.length} bytes is above 16 KiB`);
     }
     this.now = now;
-    this.transmit(stream, frame);
+    this.transmit(stream, frame, raw);
   }
 
   /**
@@ -229,7 +234,9 @@ export class ClientSession {
     this.now = now;
     const open = this.state.kind !== "connecting";
     this.outputs.length = this.urgent;
-    if (open) this.transmit(CONTROL_STREAM, { type: "CLOSE", code: BigInt(code), ...(msg === undefined ? {} : { msg }) });
+    if (open) {
+      this.transmit(CONTROL_STREAM, { type: "CLOSE", code: BigInt(code), ...(msg === undefined ? {} : { msg }) });
+    }
     this.closeTransport(code, msg);
     this.end({ kind: "closed", code, msg, by: "local" });
   }
@@ -261,9 +268,11 @@ export class ClientSession {
       switch (frame.type) {
         case "WELCOME":
           return this.welcomed(frame);
-        case "REJECT":
-          this.closeTransport(closeCodeFromWire(frame.code), frame.msg);
-          return this.end({ kind: "rejected", code: closeCodeFromWire(frame.code), msg: frame.msg, retry: frame.retry });
+        case "REJECT": {
+          const code = closeCodeFromWire(frame.code);
+          this.closeTransport(code, frame.msg);
+          return this.end({ kind: "rejected", code, msg: frame.msg, retry: frame.retry });
+        }
         case "CLOSE":
           return this.peerClosed(frame);
         default:
@@ -308,7 +317,7 @@ export class ClientSession {
     };
     const local = this.hello.contract;
     const remote = welcome.contract;
-    if (local !== undefined && remote !== undefined && !sameBytes(local, remote)) {
+    if (local !== undefined && remote !== undefined && compareBytes(local, remote) !== 0) {
       this.outputs.push({ kind: "contract_mismatch", local, remote });
     }
     this.outputs.push({ kind: "established", welcome });
@@ -339,9 +348,9 @@ export class ClientSession {
     }
   }
 
-  private transmit(stream: number, frame: Frame): void {
+  private transmit(stream: number, frame: Frame, raw: RawFrame = toRawFrame(frame)): void {
     const peerMaxFrame = this.state.kind === "established" ? this.state.peerMaxFrame : MAX_FRAME_FLOOR;
-    const messages = encodeMessages([{ stream, frame: toRawFrame(frame) }], peerMaxFrame);
+    const messages = encodeMessages([{ stream, frame: raw }], peerMaxFrame);
     const urgent = frame.type === "PING" || frame.type === "PONG" || frame.type === "CLOSE";
     for (const data of messages) {
       if (urgent) {
@@ -382,10 +391,6 @@ function safeNumber(value: bigint): number {
   return value > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(value);
 }
 
-function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
-  return a.length === b.length && a.every((byte, i) => byte === b[i]);
-}
-
 /**
  * `msg` cut to the 123 bytes a WebSocket close frame holds, on a UTF-8 character boundary
  * (spec 7.7). A message with a lone surrogate, which has no UTF-8 form, gives no reason.
@@ -400,5 +405,5 @@ export function closeReason(msg: string): string {
   if (bytes.length <= CLOSE_REASON_BYTES) return msg;
   let end = CLOSE_REASON_BYTES;
   while (end > 0 && ((bytes[end] as number) & 0xc0) === 0x80) end--;
-  return UTF8_DECODER.decode(bytes.subarray(0, end));
+  return textOfUtf8(bytes.subarray(0, end)) ?? "";
 }
