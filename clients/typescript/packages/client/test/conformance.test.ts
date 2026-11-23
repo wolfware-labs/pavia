@@ -98,6 +98,8 @@ describe("the client runner", () => {
     await expect(runClientScript(script([HELLO, pattern]))).rejects.toThrow("an expect is concrete");
     const capture = { expect: { ...(welcome().expect as Json), capture: { session: "header.19" } } };
     await expect(runClientScript(script([HELLO, capture]))).rejects.toThrow("captures nothing");
+    const sent = { send: { ...(HELLO.send as Json), capture: { version: "header.14" } } };
+    await expect(runClientScript(script([sent]))).rejects.toThrow("captures nothing");
   });
 
   it("refuses a script whose first send is not HELLO", async () => {

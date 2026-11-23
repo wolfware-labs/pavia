@@ -282,7 +282,6 @@ function parseStep(step: Json, where: string): Step {
     case "send":
       return { verb, frame: parseFrame(body, where, true), repeat: (body["repeat"] as number | undefined) ?? 1 };
     case "expect":
-      if (body["capture"] !== undefined) throw new Error(`${where}: a client script captures nothing`);
       return { verb, frame: parseFrame(body, where, false) };
     case "expect_nothing_within":
     case "wait":
@@ -300,6 +299,7 @@ function parseStep(step: Json, where: string): Step {
 }
 
 function parseFrame(body: Json, where: string, patterns: boolean): FrameSpec {
+  if (body["capture"] !== undefined) throw new Error(`${where}: a client script captures nothing`);
   const diag = (key: "header" | "data") => {
     const text = body[key];
     if (typeof text !== "string") return undefined;

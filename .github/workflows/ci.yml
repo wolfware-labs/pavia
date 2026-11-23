@@ -193,6 +193,7 @@ jobs:
             --reporter=default --reporter=json --outputFile="$report" || { cat "$log"; exit 1; }
           passed=$(node -p 'require(process.argv[1]).numPassedTests' "$report")
           if [ "$passed" != 1 ]; then echo "expected 1 passed test, got $passed"; exit 1; fi
+          kill "$peer"
 
   vectors:
     name: vectors
