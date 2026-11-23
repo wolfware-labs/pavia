@@ -37,7 +37,8 @@
         "flags": {"type": "integer", "minimum": 0, "maximum": 255},
         "header": {"type": ["string", "null"]},
         "data": {"type": ["string", "null"]},
-        "data_hex": {"type": "string", "pattern": "^([0-9a-f]{2}( ?[0-9a-f]{2})*)?$"}
+        "data_hex": {"type": "string", "pattern": "^([0-9a-f]{2}( ?[0-9a-f]{2})*)?$"},
+        "codec": {"enum": ["cbor", "json"]}
       }
     },
     "capture": {

@@ -119,7 +119,7 @@ Verbs:
 | `close_transport` | `{}` | Drop the transport without CLOSE |
 | `expect_close` | `{code, within_ms}` | The transport closes with that code ([spec 15.1](../spec/pavia-protocol.md#151-session-close-codes); on WebSocket `4000 + code`) within `within_ms`. Frames received before the close are ignored |
 
-Frames in scripts use the same fields as frame vectors, with `stream` always present. `flags` defaults to 0.
+Frames in scripts use the same fields as frame vectors, with `stream` always present. `flags` defaults to 0. `codec` is optional: a frame without it uses the case's `codec`.
 
 **Patterns.** In an `expect` header or data string:
 
