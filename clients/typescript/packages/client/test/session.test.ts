@@ -191,6 +191,14 @@ describe("client session", () => {
     expect(closeReason(`\ufeff${"a".repeat(200)}`)).toBe(`\ufeff${"a".repeat(120)}`);
   });
 
+  it("sends a close code that is not a CloseCode as INTERNAL", () => {
+    const session = established();
+    session.close(1.5 as CloseCode, undefined, 20);
+    const out = drain(session);
+    expect(session.ended).toBe(true);
+    expect(closeOf(out)?.code).toBe(4000 + CloseCode.INTERNAL);
+  });
+
   it("ends even with a close message that cannot be sent as it is", () => {
     for (const [msg, opened] of [["\ud800", true], ["x".repeat(20_000), true], ["y".repeat(70_000), false]] as const) {
       const session = opened ? established() : new ClientSession({}, 0);

@@ -170,6 +170,25 @@ describe("connection", () => {
     expect(seen).toEqual(["contractMismatch", "frame", "close"]);
   });
 
+  it("hands on no held frame after a listener closes the session", async () => {
+    const pending = connect("wss://example.test/rt", options());
+    const ws = socket();
+    ws.open();
+    const frames = [message(welcome()), message({ type: "END" }, 2), message({ type: "END" }, 4)];
+    const data = new Uint8Array(frames.flatMap((bytes) => [...bytes]));
+    ws.onmessage?.({ data: data.buffer });
+    const connection = await pending;
+    const seen: string[] = [];
+    connection.addEventListener("frame", (event) => {
+      const { stream } = (event as CustomEvent<{ stream: number }>).detail;
+      seen.push(`frame ${stream}`);
+      void connection.close();
+    });
+    connection.addEventListener("close", () => seen.push("close"));
+    vi.advanceTimersByTime(0);
+    expect(seen).toEqual(["frame 2", "close"]);
+  });
+
   it("finishes the handshake when the warn callback throws", async () => {
     const warn = () => {
       throw new Error("boom");

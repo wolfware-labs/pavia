@@ -279,9 +279,11 @@ export class ClientSession {
    * with `4000 + code`. `msg` is cut to the 123 bytes a WebSocket close frame holds, in the CLOSE
    * frame as well, and left out when it has no UTF-8 form. Outputs still queued are dropped: frames
    * not yet sent, and frames received in the same message that the driver has not handed on yet.
+   * A `code` that is not a {@link CloseCode} is sent as INTERNAL.
    */
-  close(code: CloseCode = CloseCode.NORMAL, msg?: string, now: number = this.now): void {
+  close(given: CloseCode = CloseCode.NORMAL, msg?: string, now: number = this.now): void {
     if (this.state.kind === "ended") return;
+    const code = closeCodeFromWire(given);
     this.now = now;
     const open = this.state.kind !== "connecting";
     const reason = msg === undefined ? undefined : closeReason(msg);

@@ -200,9 +200,13 @@ export class Connection extends EventTarget {
   }
 
   private release(): void {
-    const events = this.held ?? [];
+    const held = this.held ?? [];
+    const endedBefore = this.ending !== undefined;
+    for (let event = held.shift(); event !== undefined; event = held.shift()) {
+      if (!endedBefore && this.ending !== undefined && event.type === "frame") continue;
+      this.dispatchEvent(event);
+    }
     this.held = undefined;
-    for (const event of events) this.dispatchEvent(event);
   }
 
   private arm(): void {
