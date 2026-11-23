@@ -124,6 +124,14 @@ describe("the client runner", () => {
     const closes = [HELLO, welcome(), bye, { expect_nothing_within: { ms: 2000 } }];
     const closed = "step 4 (expect_nothing_within): the client closed its transport with 4000";
     await expect(runClientScript(script(closes))).rejects.toThrow(closed);
+    const dropped = [HELLO, welcome(), { close_transport: {} }, quiet];
+    const ended = "step 4 (expect_nothing_within): the transport is already closed";
+    await expect(runClientScript(script(dropped))).rejects.toThrow(ended);
+  });
+
+  it("leaves the client's PONG out of expect_nothing_within", async () => {
+    const ping = { expect: { stream: 0, type: 4, header: null, data: null, data_hex: "01 02" } };
+    await runClientScript(script([HELLO, welcome(), ping, { expect_nothing_within: { ms: 100 } }]));
   });
 
   it("answers the client's PING on its own unless a step sends PING", async () => {

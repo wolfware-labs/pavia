@@ -152,6 +152,7 @@ async function play(step: Step, server: ScriptServer, connection: () => Connecti
       await vi.advanceTimersByTimeAsync(step.ms);
       return undefined;
     case "expect_nothing_within": {
+      if (socket.dropped) return ENDED;
       await vi.advanceTimersByTimeAsync(step.ms);
       if (socket.unread !== 0) return `the client sent ${socket.unread} frames`;
       return socket.closedWith === undefined ? undefined : `the client closed its transport with ${socket.closedWith}`;
@@ -372,7 +373,7 @@ class ScriptSocket implements WebSocketLike {
   onerror: ((event: unknown) => void) | null = null;
   passing: number | undefined;
   closedWith: number | undefined;
-  private dropped = false;
+  dropped = false;
   private readonly inbox: WsFrame[] = [];
 
   open(protocol: string): void {
