@@ -63,7 +63,8 @@ describe("client session", () => {
   });
 
   it("names this package and its version in HELLO", () => {
-    const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
+    const text = readFileSync(new URL("../package.json", import.meta.url), "utf8");
+    const manifest = JSON.parse(text) as { version: string };
     expect(CLIENT_INFO).toEqual({ name: "pavia-ts", version: manifest.version });
   });
 
@@ -167,18 +168,12 @@ describe("client session", () => {
     expect(drain(session)).toEqual([]);
   });
 
-  it("reads a WebSocket close code of 4000 + code, and any other close as a lost transport", () => {
-    const going = established();
-    going.handleInput({ kind: "transport_closed", code: 4000 + CloseCode.GOING_AWAY }, 20);
-    const goingAway = { kind: "closed", code: CloseCode.GOING_AWAY, by: "peer" };
-    expect(drain(going)).toEqual([{ kind: "ended", ending: goingAway }]);
-    const unknown = established();
-    unknown.handleInput({ kind: "transport_closed", code: 4999 }, 20);
-    const internal = { kind: "closed", code: CloseCode.INTERNAL, by: "peer" };
-    expect(drain(unknown)).toEqual([{ kind: "ended", ending: internal }]);
-    const lost = established();
-    lost.handleInput({ kind: "transport_closed", code: 1006 }, 20);
-    expect(drain(lost)).toEqual([{ kind: "ended", ending: { kind: "transport_lost" } }]);
+  it("reads a transport that closes without CLOSE as lost, with its close code (spec 7.7)", () => {
+    for (const code of [4000 + CloseCode.GOING_AWAY, 1006, undefined]) {
+      const session = established();
+      session.handleInput({ kind: "transport_closed", code }, 20);
+      expect(drain(session)).toEqual([{ kind: "ended", ending: { kind: "transport_lost", code } }]);
+    }
   });
 
   it("closes with CLOSE and 4000 + code, the reason cut to 123 bytes on a character boundary", () => {
@@ -186,11 +181,68 @@ describe("client session", () => {
     const msg = `${"a".repeat(121)}é€`;
     session.close(CloseCode.GOING_AWAY, msg, 20);
     const out = drain(session);
-    expect(sent(out)).toEqual([{ type: "CLOSE", code: BigInt(CloseCode.GOING_AWAY), msg }]);
-    expect(closeOf(out)).toEqual({ code: 4000 + CloseCode.GOING_AWAY, reason: `${"a".repeat(121)}é` });
+    const cut = `${"a".repeat(121)}é`;
+    expect(sent(out)).toEqual([{ type: "CLOSE", code: BigInt(CloseCode.GOING_AWAY), msg: cut }]);
+    expect(closeOf(out)).toEqual({ code: 4000 + CloseCode.GOING_AWAY, reason: cut });
+    const ending = { kind: "closed", code: CloseCode.GOING_AWAY, msg: cut, by: "local" };
+    expect(out.at(-1)).toEqual({ kind: "ended", ending });
     expect(new TextEncoder().encode(closeReason("€".repeat(50))).length).toBe(123);
     expect(closeReason("\ud800")).toBe("");
     expect(closeReason(`\ufeff${"a".repeat(200)}`)).toBe(`\ufeff${"a".repeat(120)}`);
+  });
+
+  it("ends even with a close message that cannot be sent as it is", () => {
+    for (const [msg, opened] of [["\ud800", true], ["x".repeat(20_000), true], ["y".repeat(70_000), false]] as const) {
+      const session = opened ? established() : new ClientSession({}, 0);
+      if (!opened) {
+        session.handleInput({ kind: "open" }, 0);
+        drain(session);
+      }
+      session.close(CloseCode.NORMAL, msg, 20);
+      const out = drain(session);
+      expect(session.ended).toBe(true);
+      const close = sent(out).find((frame) => frame.type === "CLOSE") as { msg?: string } | undefined;
+      expect(new TextEncoder().encode(close?.msg ?? "").length).toBeLessThanOrEqual(123);
+    }
+  });
+
+  it("refuses a HELLO a server cannot read before WELCOME and a handshake timeout that is no number", () => {
+    const token = (length: number) => ({ scheme: "bearer", token: "t".repeat(length) });
+    for (const length of [20_000, 70_000]) {
+      const refused = encodeError(() => new ClientSession({ auth: token(length) } as SessionOptions, 0));
+      expect(refused.kind).toBe("frame_too_large");
+    }
+    expect(() => new ClientSession({ auth: token(10_000) } as SessionOptions, 0)).not.toThrow();
+    for (const handshakeTimeout of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => new ClientSession({ handshakeTimeout }, 0)).toThrow(RangeError);
+    }
+  });
+
+  it("closes with PROTOCOL_ERROR on a frame on the wrong kind of stream or in the wrong direction", () => {
+    const cases: [Frame, number][] = [
+      [{ type: "CLOSE", code: 0n }, 2],
+      [{ type: "PING", data: new Uint8Array(0) }, 4],
+      [welcome(), 2],
+      [{ type: "CANCEL" }, 0],
+      [{ type: "END" }, 0],
+      [{ type: "SUBSCRIBE", rid: 1n, channel: "c" } as Frame, 0],
+      [{ type: "UNSUBSCRIBE", rid: 1n, channel: "c" } as Frame, 0],
+    ];
+    for (const [frame, stream] of cases) {
+      const session = established();
+      session.handleInput({ kind: "message", data: message(frame, stream) }, 20);
+      expect(closeOf(drain(session))?.code, `${frame.type} on ${stream}`).toBe(4000 + CloseCode.PROTOCOL_ERROR);
+    }
+  });
+
+  it("closes with PROTOCOL_ERROR on a WELCOME with hb or idle 0", () => {
+    for (const fields of [{ hb: 0n }, { idle: 0n }]) {
+      const session = new ClientSession({}, 0);
+      session.handleInput({ kind: "open" }, 0);
+      drain(session);
+      session.handleInput({ kind: "message", data: message(welcome(fields)) }, 1);
+      expect(closeOf(drain(session))?.code).toBe(4000 + CloseCode.PROTOCOL_ERROR);
+    }
   });
 
   it("drops frames still queued when it closes, and sends CLOSE first", () => {

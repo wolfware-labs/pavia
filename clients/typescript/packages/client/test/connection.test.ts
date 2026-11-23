@@ -153,6 +153,40 @@ describe("connect", () => {
 });
 
 describe("connection", () => {
+  it("holds events from the WELCOME message until connect has resolved", async () => {
+    const pending = connect("wss://example.test/rt", options({ contract: CONTRACT }));
+    const ws = socket();
+    ws.open();
+    const both = new Uint8Array([
+      ...message(welcome({ contract: new Uint8Array(32).fill(9) })),
+      ...message({ type: "END" }, 2),
+      ...message({ type: "CLOSE", code: 0n }),
+    ]);
+    ws.onmessage?.({ data: both.buffer });
+    const connection = await pending;
+    const seen: string[] = [];
+    for (const type of ["contractMismatch", "frame", "close"]) connection.addEventListener(type, () => seen.push(type));
+    vi.advanceTimersByTime(0);
+    expect(seen).toEqual(["contractMismatch", "frame", "close"]);
+  });
+
+  it("finishes the handshake when the warn callback throws", async () => {
+    const warn = () => {
+      throw new Error("boom");
+    };
+    const { connection } = await established({ contract: CONTRACT, warn }, { contract: new Uint8Array(32).fill(9) });
+    expect(connection.contractMismatch).toBeDefined();
+  });
+
+  it("keeps timer delays within what setTimeout holds", async () => {
+    const spy = vi.spyOn(globalThis, "setTimeout");
+    await established({}, { hb: 2n ** 40n, idle: 2n ** 40n });
+    const delays = spy.mock.calls.map((call) => call[1] as number);
+    expect(Math.max(...delays)).toBeLessThanOrEqual(2 ** 31 - 1);
+    spy.mockRestore();
+  });
+
+
   it("pings after hb, answers PING and closes with IDLE_TIMEOUT when the server goes quiet", async () => {
     const { connection, ws } = await established();
     const ended = vi.fn();
@@ -191,6 +225,7 @@ describe("connection", () => {
     const { connection, ws } = await established();
     const frames = vi.fn();
     connection.addEventListener("frame", frames);
+    vi.advanceTimersByTime(0);
     ws.receive({ type: "END" }, 2);
     expect((frames.mock.calls[0]?.[0] as CustomEvent).detail).toEqual({ stream: 2, frame: { type: "END" } });
     const stream = connection.openStream();

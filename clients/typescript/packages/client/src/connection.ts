@@ -1,7 +1,7 @@
 import { toHex } from "./bytes.js";
 import { CloseCode } from "./errors.js";
 import type { Frame, Welcome } from "./frames.js";
-import { ClientSession, type Ending, type SessionInput, type SessionOptions } from "./session.js";
+import { ClientSession, type Ending, MAX_TIMER_DELAY, type SessionInput, type SessionOptions } from "./session.js";
 
 /** The WebSocket subprotocol of this protocol version (spec 4.3). */
 export const SUBPROTOCOL = "pavia.1";
@@ -67,15 +67,17 @@ export function connect(url: string | URL, options: ConnectOptions = {}): Promis
 
 /**
  * An established session over one WebSocket. It dispatches `contractMismatch` (a `CustomEvent`
- * with a {@link ContractMismatch}) once, right after {@link connect} resolves, when WELCOME
- * carries a fingerprint other than the client's, and `close` (a `CustomEvent` with the
- * {@link Ending}) when the session ends.
+ * with a {@link ContractMismatch}) once, when WELCOME carries a fingerprint other than the
+ * client's, and `close` (a `CustomEvent` with the {@link Ending}) when the session ends. Events
+ * from the message that carried WELCOME are held until right after {@link connect} resolves, so
+ * listeners added after `await connect()` see them, in order.
  */
 export class Connection extends EventTarget {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private welcomed: Welcome | undefined;
   private mismatch: ContractMismatch | undefined;
   private ending: Ending | undefined;
+  private held: Event[] | undefined;
   private readonly closed: Promise<Ending>;
   private settleClosed: (ending: Ending) => void = () => {};
 
@@ -160,35 +162,50 @@ export class Connection extends EventTarget {
           break;
         case "contract_mismatch":
           this.mismatch = { local: output.local, remote: output.remote };
-          this.warn(`pavia: contract mismatch, client ${toHex(output.local)}, server ${toHex(output.remote)}`);
+          try {
+            this.warn(`pavia: contract mismatch, client ${toHex(output.local)}, server ${toHex(output.remote)}`);
+          } catch {
+            break;
+          }
           break;
         case "established":
           this.welcomed = output.welcome;
+          this.held = [];
+          if (this.mismatch !== undefined) this.held.push(new CustomEvent("contractMismatch", { detail: this.mismatch }));
           this.resolveConnect(this);
-          if (this.mismatch !== undefined) {
-            const detail = this.mismatch;
-            setTimeout(() => this.dispatchEvent(new CustomEvent("contractMismatch", { detail })), 0);
-          }
+          setTimeout(() => this.release(), 0);
           break;
         case "frame":
-          this.dispatchEvent(new CustomEvent("frame", { detail: { stream: output.stream, frame: output.frame } }));
+          this.emit(new CustomEvent("frame", { detail: { stream: output.stream, frame: output.frame } }));
           break;
         case "ended":
           this.ending = output.ending;
           if (this.welcomed === undefined) this.rejectConnect(new ConnectError(output.ending));
           this.settleClosed(output.ending);
-          this.dispatchEvent(new CustomEvent("close", { detail: output.ending }));
+          this.emit(new CustomEvent("close", { detail: output.ending }));
           break;
       }
     }
     this.arm();
   }
 
+  private emit(event: Event): void {
+    if (this.held === undefined) this.dispatchEvent(event);
+    else this.held.push(event);
+  }
+
+  private release(): void {
+    const events = this.held ?? [];
+    this.held = undefined;
+    for (const event of events) this.dispatchEvent(event);
+  }
+
   private arm(): void {
     clearTimeout(this.timer);
     const at = this.session.pollTimeout();
     if (at === undefined) return;
-    this.timer = setTimeout(() => this.feed({ kind: "timeout" }), Math.max(0, at - this.now()));
+    const delay = Math.min(MAX_TIMER_DELAY, Math.max(0, at - this.now()));
+    this.timer = setTimeout(() => this.feed({ kind: "timeout" }), delay);
   }
 }
 
@@ -206,6 +223,6 @@ function describeEnding(ending: Ending): string {
     case "rejected":
       return `rejected with code ${ending.code}: ${JSON.stringify(ending.msg)}`;
     case "transport_lost":
-      return "the transport was lost";
+      return ending.code === undefined ? "the transport was lost" : `the transport closed with code ${ending.code}`;
   }
 }

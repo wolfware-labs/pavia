@@ -15,7 +15,7 @@ import {
   type Welcome,
 } from "./frames.js";
 import { textOfUtf8, utf8Of } from "./utf8.js";
-import { decodeMessage, encodeMessages, MAX_FRAME_FLOOR, type RawFrame } from "./wire.js";
+import { decodeMessage, encodeMessages, MAX_FRAME_FLOOR, payloadLength, type RawFrame } from "./wire.js";
 
 /** The `max_frame` this runtime accepts when the options set none (spec 16). */
 export const DEFAULT_MAX_FRAME = 1_048_576;
@@ -68,7 +68,7 @@ export type Ending =
       readonly msg: string;
       readonly retry?: bigint | undefined;
     }
-  | { readonly kind: "transport_lost" };
+  | { readonly kind: "transport_lost"; readonly code?: number | undefined };
 
 /** What the driver must do, in the order {@link ClientSession.pollOutput} returns it. */
 export type SessionOutput =
@@ -94,6 +94,49 @@ type State =
   | { readonly kind: "ended" };
 
 const CONTROL_STREAM = 0;
+
+/** Frame types that travel on stream 0 only (spec 5.6). */
+const CONTROL_ONLY: ReadonlySet<Frame["type"]> = new Set<Frame["type"]>([
+  "HELLO",
+  "WELCOME",
+  "REJECT",
+  "PING",
+  "PONG",
+  "GOAWAY",
+  "CLOSE",
+  "AUTH_REFRESH",
+  "AUTH_RESULT",
+  "ACK",
+  "AUTH_EXPIRING",
+  "REQUEST_ERROR",
+  "SUBSCRIBE",
+  "SUBSCRIBED",
+  "UNSUBSCRIBE",
+  "UNSUBSCRIBED",
+  "PUBLICATION",
+  "PRESENCE",
+  "DATAGRAM",
+  "DGRAM_BIND",
+]);
+
+/** Frame types a client never receives on stream 0: client-to-server ones and stream frames. */
+const NOT_ON_CONTROL: ReadonlySet<Frame["type"]> = new Set<Frame["type"]>([
+  "HELLO",
+  "AUTH_REFRESH",
+  "SUBSCRIBE",
+  "UNSUBSCRIBE",
+  "CALL",
+  "ITEM",
+  "END",
+  "RESULT",
+  "ERROR",
+  "CANCEL",
+  "CREDIT",
+  "LANE_OPEN",
+]);
+
+/** The longest `setTimeout` delay that does not overflow, in ms. */
+export const MAX_TIMER_DELAY = 2 ** 31 - 1;
 const VERSION = 1n;
 const WEBSOCKET_CLOSE_BASE = 4000;
 const CLOSE_REASON_BYTES = 123;
@@ -120,7 +163,9 @@ const CLOSE_REASON_BYTES = 123;
  *
  * Before WELCOME, frames sent stay under the 64 KiB `max_frame` floor every server honors; after
  * it, under the server's `max_frame`, read as at most 2^53 - 1 (spec 4.1). Every received message
- * is read with this side's `max_frame`. Every ending yields one `ended` output, last.
+ * is read with this side's `max_frame`. A frame on the wrong kind of stream or in the wrong
+ * direction closes with PROTOCOL_ERROR (spec 5.6); frames on call and lane streams go to the call
+ * layer as `frame` outputs, which checks them further. Every ending yields one `ended` output, last.
  */
 export class ClientSession {
   private state: State;
@@ -135,14 +180,25 @@ export class ClientSession {
    * Starts a session at `now`, before its transport is open; the handshake deadline runs from here.
    *
    * @throws {@link EncodeError} when the options make a HELLO no server accepts: `limits_below_floor`
-   * for `max_frame` or `window` below 64 KiB, `invalid_field` for a fingerprint that is not 32 bytes.
+   * for `max_frame` or `window` below 64 KiB, `invalid_field` for a fingerprint that is not 32 bytes,
+   * `frame_too_large` for a HELLO whose header is above 16 KiB or whose frame is above the 64 KiB a
+   * server reads before WELCOME (a long `auth` token).
+   * @throws RangeError when `handshakeTimeout` is not a positive finite number of milliseconds.
    */
   constructor(options: SessionOptions, now: number) {
+    const handshakeTimeout = options.handshakeTimeout ?? DEFAULT_HANDSHAKE_TIMEOUT;
+    if (!Number.isFinite(handshakeTimeout) || handshakeTimeout <= 0) {
+      throw new RangeError(`handshakeTimeout ${handshakeTimeout} is not a positive number of milliseconds`);
+    }
     this.now = now;
     this.hello = helloOf(options);
+    const raw = toRawFrame(this.hello);
+    if (raw.header.length > DEFAULT_HEADER_LIMITS.maxSize || payloadLength(raw) > MAX_FRAME_FLOOR) {
+      throw new EncodeError("frame_too_large", "HELLO is above the 16 KiB header or 64 KiB frame a server reads first");
+    }
     encodeFrame(this.hello);
     this.maxFrame = safeNumber(options.limits?.maxFrame ?? BigInt(DEFAULT_MAX_FRAME));
-    this.state = { kind: "connecting", deadline: now + (options.handshakeTimeout ?? DEFAULT_HANDSHAKE_TIMEOUT) };
+    this.state = { kind: "connecting", deadline: now + handshakeTimeout };
   }
 
   /** The WELCOME, once the session is established. */
@@ -227,18 +283,21 @@ export class ClientSession {
 
   /**
    * Ends the session at `now` with CLOSE `code` and `msg` (spec 7.7), then closes the transport
-   * with `4000 + code`. Frames still queued but not sent are dropped.
+   * with `4000 + code`. `msg` is cut to the 123 bytes a WebSocket close frame holds, in the CLOSE
+   * frame as well, and left out when it has no UTF-8 form. Outputs still queued are dropped: frames
+   * not yet sent, and frames received in the same message that the driver has not handed on yet.
    */
   close(code: CloseCode = CloseCode.NORMAL, msg?: string, now: number = this.now): void {
     if (this.state.kind === "ended") return;
     this.now = now;
     const open = this.state.kind !== "connecting";
+    const reason = msg === undefined ? undefined : closeReason(msg);
     this.outputs.length = this.urgent;
     if (open) {
-      this.transmit(CONTROL_STREAM, { type: "CLOSE", code: BigInt(code), ...(msg === undefined ? {} : { msg }) });
+      this.transmit(CONTROL_STREAM, { type: "CLOSE", code: BigInt(code), ...(reason ? { msg: reason } : {}) });
     }
-    this.closeTransport(code, msg);
-    this.end({ kind: "closed", code, msg, by: "local" });
+    this.closeTransport(code, reason);
+    this.end({ kind: "closed", code, msg: reason || undefined, by: "local" });
   }
 
   private receive(data: Uint8Array | ArrayBuffer | string): void {
@@ -280,7 +339,11 @@ export class ClientSession {
       }
     }
     if (state.kind !== "established") return;
-    if (stream !== CONTROL_STREAM) {
+    const onControl = stream === CONTROL_STREAM;
+    if (onControl ? NOT_ON_CONTROL.has(frame.type) : CONTROL_ONLY.has(frame.type)) {
+      return this.close(CloseCode.PROTOCOL_ERROR);
+    }
+    if (!onControl) {
       this.outputs.push({ kind: "frame", stream, frame });
       return;
     }
@@ -291,7 +354,6 @@ export class ClientSession {
         return;
       case "CLOSE":
         return this.peerClosed(frame);
-      case "HELLO":
       case "WELCOME":
       case "REJECT":
         return this.close(CloseCode.PROTOCOL_ERROR);
@@ -301,9 +363,8 @@ export class ClientSession {
   }
 
   private welcomed(welcome: Welcome): void {
-    if (welcome.version !== VERSION || !this.hello.codecs.includes(welcome.codec)) {
-      return this.close(CloseCode.PROTOCOL_ERROR);
-    }
+    const usable = welcome.version === VERSION && this.hello.codecs.includes(welcome.codec);
+    if (!usable || welcome.hb === 0n || welcome.idle === 0n) return this.close(CloseCode.PROTOCOL_ERROR);
     const hb = safeNumber(welcome.hb);
     const idle = safeNumber(welcome.idle);
     this.state = {
@@ -330,10 +391,7 @@ export class ClientSession {
   }
 
   private transportClosed(wireCode: number | undefined): void {
-    if (wireCode !== undefined && wireCode >= WEBSOCKET_CLOSE_BASE && wireCode < WEBSOCKET_CLOSE_BASE + 1000) {
-      return this.end({ kind: "closed", code: closeCodeFromWire(wireCode - WEBSOCKET_CLOSE_BASE), by: "peer" });
-    }
-    this.end({ kind: "transport_lost" });
+    this.end({ kind: "transport_lost", code: wireCode });
   }
 
   private fail(error: unknown): void {
