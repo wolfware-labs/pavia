@@ -9,7 +9,7 @@ import {
   type WebSocketLike,
   type Welcome,
 } from "../src/index.js";
-import { CONTRACT, encodeError, framesOf, HB, IDLE, message, welcome } from "./support.js";
+import { CONTRACT, concat, encodeError, framesOf, HB, IDLE, message, welcome } from "./support.js";
 
 class FakeSocket implements WebSocketLike {
   static last: FakeSocket | undefined;
@@ -175,7 +175,7 @@ describe("connection", () => {
     const ws = socket();
     ws.open();
     const frames = [message(welcome()), message({ type: "END" }, 2), message({ type: "END" }, 4)];
-    const data = new Uint8Array(frames.flatMap((bytes) => [...bytes]));
+    const data = concat(frames);
     ws.onmessage?.({ data: data.buffer });
     const connection = await pending;
     const seen: string[] = [];

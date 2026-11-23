@@ -281,18 +281,18 @@ export class ClientSession {
    * not yet sent, and frames received in the same message that the driver has not handed on yet.
    * A `code` that is not a {@link CloseCode} is sent as INTERNAL.
    */
-  close(given: CloseCode = CloseCode.NORMAL, msg?: string, now: number = this.now): void {
+  close(code: CloseCode = CloseCode.NORMAL, msg?: string, now: number = this.now): void {
     if (this.state.kind === "ended") return;
-    const code = closeCodeFromWire(given);
+    const known = closeCodeFromWire(code);
     this.now = now;
     const open = this.state.kind !== "connecting";
     const reason = msg === undefined ? undefined : closeReason(msg);
     this.outputs.length = this.urgent;
     if (open) {
-      this.transmit(CONTROL_STREAM, { type: "CLOSE", code: BigInt(code), ...(reason ? { msg: reason } : {}) });
+      this.transmit(CONTROL_STREAM, { type: "CLOSE", code: BigInt(known), ...(reason ? { msg: reason } : {}) });
     }
-    this.closeTransport(code, reason);
-    this.end({ kind: "closed", code, msg: reason || undefined, by: "local" });
+    this.closeTransport(known, reason);
+    this.end({ kind: "closed", code: known, msg: reason || undefined, by: "local" });
   }
 
   private receive(data: Uint8Array | ArrayBuffer | string): void {
