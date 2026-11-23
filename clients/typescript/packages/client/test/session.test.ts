@@ -12,7 +12,7 @@ import {
   toRawFrame,
   type Welcome,
 } from "../src/index.js";
-import { CONTRACT, encodeError, framesOf, HB, IDLE, message, welcome } from "./support.js";
+import { concat, CONTRACT, encodeError, framesOf, HB, IDLE, message, welcome } from "./support.js";
 
 function drain(session: ClientSession): SessionOutput[] {
   const out: SessionOutput[] = [];
@@ -373,6 +373,16 @@ describe("client session", () => {
         if (!fits) expect(reason).toBe("a".repeat(ascii));
       }
     }
+  });
+
+  it("reports a WELCOME read in the message whose next frame closes the session", () => {
+    const session = new ClientSession({ contract: CONTRACT }, 0);
+    session.handleInput({ kind: "open" }, 0);
+    drain(session);
+    const data = concat([message(welcome({ contract: new Uint8Array(32).fill(9) })), message({ type: "END" }, 0)]);
+    session.handleInput({ kind: "message", data }, 1);
+    const out = drain(session);
+    expect(kinds(out)).toEqual(["contract_mismatch", "established", "transmit CLOSE", "close_transport", "ended"]);
   });
 
   it("drops frames still queued when it closes, and sends CLOSE first", () => {

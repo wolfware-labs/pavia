@@ -395,6 +395,7 @@ export class ClientSession {
       this.outputs.push({ kind: "contract_mismatch", local, remote });
     }
     this.outputs.push({ kind: "established", welcome });
+    this.urgent = this.outputs.length;
   }
 
   private peerClosed(close: Close): void {

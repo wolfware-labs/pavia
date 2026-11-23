@@ -181,6 +181,21 @@ describe("connection", () => {
     expect(seen).toEqual(["contractMismatch", "frame", "close"]);
   });
 
+  it("resolves when the WELCOME message goes on with a frame that closes the session", async () => {
+    const pending = connect("wss://example.test/rt", options({ contract: CONTRACT }));
+    const ws = socket();
+    ws.open();
+    const data = concat([message(welcome({ contract: new Uint8Array(32).fill(9) })), message({ type: "END" }, 0)]);
+    ws.onmessage?.({ data: data.buffer });
+    const connection = await pending;
+    const seen: string[] = [];
+    for (const type of ["contractMismatch", "close"]) connection.addEventListener(type, () => seen.push(type));
+    vi.advanceTimersByTime(0);
+    expect(seen).toEqual(["contractMismatch", "close"]);
+    expect(connection.closedWith).toMatchObject({ kind: "closed", by: "local", code: CloseCode.PROTOCOL_ERROR });
+    expect(ws.closedWith?.code).toBe(4000 + CloseCode.PROTOCOL_ERROR);
+  });
+
   it("hands on no held frame after a listener closes the session", async () => {
     const pending = connect("wss://example.test/rt", options());
     const ws = socket();
