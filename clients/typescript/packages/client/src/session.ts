@@ -148,6 +148,7 @@ const CLOSE_REASON_BYTES = 123;
  *  connecting ──open: HELLO──▶ handshaking ──WELCOME──▶ established
  *
  *  connecting, handshaking   deadline                    ▶ HANDSHAKE_TIMEOUT
+ *  connecting                a message before open       ▶ PROTOCOL_ERROR, no HELLO sent
  *  handshaking               REJECT                      ▶ ended, rejected
  *  handshaking               any frame but WELCOME,      ▶ CLOSE PROTOCOL_ERROR
  *                            REJECT or CLOSE on stream 0
@@ -239,6 +240,7 @@ export class ClientSession {
         this.state = { kind: "handshaking", deadline: state.deadline };
         return this.transmit(CONTROL_STREAM, this.hello, this.helloFrame);
       case "message":
+        if (state.kind === "connecting") return this.close(CloseCode.PROTOCOL_ERROR);
         this.receive(input.data);
         return this.sendDuePing();
       case "timeout":
@@ -317,7 +319,7 @@ export class ClientSession {
 
   private handle(stream: number, frame: Frame): void {
     const state = this.state;
-    if (state.kind === "handshaking" || state.kind === "connecting") {
+    if (state.kind === "handshaking") {
       if (stream !== CONTROL_STREAM) return this.close(CloseCode.PROTOCOL_ERROR);
       switch (frame.type) {
         case "WELCOME":

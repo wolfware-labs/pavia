@@ -68,6 +68,17 @@ describe("client session", () => {
     expect(CLIENT_INFO).toEqual({ name: "pavia-ts", version: manifest.version });
   });
 
+  it("refuses a message that arrives before the transport is open", () => {
+    const session = new ClientSession({}, 0);
+    session.handleInput({ kind: "message", data: message(welcome()) }, 1);
+    const out = drain(session);
+    expect(sent(out)).toEqual([]);
+    expect(closeOf(out)?.code).toBe(4000 + CloseCode.PROTOCOL_ERROR);
+    expect(session.welcome).toBeUndefined();
+    session.handleInput({ kind: "open" }, 2);
+    expect(drain(session)).toEqual([]);
+  });
+
   it("refuses options no server accepts before anything is sent", () => {
     expect(encodeError(() => new ClientSession({ limits: { maxFrame: 32_768n } }, 0)).kind).toBe("limits_below_floor");
     expect(encodeError(() => new ClientSession({ limits: { window: 1n } }, 0)).kind).toBe("limits_below_floor");
