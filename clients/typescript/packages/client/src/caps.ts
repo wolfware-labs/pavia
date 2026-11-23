@@ -20,6 +20,12 @@ export function grantedCaps(welcomeCaps: readonly string[]): ReadonlySet<string>
   return new Set(["calls", ...welcomeCaps]);
 }
 
+/** Whether WELCOME's `granted` names only `calls` and capabilities HELLO's `requested` asked for (spec 7.10). */
+export function grantsOnlyRequested(requested: readonly string[] | undefined, granted: readonly string[]): boolean {
+  const allowed = grantedCaps(requested ?? []);
+  return granted.every((capability) => allowed.has(capability));
+}
+
 /**
  * Whether a frame the server sent uses only capabilities in `granted` (spec 7.10), as
  * `pavia-proto`'s `caps::check` decides for a frame whose sender is the server.

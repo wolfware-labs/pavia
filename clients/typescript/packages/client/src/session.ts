@@ -1,5 +1,5 @@
 import { compareBytes } from "./bytes.js";
-import { grantedCaps, serverFrameAllowed } from "./caps.js";
+import { grantedCaps, grantsOnlyRequested, serverFrameAllowed } from "./caps.js";
 import { DEFAULT_HEADER_LIMITS } from "./cbor.js";
 import type { Codec } from "./data.js";
 import { CloseCode, closeCodeFromWire, EncodeError, ProtocolError } from "./errors.js";
@@ -376,17 +376,7 @@ export class ClientSession {
   }
 
   private welcomed(welcome: Welcome): void {
-    const requested = new Set(["calls", ...(this.hello.caps ?? [])]);
-    const usable =
-      welcome.version === VERSION &&
-      this.hello.codecs.includes(welcome.codec) &&
-      welcome.caps.every((capability) => requested.has(capability));
-    const windowed = welcome.limits.window !== undefined;
-    const resumeFields = welcome.token !== undefined && welcome.resumeWindow !== undefined;
-    const resumable = !welcome.caps.includes("resume") || resumeFields;
-    const timers = welcome.hb !== 0n && welcome.idle !== 0n;
-    const fields = windowed && resumable && timers && SESSION_ID.test(welcome.session);
-    if (!usable || !fields) return this.close(CloseCode.PROTOCOL_ERROR);
+    if (!answers(this.hello, welcome)) return this.close(CloseCode.PROTOCOL_ERROR);
     const hb = safeNumber(welcome.hb);
     const idle = safeNumber(welcome.idle);
     this.state = {
@@ -452,6 +442,26 @@ export class ClientSession {
     this.state = { kind: "ended" };
     this.outputs.push({ kind: "ended", ending });
   }
+}
+
+/**
+ * Whether `welcome` is a WELCOME this client can use for `hello`: our version, a codec and only
+ * capabilities HELLO offered (spec 7.2, 7.10), `limits.window` present (spec 4.3), a session ID
+ * in spec 7.2's form, nonzero `hb` and `idle`, and `token` and `resume_window` when `resume` is
+ * granted (spec 7.8).
+ */
+function answers(hello: Hello, welcome: Welcome): boolean {
+  const resumeFields = welcome.token !== undefined && welcome.resumeWindow !== undefined;
+  return (
+    welcome.version === VERSION &&
+    hello.codecs.includes(welcome.codec) &&
+    grantsOnlyRequested(hello.caps, welcome.caps) &&
+    welcome.limits.window !== undefined &&
+    SESSION_ID.test(welcome.session) &&
+    welcome.hb !== 0n &&
+    welcome.idle !== 0n &&
+    (resumeFields || !welcome.caps.includes("resume"))
+  );
 }
 
 /**
