@@ -309,6 +309,8 @@ describe("scripts", () => {
       const concrete = client ? "expect" : "send";
       const captured = new Set<string>();
       const steps = c.steps as Json[];
+      const hello = steps[0]?.send as Json | undefined;
+      if (client) expect(hello?.type, `${ctx}: the first step is a send of HELLO`).toBe(1);
       steps.forEach((step, i) => {
         const [verb, body] = Object.entries(step)[0] as [string, Json];
         if (verb !== "send" && verb !== "expect") return;

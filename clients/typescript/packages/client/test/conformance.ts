@@ -303,34 +303,30 @@ function parseStep(step: Json, codec: string, where: string): Step {
 
 function parseFrame(body: Json, caseCodec: string, where: string, patterns: boolean): FrameSpec {
   if (body["capture"] !== undefined) throw new Error(`${where}: a client script captures nothing`);
-  const diag = (key: "header" | "data") => {
-    const text = body[key];
-    if (typeof text !== "string") return undefined;
+  const diag = (text: string): Diag => {
     const d = parse(text);
     if (!patterns && patternCount(d) !== 0) throw new Error(`${where}: an expect is concrete: no *, ... or $name`);
     if (patterns && refs(d).length !== 0) throw new Error(`${where}: a client script uses no $name`);
     return d;
   };
-  const dataHex = body["data_hex"];
   const codec = (body["codec"] as string | undefined) ?? caseCodec;
   if (codec !== "cbor" && codec !== "json") throw new Error(`${where}: unknown codec ${codec}`);
-  const text = body["data"];
-  const json = codec === "json" && typeof text === "string" && typeof dataHex !== "string";
-  const data = json ? undefined : diag("data");
+  const data = dataOf(body["data"], body["data_hex"], codec, diag);
+  const header = body["header"];
   return {
     stream: body["stream"] as number,
     type: body["type"] as number,
     flags: (body["flags"] as number | undefined) ?? 0,
-    header: diag("header"),
-    data:
-      typeof dataHex === "string"
-        ? { kind: "exact", bytes: hexToBytes(dataHex) }
-        : json
-          ? { kind: "exact", bytes: new TextEncoder().encode(text) }
-          : data === undefined
-          ? { kind: "empty" }
-          : { kind: "cbor", diag: data },
+    header: typeof header === "string" ? diag(header) : undefined,
+    data,
   };
+}
+
+function dataOf(text: unknown, dataHex: unknown, codec: Codec, diag: (text: string) => Diag): Data {
+  if (typeof dataHex === "string") return { kind: "exact", bytes: hexToBytes(dataHex) };
+  if (typeof text !== "string") return { kind: "empty" };
+  if (codec === "json") return { kind: "exact", bytes: new TextEncoder().encode(text) };
+  return { kind: "cbor", diag: diag(text) };
 }
 
 /** The server's end of the in-memory WebSocket. */

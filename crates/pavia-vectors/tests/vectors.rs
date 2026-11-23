@@ -201,6 +201,13 @@ fn scripts_parse_and_captures_resolve() {
     let concrete = if client.contains(&ctx) { "expect" } else { "send" };
     let mut captured: HashSet<String> = HashSet::new();
     let steps = case["steps"].as_array().expect("steps");
+    if concrete == "expect" {
+      let hello = steps.first().and_then(|step| step.get("send"));
+      assert!(
+        hello.is_some_and(|send| send["type"] == 1),
+        "{ctx}: the first step is a send of HELLO"
+      );
+    }
     for (i, step) in steps.iter().enumerate() {
       let (verb, body) = step.as_object().and_then(|o| o.iter().next()).expect("one verb");
       if verb != "send" && verb != "expect" {
