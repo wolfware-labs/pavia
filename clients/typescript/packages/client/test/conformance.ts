@@ -76,7 +76,8 @@ type Step =
  */
 export async function runClientScript(c: Json, hooks: RunHooks = {}): Promise<Run> {
   const id = String(c["id"]);
-  const steps = (c["steps"] as Json[]).map((step, index) => parseStep(step, `${id}: step ${index + 1}`));
+  const codec = String(c["codec"]);
+  const steps = (c["steps"] as Json[]).map((step, index) => parseStep(step, codec, `${id}: step ${index + 1}`));
   const hello = steps.find((step) => step.verb === "send");
   if (hello?.verb !== "send" || hello.frame.type !== HELLO) throw new Error(`${id}: the first send is not HELLO`);
   const server = new ScriptServer();
@@ -274,15 +275,15 @@ async function within(ms: number, done: () => boolean): Promise<boolean> {
   return true;
 }
 
-function parseStep(step: Json, where: string): Step {
+function parseStep(step: Json, codec: string, where: string): Step {
   const entries = Object.entries(step);
   if (entries.length !== 1) throw new Error(`${where}: a step has exactly one verb`);
   const [verb, body] = entries[0] as [string, Json];
   switch (verb) {
     case "send":
-      return { verb, frame: parseFrame(body, where, true), repeat: (body["repeat"] as number | undefined) ?? 1 };
+      return { verb, frame: parseFrame(body, codec, where, true), repeat: (body["repeat"] as number | undefined) ?? 1 };
     case "expect":
-      return { verb, frame: parseFrame(body, where, false) };
+      return { verb, frame: parseFrame(body, codec, where, false) };
     case "expect_nothing_within":
     case "wait":
       return { verb, ms: body["ms"] as number };
@@ -298,7 +299,7 @@ function parseStep(step: Json, where: string): Step {
   }
 }
 
-function parseFrame(body: Json, where: string, patterns: boolean): FrameSpec {
+function parseFrame(body: Json, caseCodec: string, where: string, patterns: boolean): FrameSpec {
   if (body["capture"] !== undefined) throw new Error(`${where}: a client script captures nothing`);
   const diag = (key: "header" | "data") => {
     const text = body[key];
@@ -309,7 +310,11 @@ function parseFrame(body: Json, where: string, patterns: boolean): FrameSpec {
     return d;
   };
   const dataHex = body["data_hex"];
-  const data = diag("data");
+  const codec = (body["codec"] as string | undefined) ?? caseCodec;
+  if (codec !== "cbor" && codec !== "json") throw new Error(`${where}: unknown codec ${codec}`);
+  const text = body["data"];
+  const json = codec === "json" && typeof text === "string" && typeof dataHex !== "string";
+  const data = json ? undefined : diag("data");
   return {
     stream: body["stream"] as number,
     type: body["type"] as number,
@@ -318,7 +323,9 @@ function parseFrame(body: Json, where: string, patterns: boolean): FrameSpec {
     data:
       typeof dataHex === "string"
         ? { kind: "exact", bytes: hexToBytes(dataHex) }
-        : data === undefined
+        : json
+          ? { kind: "exact", bytes: new TextEncoder().encode(text) }
+          : data === undefined
           ? { kind: "empty" }
           : { kind: "cbor", diag: data },
   };

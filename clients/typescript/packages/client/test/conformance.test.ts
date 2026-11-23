@@ -102,6 +102,20 @@ describe("the client runner", () => {
     await expect(runClientScript(script([sent]))).rejects.toThrow("captures nothing");
   });
 
+  it("sends and matches a json data section as its exact text", async () => {
+    const data = '{"n":1}';
+    const steps = [{ ...HELLO }, { ...welcome() }, { expect: { stream: 2, type: 17, header: null, data } }];
+    const sent: number[][] = [];
+    await runClientScript({ ...script(steps), codec: "json" }, {
+      onConnection: (connection) =>
+        connection.addEventListener("frame", (event) => {
+          const { frame } = (event as CustomEvent<{ frame: { type: string; data?: Uint8Array } }>).detail;
+          sent.push([...(frame.data ?? [])]);
+        }),
+    });
+    expect(sent).toEqual([[...new TextEncoder().encode(data)]]);
+  });
+
   it("refuses a script whose first send is not HELLO", async () => {
     const steps = [{ send: { stream: 0, type: 4, header: null, data: null } }];
     await expect(runClientScript(script(steps))).rejects.toThrow("the first send is not HELLO");
