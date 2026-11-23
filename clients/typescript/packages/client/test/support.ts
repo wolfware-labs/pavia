@@ -2,7 +2,20 @@ import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { type Diag, hexToBytes, parse } from "@pavia/vectors/diag";
 import { expect } from "vitest";
-import { type CborItem, type CborMap, DataError, EncodeError, ProtocolError } from "../src/index.js";
+import {
+  type CborItem,
+  type CborMap,
+  DataError,
+  DEFAULT_MAX_FRAME,
+  decodeFrame,
+  decodeMessage,
+  EncodeError,
+  encodeMessages,
+  type Frame,
+  ProtocolError,
+  toRawFrame,
+  type Welcome,
+} from "../src/index.js";
 
 const VECTORS = fileURLToPath(new URL("../../../../../vectors/", import.meta.url));
 
@@ -95,4 +108,30 @@ export function concat(parts: readonly Uint8Array[]): Uint8Array {
     at += p.length;
   }
   return out;
+}
+
+export const HB = 50;
+export const IDLE = 200;
+export const CONTRACT = new Uint8Array(32).fill(7);
+
+export function welcome(fields: Partial<Welcome> = {}): Welcome {
+  return {
+    type: "WELCOME",
+    version: 1n,
+    codec: "cbor",
+    caps: [],
+    session: "s1",
+    limits: { maxCalls: 100n, maxFrame: BigInt(DEFAULT_MAX_FRAME), maxSubs: 256n, maxDgram: 1100n, window: 262_144n },
+    hb: BigInt(HB),
+    idle: BigInt(IDLE),
+    ...fields,
+  };
+}
+
+export function message(frame: Frame, stream = 0): Uint8Array {
+  return encodeMessages([{ stream, frame: toRawFrame(frame) }], DEFAULT_MAX_FRAME)[0] as Uint8Array;
+}
+
+export function framesOf(data: Uint8Array): Frame[] {
+  return decodeMessage(data, DEFAULT_MAX_FRAME).map(({ frame }) => decodeFrame(frame));
 }

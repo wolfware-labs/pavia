@@ -788,6 +788,76 @@
         "reason": "two entries"
       },
       "json": "{\"Zed\":1,\"Zee\":2}"
+    },
+    {
+      "id": "timestamp-json-date-only",
+      "spec": [
+        "12.3"
+      ],
+      "note": "A date without a time is not the RFC 3339 form json writes.",
+      "type": "timestamp",
+      "direction": "decode",
+      "error": {
+        "codec": "json",
+        "reason": "date only"
+      },
+      "json": "\"2025-09-22\""
+    },
+    {
+      "id": "timestamp-json-human",
+      "spec": [
+        "12.3"
+      ],
+      "note": "A free-form date is not RFC 3339.",
+      "type": "timestamp",
+      "direction": "decode",
+      "error": {
+        "codec": "json",
+        "reason": "not RFC 3339"
+      },
+      "json": "\"Sep 22 2025\""
+    },
+    {
+      "id": "bytes-json-plus",
+      "spec": [
+        "12.3"
+      ],
+      "note": "`+` belongs to standard base64, not base64url.",
+      "type": "bytes",
+      "direction": "decode",
+      "error": {
+        "codec": "json",
+        "reason": "alphabet"
+      },
+      "json": "\"+w\""
+    },
+    {
+      "id": "bytes-json-slash",
+      "spec": [
+        "12.3"
+      ],
+      "note": "`/` belongs to standard base64, not base64url.",
+      "type": "bytes",
+      "direction": "decode",
+      "error": {
+        "codec": "json",
+        "reason": "alphabet"
+      },
+      "json": "\"/w\""
+    },
+    {
+      "id": "string-cbor-invalid-utf8",
+      "spec": [
+        "12.3"
+      ],
+      "note": "CBOR text must be valid UTF-8.",
+      "type": "string",
+      "direction": "decode",
+      "error": {
+        "codec": "cbor",
+        "reason": "invalid UTF-8"
+      },
+      "cbor": "62 c3 28"
     }
   ]
 }

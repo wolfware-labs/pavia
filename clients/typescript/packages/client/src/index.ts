@@ -1,5 +1,15 @@
 export { ByteWriter } from "./bytes.js";
 export {
+  ConnectError,
+  type ConnectOptions,
+  Connection,
+  connect,
+  type ContractMismatch,
+  SUBPROTOCOL,
+  type WebSocketConstructor,
+  type WebSocketLike,
+} from "./connection.js";
+export {
   DEFAULT_HEADER_LIMITS,
   decodeHeader,
   encodeHeader,
@@ -40,3 +50,14 @@ export {
 export * from "./frames.js";
 export type { ContractType, EnumValue, Field, NamedType, Primitive, Types, Variant } from "./types.js";
 export { decodeVarint, encodeVarint, MAX_VARINT, type VarintResult, varintLength, writeVarint } from "./varint.js";
+export {
+  CLIENT_INFO,
+  ClientSession,
+  closeReason,
+  DEFAULT_HANDSHAKE_TIMEOUT,
+  DEFAULT_MAX_FRAME,
+  type Ending,
+  type SessionInput,
+  type SessionOptions,
+  type SessionOutput,
+} from "./session.js";
