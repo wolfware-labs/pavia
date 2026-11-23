@@ -254,6 +254,22 @@ describe("client session", () => {
     }
   });
 
+  it("closes with PROTOCOL_ERROR on a WELCOME granting a capability HELLO did not request (spec 7.10)", () => {
+    for (const [requested, granted, ok] of [
+      [undefined, ["server-calls"], false],
+      [["channels"], ["channels", "resume"], false],
+      [["channels", "resume"], ["resume"], true],
+      [undefined, ["calls"], true],
+    ] as const) {
+      const session = new ClientSession(requested === undefined ? {} : { caps: requested }, 0);
+      session.handleInput({ kind: "open" }, 0);
+      drain(session);
+      session.handleInput({ kind: "message", data: message(welcome({ caps: granted })) }, 1);
+      const expected = ok ? ["established"] : ["transmit CLOSE", "close_transport", "ended"];
+      expect(kinds(drain(session)), granted.join(",")).toEqual(expected);
+    }
+  });
+
   it("closes with PROTOCOL_ERROR on a frame that needs a capability WELCOME did not grant", () => {
     const publication: Frame = { type: "PUBLICATION", channel: "c", offset: 1n, data: new Uint8Array(0) };
     const call: Frame = { type: "CALL", method: "m", shape: 0n, data: new Uint8Array(0) };
@@ -266,7 +282,7 @@ describe("client session", () => {
       [sequenced, 0, ["channels"]],
     ];
     for (const [frame, stream, caps] of refused) {
-      const session = established({}, { caps });
+      const session = established({ caps }, { caps });
       session.handleInput({ kind: "message", data: message(frame, stream) }, 20);
       const what = `${frame.type} with ${caps.join(",")}`;
       expect(closeOf(drain(session))?.code, what).toBe(4000 + CloseCode.PROTOCOL_ERROR);
@@ -278,7 +294,7 @@ describe("client session", () => {
       [sequenced, 0, ["resume"]],
     ];
     for (const [frame, stream, caps] of allowed) {
-      const session = established({}, { caps });
+      const session = established({ caps }, { caps });
       session.handleInput({ kind: "message", data: message(frame, stream) }, 20);
       expect(kinds(drain(session)), `${frame.type} with ${caps.join(",")}`).toEqual(["frame"]);
     }
