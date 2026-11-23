@@ -310,6 +310,20 @@ describe("client session", () => {
     }
   });
 
+  it("cuts a close reason to the longest valid prefix when the limit falls inside a character", () => {
+    for (const char of ["\u00e9", "\u20ac", "\u{1F600}"]) {
+      for (const ascii of [119, 120, 121, 122]) {
+        const msg = `${"a".repeat(ascii)}${char}b`;
+        const reason = closeReason(msg);
+        const bytes = new TextEncoder().encode(reason).length;
+        const fits = ascii + new TextEncoder().encode(char).length <= 123;
+        expect([bytes, msg.startsWith(reason)], `${ascii} + ${char}`).toEqual([fits ? bytes : ascii, true]);
+        expect(reason.length).toBeGreaterThan(0);
+        if (!fits) expect(reason).toBe("a".repeat(ascii));
+      }
+    }
+  });
+
   it("drops frames still queued when it closes, and sends CLOSE first", () => {
     const session = established();
     session.send(2, { type: "CANCEL" } as Frame, 20);
