@@ -39,6 +39,13 @@ function established(options: SessionOptions = {}, fields: Partial<Welcome> = {}
   return session;
 }
 
+const RESUME_FIELDS = { token: new Uint8Array(16).fill(1), resumeWindow: 30_000n };
+
+/** WELCOME fields granting `caps`, with the fields spec 7.2 asks for when `resume` is among them. */
+function grant(caps: readonly string[]): Partial<Welcome> {
+  return { caps: [...caps], ...(caps.includes("resume") ? RESUME_FIELDS : {}) };
+}
+
 function closeOf(outputs: readonly SessionOutput[]): { code: number; reason: string } | undefined {
   const close = outputs.find((o) => o.kind === "close_transport");
   return close?.kind === "close_transport" ? { code: close.code, reason: close.reason } : undefined;
@@ -264,7 +271,7 @@ describe("client session", () => {
       const session = new ClientSession(requested === undefined ? {} : { caps: requested }, 0);
       session.handleInput({ kind: "open" }, 0);
       drain(session);
-      session.handleInput({ kind: "message", data: message(welcome({ caps: granted })) }, 1);
+      session.handleInput({ kind: "message", data: message(welcome(grant(granted))) }, 1);
       const expected = ok ? ["established"] : ["transmit CLOSE", "close_transport", "ended"];
       expect(kinds(drain(session)), granted.join(",")).toEqual(expected);
     }
@@ -282,7 +289,7 @@ describe("client session", () => {
       [sequenced, 0, ["channels"]],
     ];
     for (const [frame, stream, caps] of refused) {
-      const session = established({ caps }, { caps });
+      const session = established({ caps }, grant(caps));
       session.handleInput({ kind: "message", data: message(frame, stream) }, 20);
       const what = `${frame.type} with ${caps.join(",")}`;
       expect(closeOf(drain(session))?.code, what).toBe(4000 + CloseCode.PROTOCOL_ERROR);
@@ -294,7 +301,7 @@ describe("client session", () => {
       [sequenced, 0, ["resume"]],
     ];
     for (const [frame, stream, caps] of allowed) {
-      const session = established({ caps }, { caps });
+      const session = established({ caps }, grant(caps));
       session.handleInput({ kind: "message", data: message(frame, stream) }, 20);
       expect(kinds(drain(session)), `${frame.type} with ${caps.join(",")}`).toEqual(["frame"]);
     }
@@ -307,6 +314,41 @@ describe("client session", () => {
     const limits = { maxCalls: 1n, maxFrame: 65_536n, maxSubs: 1n, maxDgram: 1n };
     session.handleInput({ kind: "message", data: message(welcome({ limits })) }, 1);
     expect(closeOf(drain(session))?.code).toBe(4000 + CloseCode.PROTOCOL_ERROR);
+  });
+
+  it("closes with PROTOCOL_ERROR on a session ID outside spec 7.2's form", () => {
+    const ids: [string, boolean][] = [
+      ["", false],
+      ["a b", false],
+      ["a/b", false],
+      ["x".repeat(65), false],
+      ["x".repeat(64), true],
+      ["A-z_9", true],
+    ];
+    for (const [id, ok] of ids) {
+      const session = new ClientSession({}, 0);
+      session.handleInput({ kind: "open" }, 0);
+      drain(session);
+      session.handleInput({ kind: "message", data: message(welcome({ session: id })) }, 1);
+      expect(kinds(drain(session))[0], JSON.stringify(id)).toBe(ok ? "established" : "transmit CLOSE");
+    }
+  });
+
+  it("closes with PROTOCOL_ERROR on resume granted without token and resume_window", () => {
+    const token = Uint8Array.of(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16);
+    const cases: [Partial<Welcome>, boolean][] = [
+      [{ caps: ["resume"] }, false],
+      [{ caps: ["resume"], token }, false],
+      [{ caps: ["resume"], resumeWindow: 30_000n }, false],
+      [{ caps: ["resume"], token, resumeWindow: 30_000n }, true],
+    ];
+    for (const [fields, ok] of cases) {
+      const session = new ClientSession({ caps: ["resume"] }, 0);
+      session.handleInput({ kind: "open" }, 0);
+      drain(session);
+      session.handleInput({ kind: "message", data: message(welcome(fields)) }, 1);
+      expect(kinds(drain(session))[0], JSON.stringify(Object.keys(fields))).toBe(ok ? "established" : "transmit CLOSE");
+    }
   });
 
   it("closes with PROTOCOL_ERROR on a WELCOME with hb or idle 0", () => {

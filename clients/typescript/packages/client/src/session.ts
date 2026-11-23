@@ -137,6 +137,9 @@ const NOT_ON_CONTROL: ReadonlySet<Frame["type"]> = new Set<Frame["type"]>([
 ]);
 
 const VERSION = 1n;
+
+/** A session ID as spec 7.2 writes it: URL-safe text of 1 to 64 characters. */
+const SESSION_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const WEBSOCKET_CLOSE_BASE = 4000;
 const CLOSE_REASON_BYTES = 123;
 
@@ -155,7 +158,10 @@ const CLOSE_REASON_BYTES = 123;
  *  handshaking               WELCOME with another        ▶ CLOSE PROTOCOL_ERROR
  *                            version, an unoffered codec
  *                            or an unrequested capability,
- *                            or without `limits.window`
+ *                            or without `limits.window`,
+ *                            a session ID outside 7.2's form,
+ *                            or `resume` granted without
+ *                            `token` and `resume_window`
  *  handshaking               any frame but WELCOME,      ▶ CLOSE PROTOCOL_ERROR
  *                            REJECT or CLOSE on stream 0
  *  established               PING                        ▶ PONG with the same bytes
@@ -376,7 +382,11 @@ export class ClientSession {
       this.hello.codecs.includes(welcome.codec) &&
       welcome.caps.every((capability) => requested.has(capability));
     const windowed = welcome.limits.window !== undefined;
-    if (!usable || !windowed || welcome.hb === 0n || welcome.idle === 0n) return this.close(CloseCode.PROTOCOL_ERROR);
+    const resumeFields = welcome.token !== undefined && welcome.resumeWindow !== undefined;
+    const resumable = !welcome.caps.includes("resume") || resumeFields;
+    const timers = welcome.hb !== 0n && welcome.idle !== 0n;
+    const fields = windowed && resumable && timers && SESSION_ID.test(welcome.session);
+    if (!usable || !fields) return this.close(CloseCode.PROTOCOL_ERROR);
     const hb = safeNumber(welcome.hb);
     const idle = safeNumber(welcome.idle);
     this.state = {
