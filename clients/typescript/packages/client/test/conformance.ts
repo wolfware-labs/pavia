@@ -152,9 +152,9 @@ async function play(step: Step, server: ScriptServer, connection: () => Connecti
       await vi.advanceTimersByTimeAsync(step.ms);
       return undefined;
     case "expect_nothing_within": {
-      const before = socket.count;
       await vi.advanceTimersByTimeAsync(step.ms);
-      return socket.count === before ? undefined : `the client sent ${socket.count - before} frames`;
+      if (socket.unread !== 0) return `the client sent ${socket.unread} frames`;
+      return socket.closedWith === undefined ? undefined : `the client closed its transport with ${socket.closedWith}`;
     }
     case "close_transport":
       if (!socket.drop(ABNORMAL_CLOSURE)) return ENDED;
@@ -371,7 +371,6 @@ class ScriptSocket implements WebSocketLike {
   onclose: ((event: { readonly code: number }) => void) | null = null;
   onerror: ((event: unknown) => void) | null = null;
   passing: number | undefined;
-  count = 0;
   closedWith: number | undefined;
   private dropped = false;
   private readonly inbox: WsFrame[] = [];
@@ -389,12 +388,15 @@ class ScriptSocket implements WebSocketLike {
         continue;
       }
       this.inbox.push(frame);
-      if (!HEARTBEATS.has(type)) this.count++;
     }
   }
 
   close(code?: number): void {
     this.closedWith ??= code;
+  }
+
+  get unread(): number {
+    return this.inbox.filter((received) => !HEARTBEATS.has(received.frame.type)).length;
   }
 
   has(stream: number, type: number): boolean {

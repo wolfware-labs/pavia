@@ -76,8 +76,7 @@ describe("the client runner", () => {
   it("fails when connect() rejects and no step expects the close", async () => {
     const header = `{15: 2, 17: "cbor", 18: ["calls"], 19: "s_test", 21: ${LIMITS}, 22: 15000, 23: 45000}`;
     const refused = { expect: { stream: 0, type: 2, header, data: null } };
-    const quiet = { expect_nothing_within: { ms: 100 } };
-    for (const steps of [[HELLO, refused], [HELLO, refused, quiet]]) {
+    for (const steps of [[HELLO, refused], [HELLO, refused, { wait: { ms: 100 } }]]) {
       await expect(runClientScript(script(steps))).rejects.toThrow("connect() failed and no step expects it");
     }
     const closes = { expect_close: { code: "PROTOCOL_ERROR", within_ms: 1000 } };
@@ -113,6 +112,18 @@ describe("the client runner", () => {
     await runClientScript(script(steps));
     const quiet = [HELLO, { expect_nothing_within: { ms: 11000 } }];
     await expect(runClientScript(script(quiet))).rejects.toThrow("step 2 (expect_nothing_within): the client sent 1");
+  });
+
+  it("fails expect_nothing_within on a frame sent before it and on a closed transport", async () => {
+    const header = `{15: 2, 17: "cbor", 18: ["calls"], 19: "s_test", 21: ${LIMITS}, 22: 15000, 23: 45000}`;
+    const refused = { expect: { stream: 0, type: 2, header, data: null } };
+    const quiet = { expect_nothing_within: { ms: 100 } };
+    const unread = "step 3 (expect_nothing_within): the client sent 1 frames";
+    await expect(runClientScript(script([HELLO, refused, quiet]))).rejects.toThrow(unread);
+    const bye = { send: { stream: 0, type: 7, header: '{6: 0, 7: "bye"}', data: null } };
+    const closes = [HELLO, welcome(), bye, { expect_nothing_within: { ms: 2000 } }];
+    const closed = "step 4 (expect_nothing_within): the client closed its transport with 4000";
+    await expect(runClientScript(script(closes))).rejects.toThrow(closed);
   });
 
   it("answers the client's PING on its own unless a step sends PING", async () => {
