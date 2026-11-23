@@ -9,7 +9,7 @@ import {
   type WebSocketLike,
   type Welcome,
 } from "../src/index.js";
-import { CONTRACT, concat, encodeError, framesOf, HB, IDLE, message, welcome } from "./support.js";
+import { arrayBufferOf, CONTRACT, concat, encodeError, framesOf, HB, IDLE, message, welcome } from "./support.js";
 
 class FakeSocket implements WebSocketLike {
   static last: FakeSocket | undefined;
@@ -45,8 +45,7 @@ class FakeSocket implements WebSocketLike {
   }
 
   receive(frame: Frame, stream = 0): void {
-    const data = message(frame, stream);
-    this.onmessage?.({ data: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) });
+    this.onmessage?.({ data: arrayBufferOf(message(frame, stream)) });
   }
 
   drop(code: number): void {

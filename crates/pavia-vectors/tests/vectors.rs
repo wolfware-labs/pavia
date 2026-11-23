@@ -101,6 +101,11 @@ fn frame_headers(buf: &[u8], binding: &str) -> Vec<Vec<u8>> {
   out
 }
 
+/// Names one vector case in assertion messages: `<kind>/<file>.json#<id>`.
+fn case_ctx(kind: &str, name: &str, id: &str) -> String {
+  format!("{kind}/{name}.json#{id}")
+}
+
 fn unique_ids(kind: &str) -> Vec<(String, Json)> {
   let mut seen = HashSet::new();
   let mut cases = Vec::new();
@@ -111,7 +116,7 @@ fn unique_ids(kind: &str) -> Vec<(String, Json)> {
     for case in doc["cases"].as_array().expect("cases") {
       let id = str_field(case, "id").to_owned();
       assert!(seen.insert(id.clone()), "{kind}: duplicate id {id}");
-      cases.push((format!("{kind}/{name}.json#{id}"), case.clone()));
+      cases.push((case_ctx(kind, &name, &id), case.clone()));
     }
   }
   assert!(!cases.is_empty(), "no {kind} vectors found");
@@ -173,27 +178,61 @@ fn codec_vectors_match_their_cbor_and_json() {
   assert!(!cases.is_empty());
 }
 
+fn client_script_cases() -> HashSet<String> {
+  let mut cases = HashSet::new();
+  for path in files("scripts") {
+    let doc = load(&path);
+    if doc["runner"] != "client" {
+      continue;
+    }
+    let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+    for case in doc["cases"].as_array().expect("cases") {
+      cases.insert(case_ctx("scripts", &name, str_field(case, "id")));
+    }
+  }
+  cases
+}
+
 #[test]
 fn scripts_parse_and_captures_resolve() {
+  let client = client_script_cases();
+  assert!(!client.is_empty(), "no client scripts found");
   for (ctx, case) in unique_ids("scripts") {
+    let concrete = if client.contains(&ctx) { "expect" } else { "send" };
     let mut captured: HashSet<String> = HashSet::new();
     let steps = case["steps"].as_array().expect("steps");
+    if concrete == "expect" {
+      let hello = steps.first().and_then(|step| step.get("send"));
+      assert!(
+        hello.is_some_and(|send| send["type"] == 1),
+        "{ctx}: the first step is a send of HELLO"
+      );
+    }
     for (i, step) in steps.iter().enumerate() {
       let (verb, body) = step.as_object().and_then(|o| o.iter().next()).expect("one verb");
       if verb != "send" && verb != "expect" {
         continue;
+      }
+      if concrete == "expect" {
+        assert!(
+          body.get("capture").is_none(),
+          "{ctx} step {i}: a client script captures nothing"
+        );
       }
       for key in ["header", "data"] {
         let Some(text) = body[key].as_str() else {
           continue;
         };
         let d = diag::parse(text).unwrap_or_else(|e| panic!("{ctx} step {i}: {e}"));
-        if verb == "send" {
+        if verb == concrete {
           assert_eq!(
             count_patterns(&d),
             d.refs().len(),
-            "{ctx} step {i}: send may use $name but not * or ..."
+            "{ctx} step {i}: {verb} may use $name but not * or ..."
           );
+        }
+        if concrete == "expect" {
+          assert!(d.refs().is_empty(), "{ctx} step {i}: a client script uses no $name");
         }
         for name in d.refs() {
           assert!(captured.contains(name), "{ctx} step {i}: ${name} used before capture");

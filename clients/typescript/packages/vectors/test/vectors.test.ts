@@ -8,7 +8,7 @@ import { render } from "../src/json.js";
 const VECTORS = fileURLToPath(new URL("../../../../../vectors/", import.meta.url));
 
 type Json = Record<string, unknown>;
-type Case = { ctx: string; c: Json; types: Record<string, string | Json> };
+type Case = { ctx: string; c: Json; types: Record<string, string | Json>; client: boolean };
 
 function cases(kind: string): Case[] {
   const seen = new Set<string>();
@@ -20,7 +20,8 @@ function cases(kind: string): Case[] {
       const id = c.id as string;
       expect(seen.has(id), `${kind}: duplicate id ${id}`).toBe(false);
       seen.add(id);
-      out.push({ ctx: `${kind}/${file}#${id}`, c, types: (doc.types ?? {}) as Record<string, string | Json> });
+      const types = (doc.types ?? {}) as Record<string, string | Json>;
+      out.push({ ctx: `${kind}/${file}#${id}`, c, types, client: doc.runner === "client" });
     }
   }
   expect(out.length).toBeGreaterThan(0);
@@ -300,19 +301,28 @@ describe("header vectors", () => {
 });
 
 describe("scripts", () => {
-  for (const { ctx, c } of cases("scripts")) {
+  it("include client scripts", () => {
+    expect(cases("scripts").some((x) => x.client)).toBe(true);
+  });
+  for (const { ctx, c, client } of cases("scripts")) {
     it(ctx, () => {
+      const concrete = client ? "expect" : "send";
       const captured = new Set<string>();
       const steps = c.steps as Json[];
+      const hello = steps[0]?.send as Json | undefined;
+      if (client) expect(hello?.type, `${ctx}: the first step is a send of HELLO`).toBe(1);
       steps.forEach((step, i) => {
         const [verb, body] = Object.entries(step)[0] as [string, Json];
         if (verb !== "send" && verb !== "expect") return;
+        const where = `${ctx} step ${i}`;
+        if (client) expect(body.capture, `${where}: a client script captures nothing`).toBeUndefined();
         for (const key of ["header", "data"] as const) {
           const text = body[key];
           if (typeof text !== "string") continue;
           const d: Diag = parse(text);
-          if (verb === "send") expect(patternCount(d), `${ctx} step ${i}: send uses * or ...`).toBe(refs(d).length);
-          for (const name of refs(d)) expect(captured.has(name), `${ctx} step ${i}: $${name} before capture`).toBe(true);
+          if (verb === concrete) expect(patternCount(d), `${where}: ${verb} uses * or ...`).toBe(refs(d).length);
+          if (client) expect(refs(d), `${where}: a client script uses no $name`).toEqual([]);
+          for (const name of refs(d)) expect(captured.has(name), `${where}: $${name} before capture`).toBe(true);
         }
         if (body.capture) Object.keys(body.capture as Json).forEach((k) => captured.add(k));
       });

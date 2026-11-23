@@ -119,7 +119,7 @@ Verbs:
 | `close_transport` | `{}` | Drop the transport without CLOSE |
 | `expect_close` | `{code, within_ms}` | The transport closes with that code ([spec 15.1](../spec/pavia-protocol.md#151-session-close-codes); on WebSocket `4000 + code`) within `within_ms`. Frames received before the close are ignored |
 
-Frames in scripts use the same fields as frame vectors, with `stream` always present. `flags` defaults to 0.
+Frames in scripts use the same fields as frame vectors, with `stream` always present. `flags` defaults to 0. `codec` is optional: a frame without it uses the case's `codec`.
 
 **Patterns.** In an `expect` header or data string:
 
@@ -130,6 +130,17 @@ Frames in scripts use the same fields as frame vectors, with `stream` always pre
 **Captures.** `"capture": {"token": "header.13"}` stores the value at that path of the matched frame under the name `token`. Paths are `header` or `data` followed by `.key` segments (map keys or array indexes). A later `send` or `expect` writes `$token` where the value goes; the runner substitutes the stored CBOR value. Referring to a name that was never captured is an error in the script, reported before it runs.
 
 **Heartbeats.** The runner answers every PING from the peer with PONG on its own ([spec 7.4](../spec/pavia-protocol.md#74-heartbeat-ping-0x04-and-pong-0x05)) and does not pass PING or PONG frames to `expect`, unless the step expects that frame type.
+
+**Client scripts.** A file with `"runner": "client"` at the top level (`scripts/client.json`) is for the client conformance runner only; the server runner skips it. A file without `runner` is for the server runner. The steps keep the client's point of view and the same verbs, with the roles of the patterns swapped:
+
+- `send` is a frame the client under test MUST send. Its header and data may use `*` and `...`; the runner checks the frame it receives against them.
+- `expect` is a frame the runner sends to the client. It is concrete: no `*`, `...` or `$name`.
+- Client scripts capture nothing.
+- The first step is a `send` of HELLO.
+
+The runner makes the client send each frame through its API. It configures the client so that its HELLO matches the first `send`: the concrete values of keys 16 (codecs), 18 (capabilities) and 24 (contract fingerprint) become the client's options. A `send` of CLOSE asks the client to close with that frame's `code` and `msg`. A `send` of PING is a frame the client sends on its own; the runner waits for it, advancing the clock on an in-memory driver, for up to 5 s. A `send` of PONG answers the PING of the `expect` before it and must arrive before the clock moves, since a client answers PING from its receive path ([spec 7.4](../spec/pavia-protocol.md#74-heartbeat-ping-0x04-and-pong-0x05)). The heartbeat rule holds in this direction too: the runner answers every PING from the client with PONG and passes neither to a step that does not name that frame type. `close_transport` drops the client's transport, and `expect_close` waits for the client to close its transport with that code.
+
+Checks a script cannot express on the wire, such as an event the client API raises, belong in the client's own test suite, which runs the script by its `id` and checks the API alongside.
 
 **Abuse scripts** (`scripts/abuse.json`) drive a limit from [spec 16](../spec/pavia-protocol.md#16-defaults) past its bound and end with `expect_close`.
 

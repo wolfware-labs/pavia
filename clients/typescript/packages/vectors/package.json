@@ -6,6 +6,7 @@
   "license": "MIT OR Apache-2.0",
   "type": "module",
   "exports": {
+    "./cbor": "./src/cbor.ts",
     "./diag": "./src/diag.ts"
   },
   "scripts": {

@@ -255,7 +255,11 @@ fn skips_what_the_endpoint_cannot_run() {
 #[test]
 fn parses_every_vector_script() {
   for path in pavia_vectors::files("scripts") {
-    for case in pavia_vectors::load(&path)["cases"].as_array().unwrap() {
+    let doc = pavia_vectors::load(&path);
+    if doc["runner"] == "client" {
+      continue;
+    }
+    for case in doc["cases"].as_array().unwrap() {
       Script::parse(case).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
     }
   }

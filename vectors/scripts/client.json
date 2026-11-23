@@ -1,0 +1,106 @@
+{
+  "$schema": "../schema/scripts.schema.json",
+  "group": "client",
+  "runner": "client",
+  "note": "Scripts for the client conformance runner, which plays the server's side against a client under test: send steps are what the client must send (patterns allowed), expect steps are what the runner sends (concrete).",
+  "cases": [
+    {
+      "id": "client-handshake-answers-ping",
+      "spec": ["7.1", "7.2", "7.4"],
+      "note": "The client sends HELLO, takes WELCOME, and answers a server PING at once, from its receive path, with a PONG that echoes the 4 data bytes.",
+      "binding": "ws",
+      "codec": "cbor",
+      "steps": [
+        {"send": {"stream": 0, "type": 1, "name": "HELLO", "header": "{14: [1], 16: [\"cbor\"], 18: [\"calls\"], ...}", "data": null}},
+        {"expect": {"stream": 0, "type": 2, "name": "WELCOME", "header": "{15: 1, 17: \"cbor\", 18: [\"calls\"], 19: \"s_test\", 21: {40: 262144, 48: 100, 49: 1048576, 50: 256, 51: 1100}, 22: 15000, 23: 45000}", "data": null}},
+        {"expect": {"stream": 0, "type": 4, "name": "PING", "header": null, "data": null, "data_hex": "01 02 03 04"}},
+        {"send": {"stream": 0, "type": 5, "name": "PONG", "header": null, "data": null, "data_hex": "01 02 03 04"}},
+        {"expect_nothing_within": {"ms": 200}}
+      ]
+    },
+    {
+      "id": "client-pings-after-hb",
+      "spec": ["7.4"],
+      "note": "With hb 100 the client sends PING on its own, three times; idle is 250, so the session lasts that long only because the server's PONGs reset the client's idle timer.",
+      "binding": "ws",
+      "codec": "cbor",
+      "steps": [
+        {"send": {"stream": 0, "type": 1, "name": "HELLO", "header": "{14: [1], 16: [\"cbor\"], 18: [\"calls\"], ...}", "data": null}},
+        {"expect": {"stream": 0, "type": 2, "name": "WELCOME", "header": "{15: 1, 17: \"cbor\", 18: [\"calls\"], 19: \"s_test\", 21: {40: 262144, 48: 100, 49: 1048576, 50: 256, 51: 1100}, 22: 100, 23: 250}", "data": null}},
+        {"send": {"stream": 0, "type": 4, "name": "PING", "header": null, "data": null}},
+        {"expect": {"stream": 0, "type": 5, "name": "PONG", "header": null, "data": null}},
+        {"send": {"stream": 0, "type": 4, "name": "PING", "header": null, "data": null}},
+        {"expect": {"stream": 0, "type": 5, "name": "PONG", "header": null, "data": null}},
+        {"send": {"stream": 0, "type": 4, "name": "PING", "header": null, "data": null}},
+        {"expect": {"stream": 0, "type": 5, "name": "PONG", "header": null, "data": null}},
+        {"expect_nothing_within": {"ms": 50}}
+      ]
+    },
+    {
+      "id": "client-idle-timeout",
+      "spec": ["7.4", "15.1"],
+      "note": "The server goes quiet after WELCOME with idle 300; hb is above idle, so no PING is due first, and the client closes with IDLE_TIMEOUT.",
+      "binding": "ws",
+      "codec": "cbor",
+      "steps": [
+        {"send": {"stream": 0, "type": 1, "name": "HELLO", "header": "{14: [1], 16: [\"cbor\"], 18: [\"calls\"], ...}", "data": null}},
+        {"expect": {"stream": 0, "type": 2, "name": "WELCOME", "header": "{15: 1, 17: \"cbor\", 18: [\"calls\"], 19: \"s_test\", 21: {40: 262144, 48: 100, 49: 1048576, 50: 256, 51: 1100}, 22: 60000, 23: 300}", "data": null}},
+        {"expect_nothing_within": {"ms": 299}},
+        {"expect_close": {"code": "IDLE_TIMEOUT", "within_ms": 2}}
+      ]
+    },
+    {
+      "id": "client-closes",
+      "spec": ["7.7", "15.1"],
+      "note": "The client closes with NORMAL and a reason: CLOSE with code and msg, then the WebSocket close 4000.",
+      "binding": "ws",
+      "codec": "cbor",
+      "steps": [
+        {"send": {"stream": 0, "type": 1, "name": "HELLO", "header": "{14: [1], 16: [\"cbor\"], 18: [\"calls\"], ...}", "data": null}},
+        {"expect": {"stream": 0, "type": 2, "name": "WELCOME", "header": "{15: 1, 17: \"cbor\", 18: [\"calls\"], 19: \"s_test\", 21: {40: 262144, 48: 100, 49: 1048576, 50: 256, 51: 1100}, 22: 15000, 23: 45000}", "data": null}},
+        {"send": {"stream": 0, "type": 7, "name": "CLOSE", "header": "{6: 0, 7: \"bye\"}", "data": null}},
+        {"expect_close": {"code": "NORMAL", "within_ms": 1000}}
+      ]
+    },
+    {
+      "id": "client-answers-server-close",
+      "spec": ["7.7", "15.1"],
+      "note": "The server sends CLOSE with GOING_AWAY; the client closes the WebSocket with 4007.",
+      "binding": "ws",
+      "codec": "cbor",
+      "steps": [
+        {"send": {"stream": 0, "type": 1, "name": "HELLO", "header": "{14: [1], 16: [\"cbor\"], 18: [\"calls\"], ...}", "data": null}},
+        {"expect": {"stream": 0, "type": 2, "name": "WELCOME", "header": "{15: 1, 17: \"cbor\", 18: [\"calls\"], 19: \"s_test\", 21: {40: 262144, 48: 100, 49: 1048576, 50: 256, 51: 1100}, 22: 15000, 23: 45000}", "data": null}},
+        {"expect": {"stream": 0, "type": 7, "name": "CLOSE", "header": "{6: 7}", "data": null}},
+        {"expect_close": {"code": "GOING_AWAY", "within_ms": 1000}}
+      ]
+    },
+    {
+      "id": "client-unknown-close-code-is-internal",
+      "spec": ["7.7", "15"],
+      "note": "A CLOSE code the client does not know (99) is treated as INTERNAL: the client closes the WebSocket with 4008.",
+      "binding": "ws",
+      "codec": "cbor",
+      "steps": [
+        {"send": {"stream": 0, "type": 1, "name": "HELLO", "header": "{14: [1], 16: [\"cbor\"], 18: [\"calls\"], ...}", "data": null}},
+        {"expect": {"stream": 0, "type": 2, "name": "WELCOME", "header": "{15: 1, 17: \"cbor\", 18: [\"calls\"], 19: \"s_test\", 21: {40: 262144, 48: 100, 49: 1048576, 50: 256, 51: 1100}, 22: 15000, 23: 45000}", "data": null}},
+        {"expect": {"stream": 0, "type": 7, "name": "CLOSE", "header": "{6: 99}", "data": null}},
+        {"expect_close": {"code": "INTERNAL", "within_ms": 1000}}
+      ]
+    },
+    {
+      "id": "client-contract-mismatch-stays-open",
+      "spec": ["7.1", "7.2", "12.5"],
+      "note": "The server's WELCOME carries a fingerprint other than the client's; under the server's warn policy the session stays open and still answers PING. The TypeScript suite also checks one contractMismatch event and one warning.",
+      "binding": "ws",
+      "codec": "cbor",
+      "steps": [
+        {"send": {"stream": 0, "type": 1, "name": "HELLO", "header": "{14: [1], 16: [\"cbor\"], 18: [\"calls\"], 24: h'0707070707070707070707070707070707070707070707070707070707070707', ...}", "data": null}},
+        {"expect": {"stream": 0, "type": 2, "name": "WELCOME", "header": "{15: 1, 17: \"cbor\", 18: [\"calls\"], 19: \"s_test\", 21: {40: 262144, 48: 100, 49: 1048576, 50: 256, 51: 1100}, 22: 15000, 23: 45000, 24: h'0909090909090909090909090909090909090909090909090909090909090909'}", "data": null}},
+        {"expect_nothing_within": {"ms": 200}},
+        {"expect": {"stream": 0, "type": 4, "name": "PING", "header": null, "data": null}},
+        {"send": {"stream": 0, "type": 5, "name": "PONG", "header": null, "data": null}}
+      ]
+    }
+  ]
+}
