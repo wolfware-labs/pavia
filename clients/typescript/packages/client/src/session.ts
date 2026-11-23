@@ -169,7 +169,8 @@ const CLOSE_REASON_BYTES = 123;
  * is read with this side's `max_frame`. A frame on the wrong kind of stream or in the wrong
  * direction, or one that needs a capability WELCOME did not grant, closes with PROTOCOL_ERROR
  * (spec 5.6, 7.10); frames on call and lane streams go to the call
- * layer as `frame` outputs, which checks them further. Every ending yields one `ended` output, last.
+ * layer as `frame` outputs, which checks them further. Extension frames (0x80 and up) are ignored:
+ * this runtime understands none of them (spec 5.6). Every ending yields one `ended` output, last.
  */
 export class ClientSession {
   private state: State;
@@ -342,6 +343,7 @@ export class ClientSession {
       }
     }
     if (state.kind !== "established") return;
+    if (frame.type === "EXTENSION") return;
     const onControl = stream === CONTROL_STREAM;
     if (onControl ? NOT_ON_CONTROL.has(frame.type) : CONTROL_ONLY.has(frame.type)) {
       return this.close(CloseCode.PROTOCOL_ERROR);
@@ -440,16 +442,20 @@ export class ClientSession {
   }
 }
 
+/**
+ * The HELLO of `options`, copied, so that what WELCOME is checked against is what was sent even if
+ * the caller changes its arrays or bytes after the session starts.
+ */
 function helloOf(options: SessionOptions): Hello {
   return {
     type: "HELLO",
     versions: [VERSION],
-    codecs: options.codecs ?? ["cbor"],
-    ...(options.caps === undefined ? {} : { caps: options.caps }),
-    ...(options.limits === undefined ? {} : { limits: options.limits }),
-    ...(options.contract === undefined ? {} : { contract: options.contract }),
-    ...(options.auth === undefined ? {} : { auth: options.auth }),
-    client: options.client ?? CLIENT_INFO,
+    codecs: [...(options.codecs ?? ["cbor"])],
+    ...(options.caps === undefined ? {} : { caps: [...options.caps] }),
+    ...(options.limits === undefined ? {} : { limits: { ...options.limits } }),
+    ...(options.contract === undefined ? {} : { contract: options.contract.slice() }),
+    ...(options.auth === undefined ? {} : { auth: { ...options.auth } }),
+    client: { ...(options.client ?? CLIENT_INFO) },
   };
 }
 

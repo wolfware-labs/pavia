@@ -355,6 +355,35 @@ describe("client session", () => {
     expect(closeOf(drain(again))?.code).toBe(4000 + CloseCode.PROTOCOL_ERROR);
   });
 
+  it("passes LANE_OPEN on a lane stream to the call layer when lanes are granted", () => {
+    const session = established({ caps: ["lanes"] }, { caps: ["lanes"] });
+    session.handleInput({ kind: "message", data: message({ type: "LANE_OPEN", lane: 1n }, 3) }, 20);
+    expect(kinds(drain(session))).toEqual(["frame"]);
+  });
+
+  it("ignores extension frames on any stream", () => {
+    for (const stream of [0, 2, 3]) {
+      const session = established();
+      const header = new Uint8Array(0);
+      const extension: Frame = { type: "EXTENSION", frameType: 0x80, header, data: Uint8Array.of(1) };
+      session.handleInput({ kind: "message", data: message(extension, stream) }, 20);
+      expect(drain(session), String(stream)).toEqual([]);
+    }
+  });
+
+  it("checks WELCOME against the HELLO it sent, whatever the caller changes later", () => {
+    const codecs = ["cbor"] as ("cbor" | "json")[];
+    const caps = ["channels"];
+    const session = new ClientSession({ codecs, caps }, 0);
+    codecs.push("json");
+    caps.push("resume");
+    session.handleInput({ kind: "open" }, 0);
+    const [hello] = sent(drain(session));
+    expect(hello).toMatchObject({ codecs: ["cbor"], caps: ["channels"] });
+    session.handleInput({ kind: "message", data: message(welcome({ codec: "json" })) }, 1);
+    expect(closeOf(drain(session))?.code).toBe(4000 + CloseCode.PROTOCOL_ERROR);
+  });
+
   it("hands other frames to the call layer", () => {
     const session = established();
     const end: Frame = { type: "END" } as Frame;
