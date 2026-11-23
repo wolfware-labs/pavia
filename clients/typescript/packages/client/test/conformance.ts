@@ -85,6 +85,7 @@ export async function runClientScript(c: Json, hooks: RunHooks = {}): Promise<Ru
   const server = new ScriptServer();
   const warnings: string[] = [];
   let connection: Connection | undefined;
+  let failure: Error | undefined;
   const options: ConnectOptions = {
     ...helloOptions(hello.frame.header),
     WebSocket: server.constructorFor(),
@@ -96,14 +97,21 @@ export async function runClientScript(c: Json, hooks: RunHooks = {}): Promise<Ru
       connection = established;
       hooks.onConnection?.(established);
     },
-    () => {},
+    (error: unknown) => {
+      failure = error instanceof Error ? error : new Error(String(error));
+    },
   );
   server.socket().open(SUBPROTOCOL);
   await settle();
+  let explained = false;
   for (const [index, step] of steps.entries()) {
     const where = `${id}: step ${index + 1} (${step.verb})`;
     const problem = await play(step, server, () => connection);
     if (problem !== undefined) throw new Error(`${where}: ${problem}`);
+    if (step.verb === "expect_close" || step.verb === "close_transport") explained = true;
+  }
+  if (failure !== undefined && !explained) {
+    throw new Error(`${id}: connect() failed and no step expects it: ${failure.message}`);
   }
   return { connection, warnings };
 }

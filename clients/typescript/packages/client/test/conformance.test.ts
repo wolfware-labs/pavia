@@ -73,6 +73,18 @@ describe("the client runner", () => {
     await expect(runClientScript(script([closed]))).rejects.toThrow("step 1 (send): header does not match");
   });
 
+  it("fails when connect() rejects and no step expects the close", async () => {
+    const header = `{15: 2, 17: "cbor", 18: ["calls"], 19: "s_test", 21: ${LIMITS}, 22: 15000, 23: 45000}`;
+    const refused = { expect: { stream: 0, type: 2, header, data: null } };
+    const quiet = { expect_nothing_within: { ms: 100 } };
+    for (const steps of [[HELLO, refused], [HELLO, refused, quiet]]) {
+      await expect(runClientScript(script(steps))).rejects.toThrow("connect() failed and no step expects it");
+    }
+    const closes = { expect_close: { code: "PROTOCOL_ERROR", within_ms: 1000 } };
+    expect((await runClientScript(script([HELLO, refused, closes]))).connection).toBeUndefined();
+    expect((await runClientScript(script([HELLO, { close_transport: {} }]))).connection).toBeUndefined();
+  });
+
   it("fails on another close code", async () => {
     const steps = [HELLO, welcome(), { expect_close: { code: "NORMAL", within_ms: 50 } }];
     await expect(runClientScript(script(steps))).rejects.toThrow("step 3 (expect_close): the client did not close");
