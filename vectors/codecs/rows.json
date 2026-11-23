@@ -774,6 +774,20 @@
       "value": "0.10000000149011612",
       "cbor": "fb 3f b9 99 99 99 99 99 9a",
       "json": "0.1"
+    },
+    {
+      "id": "map-prototype-keys",
+      "spec": [
+        "12.3"
+      ],
+      "note": "Map keys named like JavaScript prototype members are plain keys in both codecs.",
+      "type": {
+        "map": "u8"
+      },
+      "direction": "both",
+      "value": "{\"__proto__\": 1, \"constructor\": 2}",
+      "cbor": "a2 69 5f 5f 70 72 6f 74 6f 5f 5f 01 6b 63 6f 6e 73 74 72 75 63 74 6f 72 02",
+      "json": "{\"__proto__\":1,\"constructor\":2}"
     }
   ]
 }

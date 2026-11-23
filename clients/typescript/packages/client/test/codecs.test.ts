@@ -116,7 +116,7 @@ describe("codec vectors", () => {
   }
 
   it("covers every case", () => {
-    expect(FILES.reduce((n, f) => n + f.cases.length, 0)).toBe(113);
+    expect(FILES.reduce((n, f) => n + f.cases.length, 0)).toBe(119);
   });
 });
 
