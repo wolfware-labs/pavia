@@ -254,6 +254,36 @@ describe("client session", () => {
     }
   });
 
+  it("closes with PROTOCOL_ERROR on a frame that needs a capability WELCOME did not grant", () => {
+    const publication: Frame = { type: "PUBLICATION", channel: "c", offset: 1n, data: new Uint8Array(0) };
+    const call: Frame = { type: "CALL", method: "m", shape: 0n, data: new Uint8Array(0) };
+    const sequenced: Frame = { type: "NOTIFY", method: "m", seq: 1n, data: new Uint8Array(0) };
+    const refused: [Frame, number, string[]][] = [
+      [publication, 0, []],
+      [{ type: "DATAGRAM", key: 1n, seq: 1n, data: new Uint8Array(0) }, 0, ["channels"]],
+      [call, 3, []],
+      [{ ...call, shape: 1n }, 3, ["server-calls"]],
+      [sequenced, 0, ["channels"]],
+    ];
+    for (const [frame, stream, caps] of refused) {
+      const session = established({}, { caps });
+      session.handleInput({ kind: "message", data: message(frame, stream) }, 20);
+      const what = `${frame.type} with ${caps.join(",")}`;
+      expect(closeOf(drain(session))?.code, what).toBe(4000 + CloseCode.PROTOCOL_ERROR);
+    }
+    const allowed: [Frame, number, string[]][] = [
+      [publication, 0, ["channels"]],
+      [call, 3, ["server-calls"]],
+      [{ type: "NOTIFY", method: "m", data: new Uint8Array(0) }, 0, []],
+      [sequenced, 0, ["resume"]],
+    ];
+    for (const [frame, stream, caps] of allowed) {
+      const session = established({}, { caps });
+      session.handleInput({ kind: "message", data: message(frame, stream) }, 20);
+      expect(kinds(drain(session)), `${frame.type} with ${caps.join(",")}`).toEqual(["frame"]);
+    }
+  });
+
   it("closes with PROTOCOL_ERROR on a WELCOME with hb or idle 0", () => {
     for (const fields of [{ hb: 0n }, { idle: 0n }]) {
       const session = new ClientSession({}, 0);

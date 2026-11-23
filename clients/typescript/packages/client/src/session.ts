@@ -1,4 +1,5 @@
 import { compareBytes } from "./bytes.js";
+import { grantedCaps, serverFrameAllowed } from "./caps.js";
 import { DEFAULT_HEADER_LIMITS } from "./cbor.js";
 import type { Codec } from "./data.js";
 import { CloseCode, closeCodeFromWire, EncodeError, ProtocolError } from "./errors.js";
@@ -84,6 +85,7 @@ type State =
   | {
       readonly kind: "established";
       readonly welcome: Welcome;
+      readonly granted: ReadonlySet<string>;
       readonly hb: number;
       readonly idle: number;
       readonly peerMaxFrame: number;
@@ -162,7 +164,8 @@ const CLOSE_REASON_BYTES = 123;
  * Before WELCOME, frames sent stay under the 64 KiB `max_frame` floor every server honors; after
  * it, under the server's `max_frame`, read as at most 2^53 - 1 (spec 4.1). Every received message
  * is read with this side's `max_frame`. A frame on the wrong kind of stream or in the wrong
- * direction closes with PROTOCOL_ERROR (spec 5.6); frames on call and lane streams go to the call
+ * direction, or one that needs a capability WELCOME did not grant, closes with PROTOCOL_ERROR
+ * (spec 5.6, 7.10); frames on call and lane streams go to the call
  * layer as `frame` outputs, which checks them further. Every ending yields one `ended` output, last.
  */
 export class ClientSession {
@@ -340,6 +343,7 @@ export class ClientSession {
     if (onControl ? NOT_ON_CONTROL.has(frame.type) : CONTROL_ONLY.has(frame.type)) {
       return this.close(CloseCode.PROTOCOL_ERROR);
     }
+    if (!serverFrameAllowed(state.granted, frame)) return this.close(CloseCode.PROTOCOL_ERROR);
     if (!onControl) {
       this.outputs.push({ kind: "frame", stream, frame });
       return;
@@ -367,6 +371,7 @@ export class ClientSession {
     this.state = {
       kind: "established",
       welcome,
+      granted: grantedCaps(welcome.caps),
       hb,
       idle,
       peerMaxFrame: safeNumber(welcome.limits.maxFrame),
