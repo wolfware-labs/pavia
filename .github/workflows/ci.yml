@@ -151,6 +151,40 @@ jobs:
       - name: Build
         run: pnpm build
 
+  ts-integration:
+    name: ts-integration
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          package_json_file: clients/typescript/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: clients/typescript/pnpm-lock.yaml
+      - name: Build the Rust server
+        run: cargo build --locked -p pavia-server --example ts-peer
+      - name: Install
+        working-directory: clients/typescript
+        run: pnpm install --frozen-lockfile
+      - name: Run the client against the Rust server
+        run: |
+          target/debug/examples/ts-peer > "$RUNNER_TEMP/ts-peer.log" 2>&1 &
+          timeout 30 sh -c 'until grep -q "^listening " "$0"; do sleep 0.2; done' "$RUNNER_TEMP/ts-peer.log" \
+            || { cat "$RUNNER_TEMP/ts-peer.log"; exit 1; }
+          url=$(sed -n 's/^listening //p' "$RUNNER_TEMP/ts-peer.log")
+          test -n "$url"
+          PAVIA_TS_PEER_URL="$url" pnpm -C clients/typescript/packages/client exec vitest run test/integration.test.ts \
+            || { cat "$RUNNER_TEMP/ts-peer.log"; exit 1; }
+
   vectors:
     name: vectors
     runs-on: ubuntu-latest
