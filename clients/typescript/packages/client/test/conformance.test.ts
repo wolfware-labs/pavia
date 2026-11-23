@@ -85,6 +85,22 @@ describe("the client runner", () => {
     expect((await runClientScript(script([HELLO, { close_transport: {} }]))).connection).toBeUndefined();
   });
 
+  it("fails a step that acts on a transport the client already closed", async () => {
+    const header = `{15: 2, 17: "cbor", 18: ["calls"], 19: "s_test", 21: ${LIMITS}, 22: 15000, 23: 45000}`;
+    const refused = { expect: { stream: 0, type: 2, header, data: null } };
+    const ping = { expect: { stream: 0, type: 4, header: null, data: null } };
+    const drop = { close_transport: {} };
+    const cases: [Json[], string][] = [
+      [[HELLO, refused, drop], "step 3 (close_transport)"],
+      [[HELLO, refused, ping], "step 3 (expect)"],
+      [[HELLO, drop, drop], "step 3 (close_transport)"],
+      [[HELLO, welcome(), drop, ping], "step 4 (expect)"],
+    ];
+    for (const [steps, where] of cases) {
+      await expect(runClientScript(script(steps))).rejects.toThrow(`${where}: the transport is already closed`);
+    }
+  });
+
   it("fails on another close code", async () => {
     const steps = [HELLO, welcome(), { expect_close: { code: "NORMAL", within_ms: 50 } }];
     await expect(runClientScript(script(steps))).rejects.toThrow("step 3 (expect_close): the client did not close");

@@ -106,9 +106,10 @@ export async function runClientScript(c: Json, hooks: RunHooks = {}): Promise<Ru
   let explained = false;
   for (const [index, step] of steps.entries()) {
     const where = `${id}: step ${index + 1} (${step.verb})`;
+    const handshaking = connection === undefined && failure === undefined;
     const problem = await play(step, server, () => connection);
     if (problem !== undefined) throw new Error(`${where}: ${problem}`);
-    if (step.verb === "expect_close" || step.verb === "close_transport") explained = true;
+    if (step.verb === "expect_close" || (step.verb === "close_transport" && handshaking)) explained = true;
   }
   if (failure !== undefined && !explained) {
     throw new Error(`${id}: connect() failed and no step expects it: ${failure.message}`);
@@ -117,6 +118,8 @@ export async function runClientScript(c: Json, hooks: RunHooks = {}): Promise<Ru
 }
 
 type Problem = string | undefined;
+
+const ENDED = "the transport is already closed";
 
 async function play(step: Step, server: ScriptServer, connection: () => Connection | undefined): Promise<Problem> {
   const socket = server.socket();
@@ -143,7 +146,7 @@ async function play(step: Step, server: ScriptServer, connection: () => Connecti
       return undefined;
     }
     case "expect":
-      socket.deliver(step.frame);
+      if (!socket.deliver(step.frame)) return ENDED;
       await settle();
       return undefined;
     case "wait":
@@ -155,7 +158,7 @@ async function play(step: Step, server: ScriptServer, connection: () => Connecti
       return socket.count === before ? undefined : `the client sent ${socket.count - before} frames`;
     }
     case "close_transport":
-      socket.drop(ABNORMAL_CLOSURE);
+      if (!socket.drop(ABNORMAL_CLOSURE)) return ENDED;
       await settle();
       return undefined;
     case "expect_close": {
@@ -409,21 +412,23 @@ class ScriptSocket implements WebSocketLike {
     return this.inbox.findIndex((received) => received.stream === stream && wanted(received.frame));
   }
 
-  deliver(spec: FrameSpec): void {
+  deliver(spec: FrameSpec): boolean {
     const header = spec.header === undefined ? new Uint8Array() : encode(spec.header);
-    this.reply(spec.stream, { type: spec.type, flags: spec.flags, header, data: dataBytes(spec.data) });
+    return this.reply(spec.stream, { type: spec.type, flags: spec.flags, header, data: dataBytes(spec.data) });
   }
 
-  drop(code: number): void {
-    if (this.closedWith !== undefined || this.dropped) return;
+  drop(code: number): boolean {
+    if (this.closedWith !== undefined || this.dropped) return false;
     this.dropped = true;
     this.onclose?.({ code });
+    return true;
   }
 
-  private reply(stream: number, frame: RawFrame): void {
-    if (this.closedWith !== undefined || this.dropped) return;
+  private reply(stream: number, frame: RawFrame): boolean {
+    if (this.closedWith !== undefined || this.dropped) return false;
     for (const message of encodeMessages([{ stream, frame }], DEFAULT_MAX_FRAME)) {
       this.onmessage?.({ data: arrayBufferOf(message) });
     }
+    return true;
   }
 }
