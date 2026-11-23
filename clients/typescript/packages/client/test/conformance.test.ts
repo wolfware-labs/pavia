@@ -116,9 +116,11 @@ describe("the client runner", () => {
     expect(sent).toEqual([[...new TextEncoder().encode(data)]]);
   });
 
-  it("refuses a script whose first send is not HELLO", async () => {
-    const steps = [{ send: { stream: 0, type: 4, header: null, data: null } }];
-    await expect(runClientScript(script(steps))).rejects.toThrow("the first send is not HELLO");
+  it("refuses a script whose first step is not a send of HELLO", async () => {
+    const ping = { send: { stream: 0, type: 4, header: null, data: null } };
+    for (const steps of [[], [ping], [{ wait: { ms: 1 } }, HELLO], [welcome(), HELLO]]) {
+      await expect(runClientScript(script(steps))).rejects.toThrow("the first step is not a send of HELLO");
+    }
   });
 
   it("refuses a step that is not one verb, an unknown close code name and a $name in a send", async () => {

@@ -78,8 +78,10 @@ export async function runClientScript(c: Json, hooks: RunHooks = {}): Promise<Ru
   const id = String(c["id"]);
   const codec = String(c["codec"]);
   const steps = (c["steps"] as Json[]).map((step, index) => parseStep(step, codec, `${id}: step ${index + 1}`));
-  const hello = steps.find((step) => step.verb === "send");
-  if (hello?.verb !== "send" || hello.frame.type !== HELLO) throw new Error(`${id}: the first send is not HELLO`);
+  const hello = steps[0];
+  if (hello?.verb !== "send" || hello.frame.type !== HELLO) {
+    throw new Error(`${id}: the first step is not a send of HELLO`);
+  }
   const server = new ScriptServer();
   const warnings: string[] = [];
   let connection: Connection | undefined;
