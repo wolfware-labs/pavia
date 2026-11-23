@@ -1,10 +1,13 @@
 import { toHex } from "./bytes.js";
 import { CloseCode } from "./errors.js";
 import type { Frame, Welcome } from "./frames.js";
-import { ClientSession, type Ending, MAX_TIMER_DELAY, type SessionInput, type SessionOptions } from "./session.js";
+import { ClientSession, type Ending, type SessionInput, type SessionOptions } from "./session.js";
 
 /** The WebSocket subprotocol of this protocol version (spec 4.3). */
 export const SUBPROTOCOL = "pavia.1";
+
+/** The longest `setTimeout` delay that does not overflow, in ms. */
+const MAX_TIMER_DELAY = 2 ** 31 - 1;
 
 /** The part of the WebSocket API the driver uses, as browsers and Node 22 provide it. */
 export interface WebSocketLike {
@@ -171,7 +174,9 @@ export class Connection extends EventTarget {
         case "established":
           this.welcomed = output.welcome;
           this.held = [];
-          if (this.mismatch !== undefined) this.held.push(new CustomEvent("contractMismatch", { detail: this.mismatch }));
+          if (this.mismatch !== undefined) {
+            this.held.push(new CustomEvent("contractMismatch", { detail: this.mismatch }));
+          }
           this.resolveConnect(this);
           setTimeout(() => this.release(), 0);
           break;

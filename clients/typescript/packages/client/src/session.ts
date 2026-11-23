@@ -7,7 +7,6 @@ import {
   type ClientInfo,
   type Close,
   decodeFrame,
-  encodeFrame,
   type Frame,
   type Hello,
   type Limits,
@@ -15,7 +14,7 @@ import {
   type Welcome,
 } from "./frames.js";
 import { textOfUtf8, utf8Of } from "./utf8.js";
-import { decodeMessage, encodeMessages, MAX_FRAME_FLOOR, payloadLength, type RawFrame } from "./wire.js";
+import { decodeMessage, encodeMessages, MAX_FRAME_FLOOR, type RawFrame } from "./wire.js";
 
 /** The `max_frame` this runtime accepts when the options set none (spec 16). */
 export const DEFAULT_MAX_FRAME = 1_048_576;
@@ -135,8 +134,6 @@ const NOT_ON_CONTROL: ReadonlySet<Frame["type"]> = new Set<Frame["type"]>([
   "LANE_OPEN",
 ]);
 
-/** The longest `setTimeout` delay that does not overflow, in ms. */
-export const MAX_TIMER_DELAY = 2 ** 31 - 1;
 const VERSION = 1n;
 const WEBSOCKET_CLOSE_BASE = 4000;
 const CLOSE_REASON_BYTES = 123;
@@ -174,6 +171,7 @@ export class ClientSession {
   private now: number;
   private nextStream = 2;
   private readonly hello: Hello;
+  private readonly helloFrame: RawFrame;
   private readonly maxFrame: number;
 
   /**
@@ -181,8 +179,8 @@ export class ClientSession {
    *
    * @throws {@link EncodeError} when the options make a HELLO no server accepts: `limits_below_floor`
    * for `max_frame` or `window` below 64 KiB, `invalid_field` for a fingerprint that is not 32 bytes,
-   * `frame_too_large` for a HELLO whose header is above 16 KiB or whose frame is above the 64 KiB a
-   * server reads before WELCOME (a long `auth` token).
+   * `frame_too_large` for a HELLO whose header is above 16 KiB (a long `auth` token). HELLO has no
+   * data section, so such a HELLO also stays under the 64 KiB a server reads before WELCOME.
    * @throws RangeError when `handshakeTimeout` is not a positive finite number of milliseconds.
    */
   constructor(options: SessionOptions, now: number) {
@@ -192,11 +190,8 @@ export class ClientSession {
     }
     this.now = now;
     this.hello = helloOf(options);
-    const raw = toRawFrame(this.hello);
-    if (raw.header.length > DEFAULT_HEADER_LIMITS.maxSize || payloadLength(raw) > MAX_FRAME_FLOOR) {
-      throw new EncodeError("frame_too_large", "HELLO is above the 16 KiB header or 64 KiB frame a server reads first");
-    }
-    encodeFrame(this.hello);
+    this.helloFrame = toRawFrame(this.hello);
+    refuseLargeHeader(this.helloFrame);
     this.maxFrame = safeNumber(options.limits?.maxFrame ?? BigInt(DEFAULT_MAX_FRAME));
     this.state = { kind: "connecting", deadline: now + handshakeTimeout };
   }
@@ -242,7 +237,7 @@ export class ClientSession {
       case "open":
         if (state.kind !== "connecting") return;
         this.state = { kind: "handshaking", deadline: state.deadline };
-        return this.transmit(CONTROL_STREAM, this.hello);
+        return this.transmit(CONTROL_STREAM, this.hello, this.helloFrame);
       case "message":
         this.receive(input.data);
         return this.sendDuePing();
@@ -274,9 +269,7 @@ export class ClientSession {
   send(stream: number, frame: Frame, now: number): void {
     if (this.state.kind !== "established") throw new EncodeError("invalid_value", "the session is not established");
     const raw = toRawFrame(frame);
-    if (raw.header.length > DEFAULT_HEADER_LIMITS.maxSize) {
-      throw new EncodeError("frame_too_large", `header of ${raw.header.length} bytes is above 16 KiB`);
-    }
+    refuseLargeHeader(raw);
     this.now = now;
     this.transmit(stream, frame, raw);
   }
@@ -442,6 +435,17 @@ function helloOf(options: SessionOptions): Hello {
     ...(options.auth === undefined ? {} : { auth: options.auth }),
     client: options.client ?? CLIENT_INFO,
   };
+}
+
+/**
+ * Refuses a frame whose header is above the 16 KiB every receiver reads (spec 5.4.1).
+ *
+ * @throws {@link EncodeError} `frame_too_large`.
+ */
+function refuseLargeHeader(raw: RawFrame): void {
+  if (raw.header.length > DEFAULT_HEADER_LIMITS.maxSize) {
+    throw new EncodeError("frame_too_large", `header of ${raw.header.length} bytes is above 16 KiB`);
+  }
 }
 
 /** `value` as a number, clamped to 2^53 - 1: a bound that large is never the one that decides. */
