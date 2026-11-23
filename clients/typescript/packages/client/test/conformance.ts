@@ -23,6 +23,7 @@ const { HELLO, PING, PONG, CLOSE } = FrameType;
 const HEARTBEATS = new Set<number>([PING, PONG]);
 const SEND_WITHIN = 5000;
 const ABNORMAL_CLOSURE = 1006;
+const ENDED = "the transport is already closed";
 
 /** One case of a client script, `vectors/scripts/*.json` with `"runner": "client"`. */
 export interface ClientCase {
@@ -117,8 +118,6 @@ export async function runClientScript(c: Json, hooks: RunHooks = {}): Promise<Ru
 }
 
 type Problem = string | undefined;
-
-const ENDED = "the transport is already closed";
 
 async function play(step: Step, server: ScriptServer, connection: () => Connection | undefined): Promise<Problem> {
   const socket = server.socket();
