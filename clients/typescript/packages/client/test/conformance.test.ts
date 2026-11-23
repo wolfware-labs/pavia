@@ -104,4 +104,14 @@ describe("the client runner", () => {
     const steps = [{ send: { stream: 0, type: 4, header: null, data: null } }];
     await expect(runClientScript(script(steps))).rejects.toThrow("the first send is not HELLO");
   });
+
+  it("refuses a step that is not one verb, an unknown close code name and a $name in a send", async () => {
+    for (const step of [{}, { wait: { ms: 1 }, expect_nothing_within: { ms: 1 } }]) {
+      await expect(runClientScript(script([HELLO, step]))).rejects.toThrow("step 2: a step has exactly one verb");
+    }
+    const unknown = { expect_close: { code: "CLOSED", within_ms: 50 } };
+    await expect(runClientScript(script([HELLO, unknown]))).rejects.toThrow("step 2: unknown close code CLOSED");
+    const send = { send: { stream: 0, type: 1, header: "{14: $versions, ...}", data: null } };
+    await expect(runClientScript(script([send]))).rejects.toThrow("step 1: a client script uses no $name");
+  });
 });

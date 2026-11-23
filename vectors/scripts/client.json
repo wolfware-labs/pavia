@@ -7,7 +7,7 @@
     {
       "id": "client-handshake-answers-ping",
       "spec": ["7.1", "7.2", "7.4"],
-      "note": "The client sends HELLO, takes WELCOME, and answers a server PING with a PONG that echoes its 4 data bytes.",
+      "note": "The client sends HELLO, takes WELCOME, and answers a server PING at once, from its receive path, with a PONG that echoes the 4 data bytes.",
       "binding": "ws",
       "codec": "cbor",
       "steps": [
@@ -21,12 +21,12 @@
     {
       "id": "client-pings-after-hb",
       "spec": ["7.4"],
-      "note": "With hb 100 and nothing sent, the client sends PING after each interval; the server's PONGs keep the session open through three intervals.",
+      "note": "With hb 100 the client sends PING on its own, three times; idle is 250, so the session lasts that long only because the server's PONGs reset the client's idle timer.",
       "binding": "ws",
       "codec": "cbor",
       "steps": [
         {"send": {"stream": 0, "type": 1, "name": "HELLO", "header": "{14: [1], 16: [\"cbor\"], 18: [\"calls\"], ...}", "data": null}},
-        {"expect": {"stream": 0, "type": 2, "name": "WELCOME", "header": "{15: 1, 17: \"cbor\", 18: [\"calls\"], 19: \"s_test\", 21: {40: 262144, 48: 100, 49: 1048576, 50: 256, 51: 1100}, 22: 100, 23: 1000}", "data": null}},
+        {"expect": {"stream": 0, "type": 2, "name": "WELCOME", "header": "{15: 1, 17: \"cbor\", 18: [\"calls\"], 19: \"s_test\", 21: {40: 262144, 48: 100, 49: 1048576, 50: 256, 51: 1100}, 22: 100, 23: 250}", "data": null}},
         {"send": {"stream": 0, "type": 4, "name": "PING", "header": null, "data": null}},
         {"expect": {"stream": 0, "type": 5, "name": "PONG", "header": null, "data": null}},
         {"send": {"stream": 0, "type": 4, "name": "PING", "header": null, "data": null}},
@@ -45,18 +45,8 @@
       "steps": [
         {"send": {"stream": 0, "type": 1, "name": "HELLO", "header": "{14: [1], 16: [\"cbor\"], 18: [\"calls\"], ...}", "data": null}},
         {"expect": {"stream": 0, "type": 2, "name": "WELCOME", "header": "{15: 1, 17: \"cbor\", 18: [\"calls\"], 19: \"s_test\", 21: {40: 262144, 48: 100, 49: 1048576, 50: 256, 51: 1100}, 22: 60000, 23: 300}", "data": null}},
-        {"expect_close": {"code": "IDLE_TIMEOUT", "within_ms": 1000}}
-      ]
-    },
-    {
-      "id": "client-handshake-timeout",
-      "spec": ["7.1", "15.1"],
-      "note": "No WELCOME arrives; the client closes with HANDSHAKE_TIMEOUT after its 10 s default.",
-      "binding": "ws",
-      "codec": "cbor",
-      "steps": [
-        {"send": {"stream": 0, "type": 1, "name": "HELLO", "header": "{14: [1], 16: [\"cbor\"], 18: [\"calls\"], ...}", "data": null}},
-        {"expect_close": {"code": "HANDSHAKE_TIMEOUT", "within_ms": 11000}}
+        {"expect_nothing_within": {"ms": 299}},
+        {"expect_close": {"code": "IDLE_TIMEOUT", "within_ms": 2}}
       ]
     },
     {

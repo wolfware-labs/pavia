@@ -312,14 +312,15 @@ describe("scripts", () => {
       steps.forEach((step, i) => {
         const [verb, body] = Object.entries(step)[0] as [string, Json];
         if (verb !== "send" && verb !== "expect") return;
+        const where = `${ctx} step ${i}`;
+        if (client) expect(body.capture, `${where}: a client script captures nothing`).toBeUndefined();
         for (const key of ["header", "data"] as const) {
           const text = body[key];
           if (typeof text !== "string") continue;
           const d: Diag = parse(text);
-          const where = `${ctx} step ${i}`;
           if (verb === concrete) expect(patternCount(d), `${where}: ${verb} uses * or ...`).toBe(refs(d).length);
-          if (client) expect(refs(d), `${ctx} step ${i}: a client script captures nothing`).toEqual([]);
-          for (const name of refs(d)) expect(captured.has(name), `${ctx} step ${i}: $${name} before capture`).toBe(true);
+          if (client) expect(refs(d), `${where}: a client script uses no $name`).toEqual([]);
+          for (const name of refs(d)) expect(captured.has(name), `${where}: $${name} before capture`).toBe(true);
         }
         if (body.capture) Object.keys(body.capture as Json).forEach((k) => captured.add(k));
       });

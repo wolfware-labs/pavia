@@ -1,28 +1,26 @@
 import { decode, encode, same } from "@pavia/vectors/cbor";
-import { type Diag, hexToBytes, parse } from "@pavia/vectors/diag";
+import { type Diag, hexToBytes, parse, patternCount, refs } from "@pavia/vectors/diag";
 import { vi } from "vitest";
 import {
   CloseCode,
+  type Codec,
   type Connection,
   type ConnectOptions,
   connect,
   DEFAULT_MAX_FRAME,
   decodeMessage,
   encodeMessages,
+  FrameType,
+  Key,
   type RawFrame,
   SUBPROTOCOL,
   type WebSocketLike,
   type WsFrame,
 } from "../src/index.js";
-import { files, type Json } from "./support.js";
+import { arrayBufferOf, files, type Json } from "./support.js";
 
-const HELLO = 1;
-const PING = 4;
-const PONG = 5;
-const CLOSE = 7;
-const HEARTBEATS = new Set([PING, PONG]);
-const CODE = 6;
-const MSG = 7;
+const { HELLO, PING, PONG, CLOSE } = FrameType;
+const HEARTBEATS = new Set<number>([PING, PONG]);
 const SEND_WITHIN = 5000;
 const ABNORMAL_CLOSURE = 1006;
 
@@ -90,7 +88,7 @@ export async function runClientScript(c: Json, hooks: RunHooks = {}): Promise<Ru
     now: () => Date.now(),
     warn: (message) => warnings.push(message),
   };
-  connect("ws://runner.test/rt", options).then(
+  connect("ws://127.0.0.1/rt", options).then(
     (established) => {
       connection = established;
       hooks.onConnection?.(established);
@@ -121,8 +119,9 @@ async function play(step: Step, server: ScriptServer, connection: () => Connecti
         }
         for (let n = 0; n < step.repeat; n++) {
           const { stream, type } = step.frame;
-          if (!(await within(SEND_WITHIN, () => socket.has(stream, type)))) {
-            return `the client sent nothing on stream ${stream} within ${SEND_WITHIN} ms`;
+          const window = type === PONG ? 0 : SEND_WITHIN;
+          if (!(await within(window, () => socket.has(stream, type)))) {
+            return `the client sent nothing on stream ${stream} within ${window} ms`;
           }
           const problem = mismatch(step.frame, socket.take(stream, type) as WsFrame);
           if (problem !== undefined) return problem;
@@ -160,8 +159,8 @@ async function play(step: Step, server: ScriptServer, connection: () => Connecti
 
 function askToClose(frame: FrameSpec, connection: Connection | undefined): string | undefined {
   if (connection === undefined) return "a CLOSE send needs an established session";
-  const code = entry(frame.header, CODE);
-  const msg = entry(frame.header, MSG);
+  const code = entry(frame.header, Key.CODE);
+  const msg = entry(frame.header, Key.MSG);
   if (code?.kind !== "uint") return "a CLOSE send needs a concrete code (key 6)";
   if (msg !== undefined && msg.kind !== "text") return "a CLOSE send's msg (key 7) is not concrete text";
   void connection.close(Number(code.value) as CloseCode, msg?.value);
@@ -173,11 +172,11 @@ function helloOptions(header: Diag | undefined): Pick<ConnectOptions, "codecs" |
     d?.kind === "array" && d.items.every((item) => item.kind === "text")
       ? d.items.map((item) => (item as { value: string }).value)
       : undefined;
-  const codecs = texts(entry(header, 16));
-  const caps = texts(entry(header, 18));
-  const contract = entry(header, 24);
+  const codecs = texts(entry(header, Key.CODECS));
+  const caps = texts(entry(header, Key.CAPS));
+  const contract = entry(header, Key.CONTRACT);
   return {
-    ...(codecs === undefined ? {} : { codecs: codecs as ("cbor" | "json")[] }),
+    ...(codecs === undefined ? {} : { codecs: codecs as Codec[] }),
     ...(caps === undefined ? {} : { caps }),
     ...(contract?.kind === "bytes" ? { contract: contract.value } : {}),
   };
@@ -208,7 +207,7 @@ function mismatch(spec: FrameSpec, got: WsFrame): string | undefined {
 }
 
 /** Whether `value` matches `pattern`: `*`, open maps, map entries in any order. */
-export function matches(pattern: Diag, value: Diag): boolean {
+function matches(pattern: Diag, value: Diag): boolean {
   switch (pattern.kind) {
     case "any":
       return true;
@@ -277,8 +276,8 @@ async function within(ms: number, done: () => boolean): Promise<boolean> {
 
 function parseStep(step: Json, where: string): Step {
   const entries = Object.entries(step);
-  const [verb, body] = entries[0] as [string, Json];
   if (entries.length !== 1) throw new Error(`${where}: a step has exactly one verb`);
+  const [verb, body] = entries[0] as [string, Json];
   switch (verb) {
     case "send":
       return { verb, frame: parseFrame(body, where, true), repeat: (body["repeat"] as number | undefined) ?? 1 };
@@ -291,8 +290,9 @@ function parseStep(step: Json, where: string): Step {
     case "close_transport":
       return { verb };
     case "expect_close": {
-      const name = body["code"] as keyof typeof CloseCode;
-      return { verb, code: CloseCode[name], within: body["within_ms"] as number };
+      const name = String(body["code"]);
+      if (!Object.hasOwn(CloseCode, name)) throw new Error(`${where}: unknown close code ${name}`);
+      return { verb, code: CloseCode[name as keyof typeof CloseCode], within: body["within_ms"] as number };
     }
     default:
       throw new Error(`${where}: unknown verb ${verb}`);
@@ -304,8 +304,8 @@ function parseFrame(body: Json, where: string, patterns: boolean): FrameSpec {
     const text = body[key];
     if (typeof text !== "string") return undefined;
     const d = parse(text);
-    if (!patterns && !concrete(d)) throw new Error(`${where}: an expect is concrete: no *, ... or $name`);
-    if (patterns && hasRef(d)) throw new Error(`${where}: a client script captures nothing`);
+    if (!patterns && patternCount(d) !== 0) throw new Error(`${where}: an expect is concrete: no *, ... or $name`);
+    if (patterns && refs(d).length !== 0) throw new Error(`${where}: a client script uses no $name`);
     return d;
   };
   const dataHex = body["data_hex"];
@@ -322,37 +322,6 @@ function parseFrame(body: Json, where: string, patterns: boolean): FrameSpec {
           ? { kind: "empty" }
           : { kind: "cbor", diag: data },
   };
-}
-
-function concrete(d: Diag): boolean {
-  switch (d.kind) {
-    case "any":
-    case "ref":
-      return false;
-    case "array":
-      return d.items.every(concrete);
-    case "map":
-      return !d.open && d.entries.every(([k, v]) => concrete(k) && concrete(v));
-    case "tag":
-      return concrete(d.value);
-    default:
-      return true;
-  }
-}
-
-function hasRef(d: Diag): boolean {
-  switch (d.kind) {
-    case "ref":
-      return true;
-    case "array":
-      return d.items.some(hasRef);
-    case "map":
-      return d.entries.some(([k, v]) => hasRef(k) || hasRef(v));
-    case "tag":
-      return hasRef(d.value);
-    default:
-      return false;
-  }
 }
 
 /** The server's end of the in-memory WebSocket. */
@@ -439,7 +408,7 @@ class ScriptSocket implements WebSocketLike {
   private reply(stream: number, frame: RawFrame): void {
     if (this.closedWith !== undefined || this.dropped) return;
     for (const message of encodeMessages([{ stream, frame }], DEFAULT_MAX_FRAME)) {
-      this.onmessage?.({ data: message.buffer.slice(message.byteOffset, message.byteOffset + message.byteLength) });
+      this.onmessage?.({ data: arrayBufferOf(message) });
     }
   }
 }

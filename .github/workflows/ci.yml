@@ -154,6 +154,7 @@ jobs:
   ts-integration:
     name: ts-integration
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -177,13 +178,21 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Run the client against the Rust server
         run: |
-          target/debug/examples/ts-peer > "$RUNNER_TEMP/ts-peer.log" 2>&1 &
-          timeout 30 sh -c 'until grep -q "^listening " "$0"; do sleep 0.2; done' "$RUNNER_TEMP/ts-peer.log" \
-            || { cat "$RUNNER_TEMP/ts-peer.log"; exit 1; }
-          url=$(sed -n 's/^listening //p' "$RUNNER_TEMP/ts-peer.log")
-          test -n "$url"
+          log="$RUNNER_TEMP/ts-peer.log"
+          report="$RUNNER_TEMP/integration.json"
+          target/debug/examples/ts-peer > "$log" 2>&1 &
+          peer=$!
+          for _ in $(seq 150); do
+            grep -q '^listening ws://' "$log" && break
+            kill -0 "$peer" 2>/dev/null || break
+            sleep 0.2
+          done
+          url=$(sed -n 's/^listening //p' "$log")
+          if [ -z "$url" ]; then cat "$log"; exit 1; fi
           PAVIA_TS_PEER_URL="$url" pnpm -C clients/typescript/packages/client exec vitest run test/integration.test.ts \
-            || { cat "$RUNNER_TEMP/ts-peer.log"; exit 1; }
+            --reporter=default --reporter=json --outputFile="$report" || { cat "$log"; exit 1; }
+          passed=$(node -p 'require(process.argv[1]).numPassedTests' "$report")
+          if [ "$passed" != 1 ]; then echo "expected 1 passed test, got $passed"; exit 1; fi
 
   vectors:
     name: vectors

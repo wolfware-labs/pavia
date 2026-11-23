@@ -128,6 +128,11 @@ export function welcome(fields: Partial<Welcome> = {}): Welcome {
   };
 }
 
+/** The bytes as their own `ArrayBuffer`, the form a browser WebSocket hands to `onmessage`. */
+export function arrayBufferOf(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
 export function message(frame: Frame, stream = 0): Uint8Array {
   return encodeMessages([{ stream, frame: toRawFrame(frame) }], DEFAULT_MAX_FRAME)[0] as Uint8Array;
 }

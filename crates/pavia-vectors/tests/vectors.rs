@@ -101,6 +101,11 @@ fn frame_headers(buf: &[u8], binding: &str) -> Vec<Vec<u8>> {
   out
 }
 
+/// Names one vector case in assertion messages: `<kind>/<file>.json#<id>`.
+fn case_ctx(kind: &str, name: &str, id: &str) -> String {
+  format!("{kind}/{name}.json#{id}")
+}
+
 fn unique_ids(kind: &str) -> Vec<(String, Json)> {
   let mut seen = HashSet::new();
   let mut cases = Vec::new();
@@ -111,7 +116,7 @@ fn unique_ids(kind: &str) -> Vec<(String, Json)> {
     for case in doc["cases"].as_array().expect("cases") {
       let id = str_field(case, "id").to_owned();
       assert!(seen.insert(id.clone()), "{kind}: duplicate id {id}");
-      cases.push((format!("{kind}/{name}.json#{id}"), case.clone()));
+      cases.push((case_ctx(kind, &name, &id), case.clone()));
     }
   }
   assert!(!cases.is_empty(), "no {kind} vectors found");
@@ -182,7 +187,7 @@ fn client_script_cases() -> HashSet<String> {
     }
     let name = path.file_stem().unwrap().to_string_lossy().into_owned();
     for case in doc["cases"].as_array().expect("cases") {
-      cases.insert(format!("scripts/{name}.json#{}", str_field(case, "id")));
+      cases.insert(case_ctx("scripts", &name, str_field(case, "id")));
     }
   }
   cases
@@ -201,6 +206,12 @@ fn scripts_parse_and_captures_resolve() {
       if verb != "send" && verb != "expect" {
         continue;
       }
+      if concrete == "expect" {
+        assert!(
+          body.get("capture").is_none(),
+          "{ctx} step {i}: a client script captures nothing"
+        );
+      }
       for key in ["header", "data"] {
         let Some(text) = body[key].as_str() else {
           continue;
@@ -214,7 +225,7 @@ fn scripts_parse_and_captures_resolve() {
           );
         }
         if concrete == "expect" {
-          assert!(d.refs().is_empty(), "{ctx} step {i}: a client script captures nothing");
+          assert!(d.refs().is_empty(), "{ctx} step {i}: a client script uses no $name");
         }
         for name in d.refs() {
           assert!(captured.contains(name), "{ctx} step {i}: ${name} used before capture");
