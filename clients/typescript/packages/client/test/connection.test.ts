@@ -116,6 +116,17 @@ describe("connect", () => {
     expect(ws.closedWith?.code).toBe(4000 + CloseCode.HANDSHAKE_TIMEOUT);
   });
 
+  it("treats a WebSocket error as a lost transport, before WELCOME and after it", async () => {
+    const pending = connect("wss://example.test/rt", options());
+    socket().open();
+    socket().onerror?.({});
+    await expect(pending).rejects.toMatchObject({ ending: { kind: "transport_lost" } });
+    const { connection, ws } = await established();
+    ws.onerror?.({});
+    ws.drop(1006);
+    expect(connection.closedWith).toEqual({ kind: "transport_lost" });
+  });
+
   it("closes with PROTOCOL_ERROR when the server does not select pavia.1", async () => {
     const pending = connect("wss://example.test/rt", options());
     const ws = socket();

@@ -101,7 +101,7 @@ export class Connection extends EventTarget {
     socket.onopen = () => this.opened();
     socket.onmessage = (event) => this.feed({ kind: "message", data: messageData(event.data) });
     socket.onclose = (event) => this.feed({ kind: "transport_closed", code: event.code });
-    socket.onerror = () => {};
+    socket.onerror = () => this.feed({ kind: "transport_closed" });
     this.arm();
   }
 
