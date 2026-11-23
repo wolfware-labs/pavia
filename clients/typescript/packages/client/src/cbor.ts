@@ -1,25 +1,66 @@
-import { ByteWriter, compareBytes, isByte } from "./bytes.js";
+import { ByteWriter, compareBytes, isByte, isBytes, toHex } from "./bytes.js";
 import { EncodeError, type HeaderErrorReason, ProtocolError } from "./errors.js";
+import { textOfUtf8, utf8Of } from "./utf8.js";
 
 /**
- * One CBOR item of a header section (spec 5.4.1). Integers are `bigint` so every 64-bit value is
- * exact; `nint` holds `n` for the integer `-1 - n`, as CBOR major type 1 does.
+ * One CBOR item of a header section (spec 5.4.1) or a data section (spec 12.3). Integers are
+ * `bigint` so every 64-bit value is exact; `nint` holds `n` for the integer `-1 - n`, as CBOR major
+ * type 1 does. A `tag` only occurs in data sections; headers refuse tags.
  */
-export type HeaderValue =
+export type CborItem =
   | { readonly kind: "uint"; readonly value: bigint }
   | { readonly kind: "nint"; readonly value: bigint }
   | { readonly kind: "bytes"; readonly value: Uint8Array }
   | { readonly kind: "text"; readonly value: string }
-  | { readonly kind: "array"; readonly items: readonly HeaderValue[] }
-  | { readonly kind: "map"; readonly entries: HeaderMap }
+  | { readonly kind: "array"; readonly items: readonly CborItem[] }
+  | { readonly kind: "map"; readonly entries: CborMap }
   | { readonly kind: "bool"; readonly value: boolean }
   | { readonly kind: "null" }
   | { readonly kind: "undefined" }
   | { readonly kind: "simple"; readonly value: number }
-  | { readonly kind: "float"; readonly value: number };
+  | { readonly kind: "float"; readonly value: number }
+  | { readonly kind: "tag"; readonly tag: bigint; readonly item: CborItem };
 
 /** The entries of a CBOR map, in the order they were decoded or given. */
-export type HeaderMap = readonly (readonly [HeaderValue, HeaderValue])[];
+export type CborMap = readonly (readonly [CborItem, CborItem])[];
+
+/**
+ * Whether `value` has the fields its `kind` needs as a {@link CborItem}: a `bigint` for `uint` and
+ * `nint`, a `Uint8Array`, a string, a boolean or a number for the scalar kinds, an `items` array, an
+ * `entries` array of pairs, a `bigint` tag with an item. Children are not checked.
+ */
+export function hasCborItemShape(value: unknown): value is CborItem {
+  if (typeof value !== "object" || value === null) return false;
+  const item = value as Readonly<Record<string, unknown>>;
+  const field = item["value"];
+  switch (item["kind"]) {
+    case "uint":
+    case "nint":
+      return typeof field === "bigint";
+    case "bytes":
+      return isBytes(field);
+    case "text":
+      return typeof field === "string";
+    case "bool":
+      return typeof field === "boolean";
+    case "simple":
+    case "float":
+      return typeof field === "number";
+    case "null":
+    case "undefined":
+      return true;
+    case "array":
+      return Array.isArray(item["items"]);
+    case "map": {
+      const entries = item["entries"];
+      return Array.isArray(entries) && entries.every((entry) => Array.isArray(entry) && entry.length === 2);
+    }
+    case "tag":
+      return typeof item["tag"] === "bigint" && item["item"] !== undefined;
+    default:
+      return false;
+  }
+}
 
 /** The limits a receiver applies to a header section (spec 5.4.1, 16). */
 export interface HeaderLimits {
@@ -34,10 +75,15 @@ export const DEFAULT_HEADER_LIMITS: HeaderLimits = { maxSize: 16_384, maxDepth: 
 
 const UNSIGNED = 0;
 const NEGATIVE = 1;
-const BYTES = 2;
+/** CBOR major type 2, byte strings. */
+export const BYTES = 2;
 const TEXT = 3;
-const ARRAY = 4;
-const MAP = 5;
+/** CBOR major type 4, arrays. */
+export const ARRAY = 4;
+/** CBOR major type 5, maps. */
+export const MAP = 5;
+/** CBOR major type 6, tags. */
+export const TAG = 6;
 const SIMPLE = 7;
 /** The largest CBOR integer argument, 2^64 - 1. */
 export const MAX_U64 = (1n << 64n) - 1n;
@@ -50,10 +96,11 @@ const WIDTH_INFO: Readonly<Record<number, number>> = { 1: 24, 2: 25, 4: 26, 8: 2
  * encoded bytes. An empty map encodes as `a0`; a frame without a header writes no bytes instead.
  *
  * @throws {@link EncodeError} `duplicate_key` when two keys of one map encode the same,
- * `reserved_simple_value` for a simple value from 24 to 31, and `out_of_range` for an integer
- * outside 0 to 2^64 - 1.
+ * `reserved_simple_value` for a simple value from 24 to 31, `out_of_range` for an integer
+ * outside 0 to 2^64 - 1, `tag_in_header` for a tag, and `invalid_value` for an item whose `kind`
+ * is not a {@link CborItem} kind.
  */
-export function encodeHeader(header: HeaderMap): Uint8Array {
+export function encodeHeader(header: CborMap): Uint8Array {
   const out = new ByteWriter();
   writeMap(out, header);
   return out.finish();
@@ -64,17 +111,34 @@ export function encodeHeader(header: HeaderMap): Uint8Array {
  *
  * @throws {@link EncodeError} for the same reasons as {@link encodeHeader}.
  */
-export function encodeHeaderValue(value: HeaderValue): Uint8Array {
+export function encodeCborItem(value: CborItem): Uint8Array {
   const out = new ByteWriter();
-  writeValue(out, value);
+  writeValue(out, value, false);
   return out.finish();
 }
 
-const LONE_SURROGATE = /\p{Surrogate}/u;
-const UTF8_ENCODER = new TextEncoder();
+/**
+ * Appends `value` as a data section item (spec 12.3): tags are written, and map entries keep the
+ * order they have, since the typed layer has put them in theirs. Integers, lengths and floats
+ * take their shortest form.
+ *
+ * @throws {@link EncodeError} `reserved_simple_value`, `out_of_range`, `lone_surrogate` or
+ * `invalid_value`, as {@link encodeHeader}.
+ */
+export function writeCborItem(out: ByteWriter, value: CborItem): void {
+  writeValue(out, value, true);
+}
+
 const SCRATCH = new DataView(new ArrayBuffer(8));
 
-function writeValue(out: ByteWriter, value: HeaderValue): void {
+function checkItem(value: unknown): void {
+  if (!hasCborItemShape(value)) {
+    throw new EncodeError("invalid_value", "not a CBOR item: a field is missing or of the wrong type");
+  }
+}
+
+function writeValue(out: ByteWriter, value: CborItem, data: boolean): void {
+  checkItem(value);
   switch (value.kind) {
     case "uint":
       return writeHead(out, UNSIGNED, value.value);
@@ -83,20 +147,24 @@ function writeValue(out: ByteWriter, value: HeaderValue): void {
     case "bytes":
       writeHead(out, BYTES, BigInt(value.value.length));
       return out.bytes(value.value);
-    case "text": {
-      if (LONE_SURROGATE.test(value.value)) {
-        throw new EncodeError("lone_surrogate", "text holds a lone UTF-16 surrogate, which has no UTF-8 form");
-      }
-      const utf8 = UTF8_ENCODER.encode(value.value);
-      writeHead(out, TEXT, BigInt(utf8.length));
-      return out.bytes(utf8);
-    }
+    case "text":
+      return writeText(out, value.value);
     case "array":
       writeHead(out, ARRAY, BigInt(value.items.length));
-      for (const item of value.items) writeValue(out, item);
+      for (const item of value.items) writeValue(out, item, data);
       return;
     case "map":
-      return writeMap(out, value.entries);
+      if (!data) return writeMap(out, value.entries);
+      writeHead(out, MAP, BigInt(value.entries.length));
+      for (const [key, item] of value.entries) {
+        writeValue(out, key, true);
+        writeValue(out, item, true);
+      }
+      return;
+    case "tag":
+      if (!data) throw new EncodeError("tag_in_header", `tag ${value.tag} in a header`);
+      writeHead(out, TAG, value.tag);
+      return writeValue(out, value.item, true);
     case "bool":
       return out.byte(value.value ? 0xf5 : 0xf4);
     case "null":
@@ -116,9 +184,33 @@ function writeValue(out: ByteWriter, value: HeaderValue): void {
   }
 }
 
-function writeMap(out: ByteWriter, entries: HeaderMap): void {
+/**
+ * Appends `text` as a CBOR text string.
+ *
+ * @throws {@link EncodeError} `lone_surrogate` for text with no UTF-8 form.
+ */
+export function writeText(out: ByteWriter, text: string): void {
+  writeUtf8(out, utf8Of(text));
+}
+
+/** Appends already encoded UTF-8 bytes as a CBOR text string. */
+export function writeUtf8(out: ByteWriter, utf8: Uint8Array): void {
+  writeHead(out, TEXT, BigInt(utf8.length));
+  out.bytes(utf8);
+}
+
+function writeMap(out: ByteWriter, entries: CborMap): void {
+  if (!Array.isArray(entries)) {
+    throw new EncodeError("invalid_value", "a CBOR map takes an array of entries");
+  }
+  for (const entry of entries as readonly unknown[]) {
+    if (!Array.isArray(entry) || entry.length !== 2) {
+      throw new EncodeError("invalid_value", "a CBOR map entry is a pair");
+    }
+    checkItem(entry[0]);
+  }
   if (entries.every(([key]) => key.kind === "uint")) return writeUintKeyedMap(out, entries);
-  const encoded = entries.map(([key, value]) => ({ key: encodeHeaderValue(key), value }));
+  const encoded = entries.map(([key, value]) => ({ key: encodeCborItem(key), value }));
   encoded.sort((a, b) => compareBytes(a.key, b.key));
   for (let i = 1; i < encoded.length; i++) {
     if (compareBytes((encoded[i - 1] as { key: Uint8Array }).key, (encoded[i] as { key: Uint8Array }).key) === 0) {
@@ -128,11 +220,11 @@ function writeMap(out: ByteWriter, entries: HeaderMap): void {
   writeHead(out, MAP, BigInt(encoded.length));
   for (const { key, value } of encoded) {
     out.bytes(key);
-    writeValue(out, value);
+    writeValue(out, value, false);
   }
 }
 
-function writeUintKeyedMap(out: ByteWriter, entries: HeaderMap): void {
+function writeUintKeyedMap(out: ByteWriter, entries: CborMap): void {
   const sorted = [...entries].sort(([a], [b]) => {
     const x = (a as { value: bigint }).value;
     const y = (b as { value: bigint }).value;
@@ -145,14 +237,28 @@ function writeUintKeyedMap(out: ByteWriter, entries: HeaderMap): void {
     if (n === previous) throw new EncodeError("duplicate_key", "header map has a duplicate key");
     previous = n;
     writeHead(out, UNSIGNED, n);
-    writeValue(out, value);
+    writeValue(out, value, false);
   }
 }
 
-function writeHead(out: ByteWriter, major: number, argument: bigint): void {
+/**
+ * Refuses a CBOR head argument outside 0 to 2^64 - 1, the integers a `uint` or `nint` item holds.
+ *
+ * @throws {@link EncodeError} `out_of_range`.
+ */
+export function checkArgument(argument: bigint): void {
   if (argument < 0n || argument > MAX_U64) {
     throw new EncodeError("out_of_range", `CBOR argument ${argument} is outside 0 to 2^64 - 1`);
   }
+}
+
+/**
+ * Appends a CBOR head in its shortest form.
+ *
+ * @throws {@link EncodeError} `out_of_range` for an argument outside 0 to 2^64 - 1.
+ */
+export function writeHead(out: ByteWriter, major: number, argument: bigint): void {
+  checkArgument(argument);
   const type = major * 32;
   if (argument < 24n) return out.byte(type + Number(argument));
   const width = argument < 0x100n ? 1 : argument < 0x1_0000n ? 2 : argument < 0x1_0000_0000n ? 4 : 8;
@@ -160,13 +266,14 @@ function writeHead(out: ByteWriter, major: number, argument: bigint): void {
   for (let i = width - 1; i >= 0; i--) out.byte(Number((argument >> BigInt(8 * i)) & 0xffn));
 }
 
-function writeFloat(out: ByteWriter, x: number): void {
+/** Appends `x` as the narrowest CBOR float that holds it exactly, NaN as `f9 7e 00`. */
+export function writeFloat(out: ByteWriter, x: number): void {
   const half = Number.isNaN(x) ? 0x7e00 : halfBits(x);
   if (half !== undefined) {
     out.byte(0xf9);
     out.byte(half >>> 8);
     out.byte(half & 0xff);
-  } else if (Math.fround(x) === x) {
+  } else if (hasF32Form(x)) {
     out.byte(0xfa);
     SCRATCH.setFloat32(0, x);
     writeScratch(out, 4);
@@ -182,7 +289,7 @@ function writeScratch(out: ByteWriter, length: number): void {
 }
 
 function halfBits(x: number): number | undefined {
-  if (Math.fround(x) !== x) return undefined;
+  if (!hasF32Form(x)) return undefined;
   SCRATCH.setFloat32(0, x);
   const bits = SCRATCH.getUint32(0);
   const sign = bits >>> 31 ? 0x8000 : 0;
@@ -198,30 +305,82 @@ function halfBits(x: number): number | undefined {
   return significand % divisor === 0 ? sign | (significand / divisor) : undefined;
 }
 
+/** Whether `x` has an exact single-precision form; NaN has one. */
+export function hasF32Form(x: number): boolean {
+  return Math.fround(x) === x || Number.isNaN(x);
+}
+
+/** `x` rounded to the nearest IEEE 754 half-precision value, ties to even, as `f16::from_f64` does. */
+export function toHalf(x: number): number {
+  if (!Number.isFinite(x) || x === 0) return x;
+  const a = Math.abs(x);
+  if (a >= 65_520) return Math.sign(x) * Infinity;
+  SCRATCH.setFloat64(0, a);
+  const exponent = ((SCRATCH.getUint16(0) >> 4) & 0x7ff) - 1023;
+  const ulp = 2 ** (Math.max(exponent, -14) - 10);
+  const q = a / ulp;
+  const floor = Math.floor(q);
+  const rest = q - floor;
+  const rounded = rest > 0.5 || (rest === 0.5 && floor % 2 === 1) ? floor + 1 : floor;
+  return Math.sign(x) * rounded * ulp;
+}
+
 /**
  * Decodes a header section as a receiver does (spec 5.4.1). An empty section is no header and
  * returns `undefined`. Unknown keys are kept; the typed frame layer ignores them.
  *
  * @throws {@link ProtocolError} `malformed_header`, with the rule that failed as its `reason`.
+ * @throws RangeError when `limits.maxSize` or `limits.maxDepth` is not a non-negative integer.
  */
-export function decodeHeader(bytes: Uint8Array, limits: HeaderLimits = DEFAULT_HEADER_LIMITS): HeaderMap | undefined {
+export function decodeHeader(bytes: Uint8Array, limits: HeaderLimits = DEFAULT_HEADER_LIMITS): CborMap | undefined {
+  checkLimit("maxSize", limits.maxSize);
+  checkLimit("maxDepth", limits.maxDepth);
   if (bytes.length === 0) return undefined;
   if (bytes.length > limits.maxSize) throw refuse("too_large");
   const first = bytes[0] as number;
   if (first === 0xbf) throw refuse("indefinite_length");
   if (first >= 0x38 && first <= 0x3b && bytes.length < 2) throw refuse("malformed");
   if (first < 0xa0 || first > 0xbb) throw refuse("not_a_map");
-  const reader = new Reader(bytes, limits.maxDepth);
+  const reader = new Reader(bytes, limits.maxDepth, false, refuse);
   const map = reader.map(reader.deeper(0));
   if (reader.pos < bytes.length) throw refuse("trailing_bytes");
   return map;
 }
 
+/**
+ * Decodes one CBOR item that fills `bytes`, as a data section (spec 12.3) is read before its type
+ * is applied: tags are allowed and add no depth, indefinite lengths are read, map keys are kept as
+ * given, twice included, for the typed layer to judge, and byte strings are copied out of `bytes`.
+ * A top-level array or map has depth 1, and a run of tags directly around one item holds at most
+ * `maxDepth` tags, as `pavia-proto` reads them.
+ *
+ * @throws the error `fail` returns for the first rule that fails, with the same reasons as
+ * {@link decodeHeader} but `not_a_map`, `too_large`, `tag`, `indefinite_length` and `duplicate_key`.
+ */
+export function decodeCborItem(
+  bytes: Uint8Array,
+  maxDepth: number,
+  fail: (reason: HeaderErrorReason) => Error,
+): CborItem {
+  const reader = new Reader(bytes, maxDepth, true, fail);
+  const item = reader.value(0);
+  if (reader.pos < bytes.length) throw fail("trailing_bytes");
+  return item;
+}
+
+/**
+ * Refuses a limit that is not a non-negative integer: with NaN or Infinity every comparison against
+ * it is false, so nothing would be bounded.
+ *
+ * @throws RangeError.
+ */
+export function checkLimit(name: string, value: number): void {
+  if (!Number.isSafeInteger(value) || value < 0) throw new RangeError(`${name} ${value} is not a non-negative integer`);
+}
+
 function refuse(reason: HeaderErrorReason): ProtocolError {
   return new ProtocolError("malformed_header", { reason });
 }
-
-const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 class Reader {
   pos = 0;
@@ -229,53 +388,111 @@ class Reader {
   constructor(
     private readonly bytes: Uint8Array,
     private readonly maxDepth: number,
+    private readonly data: boolean,
+    private readonly fail: (reason: HeaderErrorReason) => Error,
   ) {}
 
   deeper(depth: number): number {
-    if (depth + 1 > this.maxDepth) throw refuse("too_deep");
+    if (depth + 1 > this.maxDepth) throw this.fail("too_deep");
     return depth + 1;
   }
 
-  map(depth: number): HeaderMap {
+  map(depth: number): CborMap {
     const length = this.head();
-    const seen = new KeySet();
-    const entries: (readonly [HeaderValue, HeaderValue])[] = [];
+    const seen = this.data ? undefined : new KeySet();
+    const entries: (readonly [CborItem, CborItem])[] = [];
     for (let i = 0n; i < length; i++) {
       const start = this.pos;
       const key = this.value(depth);
-      if (!seen.add(key, this.bytes, start, this.pos)) throw refuse("duplicate_key");
+      if (seen !== undefined && !seen.add(key, this.bytes, start, this.pos)) throw this.fail("duplicate_key");
       entries.push([key, this.value(depth)]);
     }
     return entries;
   }
 
-  value(depth: number): HeaderValue {
+  private indefinite(major: number, depth: number): CborItem {
+    this.pos++;
+    switch (major) {
+      case BYTES: {
+        const out = new ByteWriter();
+        while (!this.atBreak()) out.bytes(this.chunk(BYTES));
+        return { kind: "bytes", value: out.finish() };
+      }
+      case TEXT: {
+        let text = "";
+        while (!this.atBreak()) {
+          const part = textOfUtf8(this.chunk(TEXT));
+          if (part === undefined) throw this.fail("malformed");
+          text += part;
+        }
+        return { kind: "text", value: text };
+      }
+      case ARRAY: {
+        const inner = this.deeper(depth);
+        const items: CborItem[] = [];
+        while (!this.atBreak()) items.push(this.value(inner));
+        return { kind: "array", items };
+      }
+      default: {
+        const inner = this.deeper(depth);
+        const entries: (readonly [CborItem, CborItem])[] = [];
+        while (!this.atBreak()) {
+          const key = this.value(inner);
+          entries.push([key, this.value(inner)]);
+        }
+        return { kind: "map", entries };
+      }
+    }
+  }
+
+  private chunk(major: number): Uint8Array {
+    const head = this.bytes[this.pos] as number;
+    if (head >> 5 !== major || (head & 0x1f) >= 28) throw this.fail("malformed");
+    return this.take(this.head());
+  }
+
+  private atBreak(): boolean {
+    const next = this.bytes[this.pos];
+    if (next === undefined) throw this.fail("malformed");
+    if (next !== 0xff) return false;
+    this.pos++;
+    return true;
+  }
+
+  value(depth: number, run = 0): CborItem {
     const first = this.bytes[this.pos];
-    if (first === undefined) throw refuse("malformed");
+    if (first === undefined) throw this.fail("malformed");
     const major = first >> 5;
     const info = first & 0x1f;
-    if (info === 31 && major >= BYTES && major <= MAP) throw refuse("indefinite_length");
-    if (major === 6 && info < 28) throw refuse("tag");
-    if (info >= 28) throw refuse("malformed");
+    if (info === 31 && major >= BYTES && major <= MAP) {
+      if (!this.data) throw this.fail("indefinite_length");
+      return this.indefinite(major, depth);
+    }
+    if (info >= 28) throw this.fail("malformed");
+    if (major === TAG) {
+      if (!this.data) throw this.fail("tag");
+      if (run === this.maxDepth) throw this.fail("too_deep");
+      const tag = this.head();
+      return { kind: "tag", tag, item: this.value(depth, run + 1) };
+    }
     switch (major) {
       case UNSIGNED:
         return { kind: "uint", value: this.head() };
       case NEGATIVE:
         return { kind: "nint", value: this.head() };
-      case BYTES:
-        return { kind: "bytes", value: this.take(this.head()) };
+      case BYTES: {
+        const value = this.take(this.head());
+        return { kind: "bytes", value: this.data ? value.slice() : value };
+      }
       case TEXT: {
-        const raw = this.take(this.head());
-        try {
-          return { kind: "text", value: UTF8_DECODER.decode(raw) };
-        } catch {
-          throw refuse("malformed");
-        }
+        const value = textOfUtf8(this.take(this.head()));
+        if (value === undefined) throw this.fail("malformed");
+        return { kind: "text", value };
       }
       case ARRAY: {
         const inner = this.deeper(depth);
         const length = this.head();
-        const items: HeaderValue[] = [];
+        const items: CborItem[] = [];
         for (let i = 0n; i < length; i++) items.push(this.value(inner));
         return { kind: "array", items };
       }
@@ -286,7 +503,7 @@ class Reader {
     }
   }
 
-  private simple(info: number): HeaderValue {
+  private simple(info: number): CborItem {
     if (info < 20) {
       this.pos++;
       return { kind: "simple", value: info };
@@ -304,7 +521,7 @@ class Reader {
         return { kind: "undefined" };
       case 24: {
         const value = this.bytes[this.pos + 1];
-        if (value === undefined || value < 32) throw refuse("malformed");
+        if (value === undefined || value < 32) throw this.fail("malformed");
         this.pos += 2;
         return { kind: "simple", value };
       }
@@ -323,7 +540,7 @@ class Reader {
     this.pos++;
     if (info < 24) return BigInt(info);
     const width = ARGUMENT_WIDTH[info] as number;
-    if (this.bytes.length - this.pos < width) throw refuse("malformed");
+    if (this.bytes.length - this.pos < width) throw this.fail("malformed");
     let n = 0n;
     for (let i = 0; i < width; i++) n = n * 256n + BigInt(this.bytes[this.pos + i] as number);
     this.pos += width;
@@ -332,7 +549,7 @@ class Reader {
 
   private take(length: bigint, skip = 0): Uint8Array {
     this.pos += skip;
-    if (length > BigInt(this.bytes.length - this.pos)) throw refuse("malformed");
+    if (length > BigInt(this.bytes.length - this.pos)) throw this.fail("malformed");
     const end = this.pos + Number(length);
     const out = this.bytes.subarray(this.pos, end);
     this.pos = end;
@@ -347,7 +564,7 @@ class KeySet {
   private byteStrings: Set<string> | undefined;
   private raws: Set<string> | undefined;
 
-  add(key: HeaderValue, bytes: Uint8Array, start: number, end: number): boolean {
+  add(key: CborItem, bytes: Uint8Array, start: number, end: number): boolean {
     switch (key.kind) {
       case "uint":
         return addNew((this.uints ??= new Set()), key.value);
@@ -356,9 +573,9 @@ class KeySet {
       case "text":
         return addNew((this.texts ??= new Set()), key.value);
       case "bytes":
-        return addNew((this.byteStrings ??= new Set()), hex(key.value));
+        return addNew((this.byteStrings ??= new Set()), toHex(key.value));
       default:
-        return addNew((this.raws ??= new Set()), hex(bytes.subarray(start, end)));
+        return addNew((this.raws ??= new Set()), toHex(bytes.subarray(start, end)));
     }
   }
 }
@@ -367,12 +584,6 @@ function addNew<T>(set: Set<T>, value: T): boolean {
   if (set.has(value)) return false;
   set.add(value);
   return true;
-}
-
-function hex(bytes: Uint8Array): string {
-  let s = "";
-  for (const b of bytes) s += b.toString(16).padStart(2, "0");
-  return s;
 }
 
 function fromHalf(bits: number): number {

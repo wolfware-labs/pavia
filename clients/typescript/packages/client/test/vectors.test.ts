@@ -8,7 +8,7 @@ import {
   decodeVarint,
   encodeFrame,
   encodeHeader,
-  encodeHeaderValue,
+  encodeCborItem,
   encodeMessages,
   encodeVarint,
   type Frame,
@@ -84,7 +84,7 @@ describe("header vectors", () => {
 function expectedData(f: Json): Uint8Array {
   if (typeof f.data_hex === "string") return hexToBytes(f.data_hex);
   if (typeof f.data !== "string") return new Uint8Array(0);
-  return f.codec === "json" ? new TextEncoder().encode(f.data) : encodeHeaderValue(valueOf(f.data));
+  return f.codec === "json" ? new TextEncoder().encode(f.data) : encodeCborItem(valueOf(f.data));
 }
 
 function rawFrames(c: Json, bytes: Uint8Array): { stream?: number; frame: RawFrame }[] {

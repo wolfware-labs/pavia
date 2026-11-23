@@ -1,6 +1,6 @@
 // A small CBOR codec used only as an oracle for the vectors. Encoding follows spec 12.3: shortest
 // integer, length and float forms, map entries in the order given. Decoding accepts any valid
-// definite-length encoding.
+// encoding, indefinite lengths included.
 
 import type { Diag } from "./diag.js";
 
@@ -110,6 +110,40 @@ function write(w: Writer, d: Diag): void {
   }
 }
 
+function atBreak(b: Uint8Array, r: { pos: number }): boolean {
+  if (b[r.pos] !== 0xff) return false;
+  r.pos++;
+  return true;
+}
+
+function readIndefinite(b: Uint8Array, r: { pos: number }, major: number): Diag {
+  if (major === 4) {
+    const items: Diag[] = [];
+    while (!atBreak(b, r)) items.push(read(b, r));
+    return { kind: "array", items };
+  }
+  if (major === 5) {
+    const entries: [Diag, Diag][] = [];
+    while (!atBreak(b, r)) entries.push([read(b, r), read(b, r)]);
+    return { kind: "map", open: false, entries };
+  }
+  const chunks: Diag[] = [];
+  while (!atBreak(b, r)) {
+    const head = b[r.pos] ?? 0;
+    if (head >> 5 !== major || (head & 0x1f) === 31) throw new Error("chunk of another type or length");
+    chunks.push(read(b, r));
+  }
+  if (major === 3) return { kind: "text", value: chunks.map((c) => (c as { value: string }).value).join("") };
+  const parts = chunks.map((c) => (c as { value: Uint8Array }).value);
+  const all = new Uint8Array(parts.reduce((n, c) => n + c.length, 0));
+  let at = 0;
+  for (const c of parts) {
+    all.set(c, at);
+    at += c.length;
+  }
+  return { kind: "bytes", value: all };
+}
+
 /** Decodes one CBOR item that must span all of `bytes`. */
 export function decode(bytes: Uint8Array): Diag {
   const r = { pos: 0 };
@@ -132,6 +166,7 @@ function read(b: Uint8Array, r: { pos: number }): Diag {
     if (info === 27) return { kind: "float", value: view.getFloat64((r.pos += 8) - 8) };
     throw new Error(`unsupported simple value ${info}`);
   }
+  if (info === 31 && major >= 2 && major <= 5) return readIndefinite(b, r, major);
   let n: bigint;
   if (info < 24) n = BigInt(info);
   else if (info <= 27) {
