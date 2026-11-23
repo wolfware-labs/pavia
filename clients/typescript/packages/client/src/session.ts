@@ -154,7 +154,8 @@ const CLOSE_REASON_BYTES = 123;
  *  handshaking               REJECT                      ▶ ended, rejected
  *  handshaking               WELCOME with another        ▶ CLOSE PROTOCOL_ERROR
  *                            version, an unoffered codec
- *                            or an unrequested capability
+ *                            or an unrequested capability,
+ *                            or without `limits.window`
  *  handshaking               any frame but WELCOME,      ▶ CLOSE PROTOCOL_ERROR
  *                            REJECT or CLOSE on stream 0
  *  established               PING                        ▶ PONG with the same bytes
@@ -374,7 +375,8 @@ export class ClientSession {
       welcome.version === VERSION &&
       this.hello.codecs.includes(welcome.codec) &&
       welcome.caps.every((capability) => requested.has(capability));
-    if (!usable || welcome.hb === 0n || welcome.idle === 0n) return this.close(CloseCode.PROTOCOL_ERROR);
+    const windowed = welcome.limits.window !== undefined;
+    if (!usable || !windowed || welcome.hb === 0n || welcome.idle === 0n) return this.close(CloseCode.PROTOCOL_ERROR);
     const hb = safeNumber(welcome.hb);
     const idle = safeNumber(welcome.idle);
     this.state = {

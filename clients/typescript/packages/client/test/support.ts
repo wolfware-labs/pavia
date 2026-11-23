@@ -121,7 +121,7 @@ export function welcome(fields: Partial<Welcome> = {}): Welcome {
     codec: "cbor",
     caps: [],
     session: "s1",
-    limits: { maxCalls: 100n, maxFrame: BigInt(DEFAULT_MAX_FRAME), maxSubs: 256n, maxDgram: 1100n },
+    limits: { maxCalls: 100n, maxFrame: BigInt(DEFAULT_MAX_FRAME), maxSubs: 256n, maxDgram: 1100n, window: 262_144n },
     hb: BigInt(HB),
     idle: BigInt(IDLE),
     ...fields,

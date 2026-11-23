@@ -300,6 +300,15 @@ describe("client session", () => {
     }
   });
 
+  it("closes with PROTOCOL_ERROR on a WELCOME whose limits leave out window (spec 7.2, WebSocket)", () => {
+    const session = new ClientSession({}, 0);
+    session.handleInput({ kind: "open" }, 0);
+    drain(session);
+    const limits = { maxCalls: 1n, maxFrame: 65_536n, maxSubs: 1n, maxDgram: 1n };
+    session.handleInput({ kind: "message", data: message(welcome({ limits })) }, 1);
+    expect(closeOf(drain(session))?.code).toBe(4000 + CloseCode.PROTOCOL_ERROR);
+  });
+
   it("closes with PROTOCOL_ERROR on a WELCOME with hb or idle 0", () => {
     for (const fields of [{ hb: 0n }, { idle: 0n }]) {
       const session = new ClientSession({}, 0);
@@ -412,10 +421,11 @@ describe("client session", () => {
   });
 
   it("holds sent frames to the server's max_frame, read as at most 2^53 - 1, and to 16 KiB of header", () => {
-    const small = established({}, { limits: { maxCalls: 1n, maxFrame: 65_536n, maxSubs: 1n, maxDgram: 1n } });
+    const limits = { maxCalls: 1n, maxSubs: 1n, maxDgram: 1n, window: 65_536n };
+    const small = established({}, { limits: { ...limits, maxFrame: 65_536n } });
     const big = { type: "ITEM", data: new Uint8Array(70_000) } as Frame;
     expect(encodeError(() => small.send(2, big, 20)).kind).toBe("frame_too_large");
-    const huge = established({}, { limits: { maxCalls: 1n, maxFrame: 2n ** 53n + 1n, maxSubs: 1n, maxDgram: 1n } });
+    const huge = established({}, { limits: { ...limits, maxFrame: 2n ** 53n + 1n } });
     huge.send(2, big, 20);
     expect(sent(drain(huge))).toHaveLength(1);
     const meta = new Map([["k", "x".repeat(17_000)]]);
