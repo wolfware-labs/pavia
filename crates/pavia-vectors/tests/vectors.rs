@@ -173,9 +173,27 @@ fn codec_vectors_match_their_cbor_and_json() {
   assert!(!cases.is_empty());
 }
 
+fn client_script_cases() -> HashSet<String> {
+  let mut cases = HashSet::new();
+  for path in files("scripts") {
+    let doc = load(&path);
+    if doc["runner"] != "client" {
+      continue;
+    }
+    let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+    for case in doc["cases"].as_array().expect("cases") {
+      cases.insert(format!("scripts/{name}.json#{}", str_field(case, "id")));
+    }
+  }
+  cases
+}
+
 #[test]
 fn scripts_parse_and_captures_resolve() {
+  let client = client_script_cases();
+  assert!(!client.is_empty(), "no client scripts found");
   for (ctx, case) in unique_ids("scripts") {
+    let concrete = if client.contains(&ctx) { "expect" } else { "send" };
     let mut captured: HashSet<String> = HashSet::new();
     let steps = case["steps"].as_array().expect("steps");
     for (i, step) in steps.iter().enumerate() {
@@ -188,12 +206,15 @@ fn scripts_parse_and_captures_resolve() {
           continue;
         };
         let d = diag::parse(text).unwrap_or_else(|e| panic!("{ctx} step {i}: {e}"));
-        if verb == "send" {
+        if verb == concrete {
           assert_eq!(
             count_patterns(&d),
             d.refs().len(),
-            "{ctx} step {i}: send may use $name but not * or ..."
+            "{ctx} step {i}: {verb} may use $name but not * or ..."
           );
+        }
+        if concrete == "expect" {
+          assert!(d.refs().is_empty(), "{ctx} step {i}: a client script captures nothing");
         }
         for name in d.refs() {
           assert!(captured.contains(name), "{ctx} step {i}: ${name} used before capture");
