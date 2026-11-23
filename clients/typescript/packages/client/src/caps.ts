@@ -71,7 +71,15 @@ function needed(frame: Frame): Capability[] {
     case "AUTH_EXPIRING":
     case "REQUEST_ERROR":
       return resumeOf(frame);
-    default:
+    case "HELLO":
+    case "WELCOME":
+    case "REJECT":
+    case "PING":
+    case "PONG":
+    case "GOAWAY":
+    case "CLOSE":
+    case "CREDIT":
+    case "EXTENSION":
       return [];
   }
 }
