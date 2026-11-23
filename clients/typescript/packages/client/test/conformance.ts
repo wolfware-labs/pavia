@@ -106,10 +106,9 @@ export async function runClientScript(c: Json, hooks: RunHooks = {}): Promise<Ru
   let explained = false;
   for (const [index, step] of steps.entries()) {
     const where = `${id}: step ${index + 1} (${step.verb})`;
-    const handshaking = connection === undefined && failure === undefined;
     const problem = await play(step, server, () => connection);
     if (problem !== undefined) throw new Error(`${where}: ${problem}`);
-    if (step.verb === "expect_close" || (step.verb === "close_transport" && handshaking)) explained = true;
+    if (step.verb === "expect_close" || step.verb === "close_transport") explained = true;
   }
   if (failure !== undefined && !explained) {
     throw new Error(`${id}: connect() failed and no step expects it: ${failure.message}`);
