@@ -323,10 +323,12 @@ function parseFrame(body: Json, caseCodec: string, where: string, patterns: bool
 }
 
 function dataOf(text: unknown, dataHex: unknown, codec: Codec, diag: (text: string) => Diag): Data {
+  if (typeof text === "string") {
+    if (codec === "json") return { kind: "exact", bytes: new TextEncoder().encode(text) };
+    return { kind: "cbor", diag: diag(text) };
+  }
   if (typeof dataHex === "string") return { kind: "exact", bytes: hexToBytes(dataHex) };
-  if (typeof text !== "string") return { kind: "empty" };
-  if (codec === "json") return { kind: "exact", bytes: new TextEncoder().encode(text) };
-  return { kind: "cbor", diag: diag(text) };
+  return { kind: "empty" };
 }
 
 /** The server's end of the in-memory WebSocket. */

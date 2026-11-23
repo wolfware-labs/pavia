@@ -104,16 +104,27 @@ describe("the client runner", () => {
 
   it("sends and matches a json data section as its exact text", async () => {
     const data = '{"n":1}';
-    const steps = [{ ...HELLO }, { ...welcome() }, { expect: { stream: 2, type: 17, header: null, data } }];
-    const sent: number[][] = [];
-    await runClientScript({ ...script(steps), codec: "json" }, {
-      onConnection: (connection) =>
-        connection.addEventListener("frame", (event) => {
-          const { frame } = (event as CustomEvent<{ frame: { type: string; data?: Uint8Array } }>).detail;
-          sent.push([...(frame.data ?? [])]);
-        }),
-    });
-    expect(sent).toEqual([[...new TextEncoder().encode(data)]]);
+    const variants: [string, Json][] = [
+      ["json", {}],
+      ["cbor", { codec: "json" }],
+      ["json", { data_hex: "01" }],
+    ];
+    for (const [codec, extra] of variants) {
+      const frame = { stream: 2, type: 17, header: null, data, ...extra };
+      const sent: number[][] = [];
+      await runClientScript({ ...script([{ ...HELLO }, { ...welcome() }, { expect: frame }]), codec }, {
+        onConnection: (connection) =>
+          connection.addEventListener("frame", (event) => {
+            const { frame } = (event as CustomEvent<{ frame: { type: string; data?: Uint8Array } }>).detail;
+            sent.push([...(frame.data ?? [])]);
+          }),
+      });
+      expect(sent).toEqual([[...new TextEncoder().encode(data)]]);
+    }
+  });
+
+  it("refuses an unknown codec", async () => {
+    await expect(runClientScript({ ...script([HELLO]), codec: "xml" })).rejects.toThrow("unknown codec xml");
   });
 
   it("refuses a script whose first step is not a send of HELLO", async () => {
