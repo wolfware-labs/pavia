@@ -263,6 +263,11 @@ export class ClientSession {
     }
   }
 
+  /** The highest client stream ID opened so far, or 0 before the first (spec 6.1). */
+  get lastStream(): number {
+    return this.nextStream - 2;
+  }
+
   /**
    * The next client stream ID: even, from 2, never reused on this transport (spec 6.1).
    *

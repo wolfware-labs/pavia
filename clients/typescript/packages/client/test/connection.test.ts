@@ -1,72 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  CloseCode,
-  ConnectError,
-  type ConnectOptions,
-  connect,
-  type Ending,
-  type Frame,
-  type WebSocketLike,
-  type Welcome,
-} from "../src/index.js";
-import { arrayBufferOf, CONTRACT, concat, encodeError, framesOf, HB, IDLE, message, welcome } from "./support.js";
-
-class FakeSocket implements WebSocketLike {
-  static last: FakeSocket | undefined;
-  static count = 0;
-  binaryType = "blob";
-  protocol = "";
-  onopen: ((event: unknown) => void) | null = null;
-  onmessage: ((event: { readonly data: unknown }) => void) | null = null;
-  onclose: ((event: { readonly code: number }) => void) | null = null;
-  onerror: ((event: unknown) => void) | null = null;
-  readonly sent: Frame[] = [];
-  closedWith: { code: number | undefined; reason: string | undefined } | undefined;
-
-  constructor(
-    readonly url: string,
-    readonly protocols: string | string[],
-  ) {
-    FakeSocket.last = this;
-    FakeSocket.count++;
-  }
-
-  send(data: Uint8Array): void {
-    this.sent.push(...framesOf(data));
-  }
-
-  close(code?: number, reason?: string): void {
-    this.closedWith = { code, reason };
-  }
-
-  open(protocol = "pavia.1"): void {
-    this.protocol = protocol;
-    this.onopen?.({});
-  }
-
-  receive(frame: Frame, stream = 0): void {
-    this.onmessage?.({ data: arrayBufferOf(message(frame, stream)) });
-  }
-
-  drop(code: number): void {
-    this.onclose?.({ code });
-  }
-}
-
-function options(extra: Partial<ConnectOptions> = {}): ConnectOptions {
-  return { WebSocket: FakeSocket, now: () => Date.now(), warn: () => {}, ...extra };
-}
-
-function socket(): FakeSocket {
-  return FakeSocket.last as FakeSocket;
-}
-
-async function established(extra: Partial<ConnectOptions> = {}, fields: Partial<Welcome> = {}) {
-  const pending = connect("wss://example.test/rt", options(extra));
-  socket().open();
-  socket().receive(welcome(fields));
-  return { connection: await pending, ws: socket() };
-}
+import { CloseCode, ConnectError, connect, type Ending } from "../src/index.js";
+import { established, FakeSocket, options, socket } from "./fake-socket.js";
+import { CONTRACT, concat, encodeError, HB, IDLE, message, welcome } from "./support.js";
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -169,7 +104,7 @@ describe("connection", () => {
     ws.open();
     const both = new Uint8Array([
       ...message(welcome({ contract: new Uint8Array(32).fill(9) })),
-      ...message({ type: "END" }, 2),
+      ...message({ type: "END" }, 1),
       ...message({ type: "CLOSE", code: 0n }),
     ]);
     ws.onmessage?.({ data: both.buffer });
@@ -199,7 +134,7 @@ describe("connection", () => {
     const pending = connect("wss://example.test/rt", options());
     const ws = socket();
     ws.open();
-    const frames = [message(welcome()), message({ type: "END" }, 2), message({ type: "END" }, 4)];
+    const frames = [message(welcome()), message({ type: "END" }, 1), message({ type: "END" }, 3)];
     const data = concat(frames);
     ws.onmessage?.({ data: data.buffer });
     const connection = await pending;
@@ -211,7 +146,7 @@ describe("connection", () => {
     });
     connection.addEventListener("close", () => seen.push("close"));
     vi.advanceTimersByTime(0);
-    expect(seen).toEqual(["frame 2", "close"]);
+    expect(seen).toEqual(["frame 1", "close"]);
   });
 
   it("finishes the handshake when the warn callback throws", async () => {
@@ -265,13 +200,13 @@ describe("connection", () => {
     expect(ws.closedWith?.code).toBe(4000 + CloseCode.INTERNAL);
   });
 
-  it("passes frames of other streams on, and sends on the streams it opens", async () => {
+  it("passes frames of server streams on, and sends on the streams it opens", async () => {
     const { connection, ws } = await established();
     const frames = vi.fn();
     connection.addEventListener("frame", frames);
     vi.advanceTimersByTime(0);
-    ws.receive({ type: "END" }, 2);
-    expect((frames.mock.calls[0]?.[0] as CustomEvent).detail).toEqual({ stream: 2, frame: { type: "END" } });
+    ws.receive({ type: "END" }, 1);
+    expect((frames.mock.calls[0]?.[0] as CustomEvent).detail).toEqual({ stream: 1, frame: { type: "END" } });
     const stream = connection.openStream();
     connection.send(stream, { type: "CANCEL" });
     expect([stream, ws.sent.at(-1)]).toEqual([2, { type: "CANCEL" }]);

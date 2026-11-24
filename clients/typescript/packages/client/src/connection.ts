@@ -1,4 +1,6 @@
 import { toHex } from "./bytes.js";
+import { type CallOptions, Calls, type CallSignature } from "./calls.js";
+import type { Codec } from "./data.js";
 import { CloseCode } from "./errors.js";
 import type { Frame, Welcome } from "./frames.js";
 import { ClientSession, type Ending, type SessionInput, type SessionOptions } from "./session.js";
@@ -73,7 +75,8 @@ export function connect(url: string | URL, options: ConnectOptions = {}): Promis
  * with a {@link ContractMismatch}) once, when WELCOME carries a fingerprint other than the
  * client's, and `close` (a `CustomEvent` with the {@link Ending}) when the session ends. Events
  * from the message that carried WELCOME are held until right after {@link connect} resolves, so
- * listeners added after `await connect()` see them, in order.
+ * listeners added after `await connect()` see them, in order. Frames on client streams go to
+ * {@link Connection.call}'s calls; frames on server streams are dispatched as `frame` events.
  */
 export class Connection extends EventTarget {
   private timer: ReturnType<typeof setTimeout> | undefined;
@@ -83,6 +86,7 @@ export class Connection extends EventTarget {
   private held: Event[] | undefined;
   private readonly closed: Promise<Ending>;
   private settleClosed: (ending: Ending) => void = () => {};
+  private readonly calls: Calls;
 
   /** @internal Built by {@link connect}. */
   constructor(
@@ -102,6 +106,23 @@ export class Connection extends EventTarget {
     socket.onmessage = (event) => this.feed({ kind: "message", data: messageData(event.data) });
     socket.onclose = (event) => this.feed({ kind: "transport_closed", code: event.code });
     socket.onerror = () => this.feed({ kind: "transport_closed" });
+    this.calls = new Calls({
+      get codec() {
+        return (session.welcome?.codec ?? "cbor") as Codec;
+      },
+      get maxCalls() {
+        return session.welcome?.limits.maxCalls ?? 0n;
+      },
+      get lastStream() {
+        return session.lastStream;
+      },
+      get ended() {
+        return session.ended;
+      },
+      openStream: () => session.openStream(),
+      send: (stream, frame) => this.send(stream, frame),
+      now,
+    });
     this.arm();
   }
 
@@ -128,6 +149,22 @@ export class Connection extends EventTarget {
     this.session.close(code, msg, this.now());
     this.drain();
     return this.closed;
+  }
+
+  /**
+   * Calls a unary server method (spec 8): sends CALL with the arguments encoded as `signature`
+   * says and resolves with the decoded RESULT. It rejects with a {@link StatusError}: the ERROR the
+   * server sent; CANCELLED when `options.signal` aborts, DEADLINE_EXCEEDED when `options.deadline`
+   * passes, both after sending CANCEL; INTERNAL for a RESULT or ERROR detail that does not decode;
+   * UNAVAILABLE when the session ends first. A call that never left this client rejects with
+   * `nx: true`: a signal already aborted, a metadata name outside `[a-z0-9-]`, arguments that do
+   * not encode, a session that has ended, or WELCOME `max_calls` calls already open
+   * (RESOURCE_EXHAUSTED).
+   */
+  call<R = unknown>(signature: CallSignature, args: readonly unknown[], options?: CallOptions): Promise<R> {
+    const pending = this.calls.call(signature, args, options);
+    this.arm();
+    return pending as Promise<R>;
   }
 
   /** @internal The next client stream ID, for the call layer. */
@@ -181,10 +218,17 @@ export class Connection extends EventTarget {
           setTimeout(() => this.release(), 0);
           break;
         case "frame":
+          if (output.stream % 2 === 0) {
+            if (this.calls.receive(output.stream, output.frame) === "protocol_error") {
+              this.session.close(CloseCode.PROTOCOL_ERROR, undefined, this.now());
+            }
+            break;
+          }
           this.emit(new CustomEvent("frame", { detail: { stream: output.stream, frame: output.frame } }));
           break;
         case "ended":
           this.ending = output.ending;
+          this.calls.end();
           if (this.welcomed === undefined) this.rejectConnect(new ConnectError(output.ending));
           this.settleClosed(output.ending);
           this.emit(new CustomEvent("close", { detail: output.ending }));
@@ -211,10 +255,17 @@ export class Connection extends EventTarget {
 
   private arm(): void {
     clearTimeout(this.timer);
-    const at = this.session.pollTimeout();
+    const session = this.session.pollTimeout();
+    const calls = this.calls.pollTimeout();
+    const at = session === undefined || calls === undefined ? (session ?? calls) : Math.min(session, calls);
     if (at === undefined) return;
     const delay = Math.min(MAX_TIMER_DELAY, Math.max(0, at - this.now()));
-    this.timer = setTimeout(() => this.feed({ kind: "timeout" }), delay);
+    this.timer = setTimeout(() => this.tick(), delay);
+  }
+
+  private tick(): void {
+    this.calls.expire(this.now());
+    this.feed({ kind: "timeout" });
   }
 }
 
