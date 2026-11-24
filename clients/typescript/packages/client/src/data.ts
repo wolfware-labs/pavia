@@ -35,6 +35,7 @@ import {
   uuidText,
 } from "./scalars.js";
 import type { ContractType, EnumValue, Field, NamedType, Primitive, Types, Variant } from "./types.js";
+import { isDate, isMap } from "./realm.js";
 import { utf8Of } from "./utf8.js";
 
 /** The data codec of a session (spec 6.1): `cbor` or `json`. */
@@ -313,7 +314,7 @@ function floatOf(primitive: Primitive, value: unknown): number {
 }
 
 function millisOf(value: unknown): number {
-  if (!(value instanceof Date)) throw encodeFailure("invalid_value", "timestamp takes a Date");
+  if (!isDate(value)) throw encodeFailure("invalid_value", "timestamp takes a Date");
   const millis = value.getTime();
   if (!(millis >= MIN_MILLIS && millis <= MAX_MILLIS)) {
     throw encodeFailure("out_of_range", "timestamp is outside 0000-01-01 to 9999-12-31");
@@ -340,7 +341,7 @@ function arrayOf(value: unknown, what: string): readonly unknown[] {
 }
 
 function mapOf(value: unknown): ReadonlyMap<unknown, unknown> {
-  if (!(value instanceof Map)) throw encodeFailure("invalid_value", "map takes a Map");
+  if (!isMap(value)) throw encodeFailure("invalid_value", "map takes a Map");
   return value;
 }
 

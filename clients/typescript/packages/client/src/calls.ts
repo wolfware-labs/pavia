@@ -2,6 +2,7 @@ import { isBytes } from "./bytes.js";
 import { type Codec, decodeData, encodeData } from "./data.js";
 import { DataError, EncodeError, StatusCode, StatusError, statusCodeFromWire } from "./errors.js";
 import { type Call, type CallError, type CallResult, type Frame, isMetaName, type Meta } from "./frames.js";
+import { isMap } from "./realm.js";
 import type { ContractType, Types } from "./types.js";
 
 /**
@@ -262,7 +263,7 @@ function internal(message: string, cause?: DataError): StatusError {
 /** `input` as a {@link Meta}, `undefined` when absent, or why it is not metadata. */
 function metaOf(input: MetaInput | undefined): Meta | undefined | string {
   if (input === undefined) return undefined;
-  const entries = input instanceof Map ? [...input.entries()] : Object.entries(input);
+  const entries = isMap(input) ? [...input.entries()] : Object.entries(input);
   for (const [name, value] of entries) {
     if (!isMetaName(name)) return `metadata name ${JSON.stringify(name)} is not [a-z0-9-] text`;
     if (typeof value !== "string" && !isBytes(value)) {

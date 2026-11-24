@@ -1,3 +1,4 @@
+import { runInNewContext } from "node:vm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type CallSignature,
@@ -251,6 +252,17 @@ describe("call", () => {
       "metadata name 1 is not [a-z0-9-] text",
       sent,
     ]);
+  });
+
+  it("reads metadata from a Map of another realm", async () => {
+    const { connection, ws } = await open();
+    const foreign = runInNewContext('new Map([["x-id", "1"]])') as Map<string, string>;
+    expect(foreign instanceof Map).toBe(false);
+    void connection.call(SEND, ["a", 1], { meta: foreign });
+    expect(callsOn(ws)[0]?.frame).toMatchObject({ meta: new Map([["x-id", "1"]]) });
+    const fake = { [Symbol.toStringTag]: "Map", entries: () => [["x-id", "1"]].values() };
+    const refused = await failure(connection.call(SEND, ["b", 2], { meta: fake as never }));
+    expect([refused.code, refused.nx, callsOn(ws).length]).toEqual([StatusCode.INVALID_ARGUMENT, true, 1]);
   });
 
   it("refuses arguments of the wrong count or type before sending", async () => {
