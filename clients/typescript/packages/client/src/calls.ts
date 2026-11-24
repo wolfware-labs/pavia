@@ -1,3 +1,4 @@
+import { isBytes } from "./bytes.js";
 import { type Codec, decodeData, encodeData } from "./data.js";
 import { DataError, EncodeError, StatusCode, StatusError, statusCodeFromWire } from "./errors.js";
 import { type Call, type CallError, type CallResult, type Frame, isMetaName, type Meta } from "./frames.js";
@@ -258,7 +259,7 @@ function metaOf(input: MetaInput | undefined): Meta | undefined | string {
   const entries = input instanceof Map ? [...input.entries()] : Object.entries(input);
   for (const [name, value] of entries) {
     if (!isMetaName(name)) return `metadata name ${JSON.stringify(name)} is not [a-z0-9-]`;
-    if (typeof value !== "string" && !(value instanceof Uint8Array)) {
+    if (typeof value !== "string" && !isBytes(value)) {
       return `metadata ${JSON.stringify(name)} is neither text nor bytes`;
     }
   }

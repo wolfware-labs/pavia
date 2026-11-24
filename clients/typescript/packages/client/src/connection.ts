@@ -106,12 +106,13 @@ export class Connection extends EventTarget {
     socket.onmessage = (event) => this.feed({ kind: "message", data: messageData(event.data) });
     socket.onclose = (event) => this.feed({ kind: "transport_closed", code: event.code });
     socket.onerror = () => this.feed({ kind: "transport_closed" });
+    const welcome = () => this.welcome;
     this.calls = new Calls({
       get codec() {
-        return (session.welcome?.codec ?? "cbor") as Codec;
+        return welcome().codec as Codec;
       },
       get maxCalls() {
-        return session.welcome?.limits.maxCalls ?? 0n;
+        return welcome().limits.maxCalls;
       },
       get lastStream() {
         return session.lastStream;
@@ -167,12 +168,12 @@ export class Connection extends EventTarget {
     return pending as Promise<R>;
   }
 
-  /** @internal The next client stream ID, for the call layer. */
+  /** @internal The next client stream ID. */
   openStream(): number {
     return this.session.openStream();
   }
 
-  /** @internal Sends `frame` on `stream`, for the call layer; frames arrive as `frame` events. */
+  /** @internal Sends `frame` on `stream`, for the call layer. */
   send(stream: number, frame: Frame): void {
     this.session.send(stream, frame, this.now());
     this.drain();

@@ -194,6 +194,16 @@ describe("the client runner", () => {
     await expect(runClientScript(script([sent]))).rejects.toThrow("captures nothing");
   });
 
+  it("refuses a CALL send with a pattern in its header or data", async () => {
+    for (const [header, data] of [
+      ['{2: "m", 5: 0, ...}', "[]"],
+      ['{2: "m", 5: 0}', "[*]"],
+    ]) {
+      const call = { send: { stream: 2, type: 16, header, data } };
+      await expect(runClientScript(script([HELLO, welcome(), call]))).rejects.toThrow("a CALL send is concrete");
+    }
+  });
+
   it("sends and matches a json data section as its exact text", async () => {
     const data = '{"n":1}';
     const variants: [string, Json][] = [

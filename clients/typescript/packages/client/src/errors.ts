@@ -108,9 +108,6 @@ export class StatusError extends Error {
   }
 }
 
-/** The call status a control request is answered with when one of its fields is bad (spec 15.2). */
-export const INVALID_ARGUMENT = StatusCode.INVALID_ARGUMENT;
-
 /**
  * Why a header section was refused (spec 5.4.1). The names match the `error` field of the header
  * vectors; `key_not_unsigned` is a frame header with a key other than an unsigned integer.
@@ -174,10 +171,13 @@ export type ProtocolErrorKind =
   | "invalid_header_field"
   | "invalid_control_request_field";
 
-/** What the session does about a {@link ProtocolError}. */
+/**
+ * What the session does about a {@link ProtocolError}: close with `code`, or answer the control
+ * request `rid` with REQUEST_ERROR INVALID_ARGUMENT, the status for a bad field (spec 15.2).
+ */
 export type Outcome =
   | { readonly action: "close"; readonly code: CloseCode }
-  | { readonly action: "request_error"; readonly rid: bigint; readonly status: typeof INVALID_ARGUMENT };
+  | { readonly action: "request_error"; readonly rid: bigint; readonly status: typeof StatusCode.INVALID_ARGUMENT };
 
 /**
  * Bytes received from the peer that break the protocol. {@link ProtocolError.outcome} says how the
@@ -214,7 +214,7 @@ export class ProtocolError extends Error {
   get outcome(): Outcome {
     if (this.kind === "frame_too_large") return { action: "close", code: CloseCode.FRAME_TOO_LARGE };
     if (this.kind === "invalid_control_request_field" && this.field?.rid !== undefined) {
-      return { action: "request_error", rid: this.field.rid, status: INVALID_ARGUMENT };
+      return { action: "request_error", rid: this.field.rid, status: StatusCode.INVALID_ARGUMENT };
     }
     return { action: "close", code: CloseCode.PROTOCOL_ERROR };
   }

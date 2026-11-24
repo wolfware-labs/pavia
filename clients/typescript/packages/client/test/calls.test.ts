@@ -9,6 +9,7 @@ import {
   StatusError,
 } from "../src/index.js";
 import { established, FakeSocket, type options } from "./fake-socket.js";
+import { welcome } from "./support.js";
 
 type Extra = Parameters<typeof options>[0];
 
@@ -106,7 +107,7 @@ describe("call", () => {
   });
 
   it("sends CANCEL on abort, rejects with CANCELLED, and keeps the stream until the terminal frame", async () => {
-    const { connection, ws } = await open({ limits: { ...limits(), maxCalls: 1n } });
+    const { connection, ws } = await open({ limits: { ...welcome().limits, maxCalls: 1n } });
     const controller = new AbortController();
     const pending = connection.call(SEND, ["a", 1], { signal: controller.signal });
     controller.abort();
@@ -219,7 +220,7 @@ describe("call", () => {
   });
 
   it("refuses a call beyond WELCOME max_calls with RESOURCE_EXHAUSTED and nx", async () => {
-    const { connection, ws } = await open({ limits: { ...limits(), maxCalls: 2n } });
+    const { connection, ws } = await open({ limits: { ...welcome().limits, maxCalls: 2n } });
     void connection.call(SEND, ["a", 1]);
     void connection.call(SEND, ["b", 2]);
     const sent = ws.sent.length;
@@ -282,14 +283,14 @@ describe("call", () => {
 });
 
 describe("frames on client streams", () => {
-  async function closesWithProtocolError(connection: Connection) {
+  function closesWithProtocolError(connection: Connection): void {
     expect(connection.closedWith).toMatchObject({ kind: "closed", by: "local", code: CloseCode.PROTOCOL_ERROR });
   }
 
   it("closes the session for a frame on a client stream not yet opened", async () => {
     const { connection, ws } = await open();
     ws.receive(result(1n), 2);
-    await closesWithProtocolError(connection);
+    closesWithProtocolError(connection);
   });
 
   it("ignores a frame for a call stream that has completed", async () => {
@@ -314,11 +315,7 @@ describe("frames on client streams", () => {
       ws.receive({ type: "CREDIT", credit: 10n } as Frame, 2);
       expect(connection.closedWith).toBeUndefined();
       ws.receive(frame, 2);
-      await closesWithProtocolError(connection);
+      closesWithProtocolError(connection);
     }
   });
 });
-
-function limits() {
-  return { maxCalls: 100n, maxFrame: 1_048_576n, maxSubs: 256n, maxDgram: 1100n, window: 262_144n };
-}

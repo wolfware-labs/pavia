@@ -217,7 +217,7 @@ function askToCall(frame: FrameSpec, script: Script): Problem {
   if (method?.kind !== "text") return "a CALL send needs a concrete method (key 2)";
   if (deadline !== undefined && deadline.kind !== "uint") return "a CALL send's deadline (key 4) is not a uint";
   if (args?.kind !== "array") return "a CALL send's data is not an argument array";
-  const metaInput = metaOf(meta);
+  const metaInput = scriptMeta(meta);
   if (typeof metaInput === "string") return metaInput;
   const signature: CallSignature = {
     method: method.value,
@@ -243,7 +243,7 @@ function askToCall(frame: FrameSpec, script: Script): Problem {
   return undefined;
 }
 
-function metaOf(meta: Diag | undefined): Map<string, string | Uint8Array> | undefined | string {
+function scriptMeta(meta: Diag | undefined): Map<string, string | Uint8Array> | undefined | string {
   if (meta === undefined) return undefined;
   if (meta.kind !== "map") return "a CALL send's meta (key 3) is not a map";
   const out = new Map<string, string | Uint8Array>();
@@ -399,9 +399,12 @@ function parseStep(step: Json, codec: string, where: string): Step {
 
 function parseFrame(body: Json, caseCodec: string, where: string, patterns: boolean): FrameSpec {
   if (body["capture"] !== undefined) throw new Error(`${where}: a client script captures nothing`);
+  const concrete = patterns ? (body["type"] === CALL ? "a CALL send" : undefined) : "an expect";
   const diag = (text: string): Diag => {
     const d = parse(text);
-    if (!patterns && patternCount(d) !== 0) throw new Error(`${where}: an expect is concrete: no *, ... or $name`);
+    if (concrete !== undefined && patternCount(d) !== 0) {
+      throw new Error(`${where}: ${concrete} is concrete: no *, ... or $name`);
+    }
     if (patterns && refs(d).length !== 0) throw new Error(`${where}: a client script uses no $name`);
     return d;
   };

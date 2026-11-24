@@ -1,14 +1,5 @@
-import {
-  type ConnectOptions,
-  connect,
-  DEFAULT_MAX_FRAME,
-  decodeFrame,
-  decodeMessage,
-  type Frame,
-  type WebSocketLike,
-  type Welcome,
-} from "../src/index.js";
-import { arrayBufferOf, message, welcome } from "./support.js";
+import { type ConnectOptions, connect, type Frame, type WebSocketLike, type Welcome } from "../src/index.js";
+import { arrayBufferOf, framesOnStreams, message, welcome } from "./support.js";
 
 export class FakeSocket implements WebSocketLike {
   static last: FakeSocket | undefined;
@@ -19,7 +10,6 @@ export class FakeSocket implements WebSocketLike {
   onmessage: ((event: { readonly data: unknown }) => void) | null = null;
   onclose: ((event: { readonly code: number }) => void) | null = null;
   onerror: ((event: unknown) => void) | null = null;
-  readonly sent: Frame[] = [];
   readonly sentOn: { readonly stream: number; readonly frame: Frame }[] = [];
   closedWith: { code: number | undefined; reason: string | undefined } | undefined;
 
@@ -31,12 +21,12 @@ export class FakeSocket implements WebSocketLike {
     FakeSocket.count++;
   }
 
+  get sent(): Frame[] {
+    return this.sentOn.map(({ frame }) => frame);
+  }
+
   send(data: Uint8Array): void {
-    for (const { stream, frame } of decodeMessage(data, DEFAULT_MAX_FRAME)) {
-      const decoded = decodeFrame(frame);
-      this.sent.push(decoded);
-      this.sentOn.push({ stream, frame: decoded });
-    }
+    this.sentOn.push(...framesOnStreams(data));
   }
 
   close(code?: number, reason?: string): void {

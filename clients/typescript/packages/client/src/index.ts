@@ -30,7 +30,6 @@ export {
   type FieldError,
   type FieldProblem,
   type HeaderErrorReason,
-  INVALID_ARGUMENT,
   type Outcome,
   ProtocolError,
   type ProtocolErrorKind,
