@@ -346,9 +346,12 @@ describe("frames on client streams", () => {
     expect(connection.closedWith).toBeUndefined();
   });
 
-  it("closes for a server CALL on an open, a cancelled or a completed client stream", async () => {
-    const caps = { caps: ["server-calls"] };
-    const opening: Frame = { type: "CALL", method: "x", shape: 0n, data: new Uint8Array([0x80]) };
+  it("closes for a server CALL or LANE_OPEN on an open, a cancelled or a completed client stream", async () => {
+    const caps = { caps: ["server-calls", "lanes"] };
+    const openings: Frame[] = [
+      { type: "CALL", method: "x", shape: 0n, data: new Uint8Array([0x80]) },
+      { type: "LANE_OPEN", lane: 1n },
+    ];
     const before: ((connection: Connection, ws: FakeSocket) => Promise<void>)[] = [
       async (connection) => void connection.call(SEND, ["a", 1]).catch(() => {}),
       async (connection) => {
@@ -362,12 +365,14 @@ describe("frames on client streams", () => {
         await done;
       },
     ];
-    for (const setUp of before) {
-      const { connection, ws } = await open(caps, caps);
-      await setUp(connection, ws);
-      await vi.advanceTimersByTimeAsync(5);
-      ws.receive(opening, 2);
-      closesWithProtocolError(connection);
+    for (const opening of openings) {
+      for (const setUp of before) {
+        const { connection, ws } = await open(caps, caps);
+        await setUp(connection, ws);
+        await vi.advanceTimersByTimeAsync(5);
+        ws.receive(opening, 2);
+        closesWithProtocolError(connection);
+      }
     }
   });
 
