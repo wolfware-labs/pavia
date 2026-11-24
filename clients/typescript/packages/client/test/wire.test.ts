@@ -479,6 +479,13 @@ describe("typed frames", () => {
     for (const name of ["", "Trace", "a_b", "a b", "é"]) {
       expect(protocolError(() => decodeFrame(call(name))).field?.key).toBe(3);
     }
+    for (const name of [1, 1n, Symbol("x")]) {
+      const meta = new Map([[name as never, "v"]]);
+      const frame = { type: "CALL", method: "m", shape: 0n, meta, data: new Uint8Array() } as const;
+      const refused = encodeError(() => toRawFrame(frame));
+      const message = `metadata name of type ${typeof name} is outside [a-z0-9-]`;
+      expect([refused.kind, refused.message]).toEqual(["invalid_field", message]);
+    }
   });
 
   it("refuses UNSUBSCRIBED that mixes or lacks its forms", () => {

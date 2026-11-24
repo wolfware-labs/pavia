@@ -901,7 +901,8 @@ function metaValue(value: Meta | undefined): CborItem | undefined {
   const entries: [CborItem, CborItem][] = [];
   for (const [name, v] of value) {
     if (!isMetaName(name)) {
-      throw new EncodeError("invalid_field", `metadata name ${JSON.stringify(name)} is outside [a-z0-9-]`);
+      const text = typeof name === "string" ? JSON.stringify(name) : `of type ${typeof name}`;
+      throw new EncodeError("invalid_field", `metadata name ${text} is outside [a-z0-9-]`);
     }
     const item: CborItem = typeof v === "string" ? { kind: "text", value: v } : { kind: "bytes", value: v };
     entries.push([{ kind: "text", value: name }, item]);

@@ -245,11 +245,16 @@ describe("call", () => {
     expect([bad.code, bad.nx, ws.sent.length]).toEqual([StatusCode.INVALID_ARGUMENT, true, sent]);
     const value = await failure(connection.call(SEND, ["a", 1], { meta: new Map([["x-n", 1 as never]]) }));
     expect([value.code, value.nx, ws.sent.length]).toEqual([StatusCode.INVALID_ARGUMENT, true, sent]);
+    for (const odd of [1n, Symbol("x")]) {
+      const refused = await failure(connection.call(SEND, ["a", 1], { meta: new Map([[odd as never, "x"]]) }));
+      const message = `metadata name of type ${typeof odd} is not [a-z0-9-] text`;
+      expect([refused.code, refused.message]).toEqual([StatusCode.INVALID_ARGUMENT, message]);
+    }
     const key = await failure(connection.call(SEND, ["a", 1], { meta: new Map([[1 as never, "x"]]) }));
     expect([key.code, key.nx, key.message, ws.sent.length]).toEqual([
       StatusCode.INVALID_ARGUMENT,
       true,
-      "metadata name 1 is not [a-z0-9-] text",
+      "metadata name of type number is not [a-z0-9-] text",
       sent,
     ]);
   });

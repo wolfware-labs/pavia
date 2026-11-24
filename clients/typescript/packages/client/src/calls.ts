@@ -259,12 +259,17 @@ function internal(message: string, cause?: DataError): StatusError {
   return new StatusError(StatusCode.INTERNAL, message, { cause });
 }
 
+/** A refused metadata name as message text: quoted text, or the type of anything else. */
+function nameText(name: unknown): string {
+  return typeof name === "string" ? JSON.stringify(name) : `of type ${typeof name}`;
+}
+
 /** `input` as a {@link Meta}, `undefined` when absent, or why it is not metadata. */
 function metaOf(input: MetaInput | undefined): Meta | undefined | string {
   if (input === undefined) return undefined;
   const entries = isMap(input) ? [...input.entries()] : Object.entries(input);
   for (const [name, value] of entries) {
-    if (!isMetaName(name)) return `metadata name ${JSON.stringify(name)} is not [a-z0-9-] text`;
+    if (!isMetaName(name)) return `metadata name ${nameText(name)} is not [a-z0-9-] text`;
     if (typeof value !== "string" && !isBytes(value)) {
       return `metadata ${JSON.stringify(name)} is neither text nor bytes`;
     }

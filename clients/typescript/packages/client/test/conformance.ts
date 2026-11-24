@@ -61,7 +61,6 @@ interface Started {
 }
 
 interface Script {
-  readonly codec: string;
   readonly server: ScriptServer;
   readonly connection: () => Connection | undefined;
   readonly calls: Map<number, Started>;
@@ -81,6 +80,7 @@ interface FrameSpec {
   readonly flags: number;
   readonly header: Diag | undefined;
   readonly data: Data;
+  readonly codec: Codec;
 }
 
 type Step =
@@ -126,7 +126,7 @@ export async function runClientScript(c: Json, hooks: RunHooks = {}): Promise<Ru
   server.socket().open(SUBPROTOCOL);
   await settle();
   let explained = false;
-  const script: Script = { codec, server, connection: () => connection, calls: new Map() };
+  const script: Script = { server, connection: () => connection, calls: new Map() };
   for (const [index, step] of steps.entries()) {
     const where = `${id}: step ${index + 1} (${step.verb})`;
     const problem = await play(step, script);
@@ -214,7 +214,7 @@ function askToCall(frame: FrameSpec, script: Script): Problem {
   const method = entry(frame.header, Key.METHOD);
   const deadline = entry(frame.header, Key.DEADLINE);
   const meta = entry(frame.header, Key.META);
-  const args = argumentsOf(frame.data, script.codec);
+  const args = argumentsOf(frame.data, frame.codec);
   if (method?.kind !== "text") return "a CALL send needs a concrete method (key 2)";
   if (deadline !== undefined && deadline.kind !== "uint") return "a CALL send's deadline (key 4) is not a uint";
   if (args?.kind !== "array") return "a CALL send's data is not an argument array";
@@ -244,7 +244,7 @@ function askToCall(frame: FrameSpec, script: Script): Problem {
   return undefined;
 }
 
-function argumentsOf(data: Data, codec: string): Diag | undefined {
+function argumentsOf(data: Data, codec: Codec): Diag | undefined {
   if (data.kind === "cbor") return data.diag;
   if (data.kind === "exact" && codec === "json") return parse(new TextDecoder().decode(data.bytes));
   return undefined;
@@ -425,6 +425,7 @@ function parseFrame(body: Json, caseCodec: string, where: string, patterns: bool
     flags: (body["flags"] as number | undefined) ?? 0,
     header: typeof header === "string" ? diag(header) : undefined,
     data,
+    codec,
   };
 }
 
