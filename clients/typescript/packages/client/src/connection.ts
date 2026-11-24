@@ -168,13 +168,7 @@ export class Connection extends EventTarget {
     return pending as Promise<R>;
   }
 
-  /** @internal The next client stream ID. */
-  openStream(): number {
-    return this.session.openStream();
-  }
-
-  /** @internal Sends `frame` on `stream`, for the call layer. */
-  send(stream: number, frame: Frame): void {
+  private send(stream: number, frame: Frame): void {
     this.session.send(stream, frame, this.now());
     this.drain();
   }

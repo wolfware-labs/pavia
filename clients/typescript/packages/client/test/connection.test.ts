@@ -200,16 +200,13 @@ describe("connection", () => {
     expect(ws.closedWith?.code).toBe(4000 + CloseCode.INTERNAL);
   });
 
-  it("passes frames of server streams on, and sends on the streams it opens", async () => {
+  it("passes frames of server streams on as frame events", async () => {
     const { connection, ws } = await established();
     const frames = vi.fn();
     connection.addEventListener("frame", frames);
     vi.advanceTimersByTime(0);
     ws.receive({ type: "END" }, 1);
     expect((frames.mock.calls[0]?.[0] as CustomEvent).detail).toEqual({ stream: 1, frame: { type: "END" } });
-    const stream = connection.openStream();
-    connection.send(stream, { type: "CANCEL" });
-    expect([stream, ws.sent.at(-1)]).toEqual([2, { type: "CANCEL" }]);
   });
 
   it("ends with PROTOCOL_ERROR on a text message", async () => {
