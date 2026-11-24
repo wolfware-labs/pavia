@@ -144,6 +144,49 @@ describe("call", () => {
     expect(callsOn(ws).at(-1)).toEqual({ stream: 2, frame: { type: "CANCEL" } });
   });
 
+  it("expires each call at its own deadline", async () => {
+    const { connection } = await open();
+    const late = failure(connection.call(SEND, ["a", 1], { deadline: 100 }));
+    const early = failure(connection.call(SEND, ["b", 2], { deadline: 50 }));
+    await vi.advanceTimersByTimeAsync(50);
+    expect((await early).code).toBe(StatusCode.DEADLINE_EXCEEDED);
+    expect(await settledWithin(late)).toBe(false);
+    await vi.advanceTimersByTimeAsync(50);
+    expect((await late).code).toBe(StatusCode.DEADLINE_EXCEEDED);
+  });
+
+  it("removes its abort listener however the call ends", async () => {
+    const { connection, ws } = await open();
+    const ends: ((stream: number) => void)[] = [
+      (stream) => ws.receive(result(1n), stream),
+      (stream) => ws.receive(error(5n), stream),
+      () => vi.advanceTimersByTime(100),
+      () => ws.receive({ type: "CLOSE", code: 0n }),
+    ];
+    for (const [index, end] of ends.entries()) {
+      const signal = new AbortController().signal;
+      const removed = vi.spyOn(signal, "removeEventListener");
+      const pending = connection.call(SEND, ["a", 1], { signal, deadline: 100 }).catch(() => {});
+      end(2 + 2 * index);
+      await pending;
+      expect(removed, `end ${index}`).toHaveBeenCalledWith("abort", expect.any(Function));
+    }
+  });
+
+  it("cancels a call whose signal aborts while the call is being set up", async () => {
+    const { connection, ws } = await open();
+    const controller = new AbortController();
+    const meta = {
+      get "x-id"() {
+        controller.abort();
+        return "1";
+      },
+    };
+    const cancelled = await failure(connection.call(SEND, ["a", 1], { signal: controller.signal, meta }));
+    expect([cancelled.code, cancelled.nx]).toEqual([StatusCode.CANCELLED, false]);
+    expect(callsOn(ws).map(({ frame }) => frame.type)).toEqual(["CALL", "CANCEL"]);
+  });
+
   it("clears the deadline and the abort listener once the call completes", async () => {
     const { connection, ws } = await open();
     const controller = new AbortController();
@@ -157,7 +200,7 @@ describe("call", () => {
 
   it("refuses a deadline that is not a positive number of milliseconds", async () => {
     const { connection } = await open();
-    for (const deadline of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+    for (const deadline of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 60]) {
       await expect(connection.call(SEND, ["a", 1], { deadline })).rejects.toThrow(RangeError);
     }
   });
@@ -301,6 +344,31 @@ describe("frames on client streams", () => {
     ws.receive(result(2n), 2);
     ws.receive({ type: "CREDIT", credit: 10n } as Frame, 2);
     expect(connection.closedWith).toBeUndefined();
+  });
+
+  it("closes for a server CALL on an open, a cancelled or a completed client stream", async () => {
+    const caps = { caps: ["server-calls"] };
+    const opening: Frame = { type: "CALL", method: "x", shape: 0n, data: new Uint8Array([0x80]) };
+    const before: ((connection: Connection, ws: FakeSocket) => Promise<void>)[] = [
+      async (connection) => void connection.call(SEND, ["a", 1]).catch(() => {}),
+      async (connection) => {
+        const controller = new AbortController();
+        void connection.call(SEND, ["a", 1], { signal: controller.signal }).catch(() => {});
+        controller.abort();
+      },
+      async (connection, ws) => {
+        const done = connection.call(SEND, ["a", 1]);
+        ws.receive(result(1n), 2);
+        await done;
+      },
+    ];
+    for (const setUp of before) {
+      const { connection, ws } = await open(caps, caps);
+      await setUp(connection, ws);
+      await vi.advanceTimersByTimeAsync(5);
+      ws.receive(opening, 2);
+      closesWithProtocolError(connection);
+    }
   });
 
   it("ignores CREDIT on an open call and closes for an ITEM, END, CALL or CANCEL on it", async () => {

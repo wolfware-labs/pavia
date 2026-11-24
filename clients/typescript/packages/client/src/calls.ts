@@ -98,7 +98,7 @@ export class Calls {
   /**
    * Calls `signature.method` with `args`. The promise resolves with the decoded return value and
    * rejects with a {@link StatusError}; `nx` is true when nothing was sent. It rejects with a
-   * RangeError for a `deadline` that is not a positive number of milliseconds.
+   * RangeError for a `deadline` that is not a positive number of milliseconds up to 2^53 - 1.
    */
   call(signature: CallSignature, args: readonly unknown[], options: CallOptions = {}): Promise<unknown> {
     return new Promise((resolve, reject) => {
@@ -107,8 +107,8 @@ export class Calls {
       if (this.host.ended) return refuse(StatusCode.UNAVAILABLE, "the session has ended");
       if (options.signal?.aborted) return refuse(StatusCode.CANCELLED, "the call was cancelled before it was sent");
       const deadline = options.deadline;
-      if (deadline !== undefined && !(Number.isFinite(deadline) && deadline > 0)) {
-        return reject(new RangeError(`deadline ${deadline} is not a positive number of milliseconds`));
+      if (deadline !== undefined && !(deadline > 0 && deadline <= Number.MAX_SAFE_INTEGER)) {
+        return reject(new RangeError(`deadline ${deadline} is not a positive number of milliseconds up to 2^53 - 1`));
       }
       const meta = metaOf(options.meta);
       if (typeof meta === "string") return refuse(StatusCode.INVALID_ARGUMENT, meta);
@@ -156,16 +156,19 @@ export class Calls {
       };
       this.pending.set(stream, entry);
       signal?.addEventListener("abort", entry.onAbort, { once: true });
+      if (signal?.aborted) entry.onAbort();
     });
   }
 
   /**
    * Hands a frame received on client stream `stream` to its call. A frame for a stream at or below
-   * the highest one opened that holds no call is ignored; one above it, a CALL or CANCEL from the
-   * server, or an ITEM or END on a unary call that was not cancelled breaks the protocol (spec 6.1,
-   * 6.3). CREDIT is ignored: a unary call sends nothing after CALL.
+   * the highest one opened that holds no call is ignored; one above it, a CALL or LANE_OPEN, which
+   * the server never sends on a client stream, a CANCEL from the server, or an ITEM or END on a
+   * unary call that was not cancelled breaks the protocol (spec 6.1, 6.3). CREDIT is ignored: a
+   * unary call sends nothing after CALL.
    */
   receive(stream: number, frame: Frame): Delivery {
+    if (frame.type === "CALL" || frame.type === "LANE_OPEN") return "protocol_error";
     const call = this.pending.get(stream);
     if (call === undefined) return stream <= this.host.lastStream ? "ignored" : "protocol_error";
     switch (frame.type) {

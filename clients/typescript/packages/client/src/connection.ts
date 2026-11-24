@@ -76,7 +76,8 @@ export function connect(url: string | URL, options: ConnectOptions = {}): Promis
  * client's, and `close` (a `CustomEvent` with the {@link Ending}) when the session ends. Events
  * from the message that carried WELCOME are held until right after {@link connect} resolves, so
  * listeners added after `await connect()` see them, in order. Frames on client streams go to
- * {@link Connection.call}'s calls; frames on server streams are dispatched as `frame` events.
+ * {@link Connection.call}'s calls; frames on the control stream and on server streams are
+ * dispatched as `frame` events.
  */
 export class Connection extends EventTarget {
   private timer: ReturnType<typeof setTimeout> | undefined;
@@ -213,7 +214,7 @@ export class Connection extends EventTarget {
           setTimeout(() => this.release(), 0);
           break;
         case "frame":
-          if (output.stream % 2 === 0) {
+          if (output.stream !== 0 && output.stream % 2 === 0) {
             if (this.calls.receive(output.stream, output.frame) === "protocol_error") {
               this.session.close(CloseCode.PROTOCOL_ERROR, undefined, this.now());
             }
