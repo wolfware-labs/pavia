@@ -795,6 +795,7 @@ dependencies = [
  "pavia-contract-derive",
  "pavia-vectors",
  "ryu-js",
+ "serde",
  "serde_json",
  "sha2",
  "thiserror",

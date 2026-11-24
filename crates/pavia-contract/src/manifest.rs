@@ -35,6 +35,10 @@ use crate::name;
 use crate::schema::{Definition, Primitive, Struct, Type, Types};
 use crate::table::{Chain, follow};
 
+mod read;
+
+pub use read::{MAX_MANIFEST_BYTES, MAX_TYPE_DEPTH, ReadError};
+
 /// The manifest format version this crate writes, the top-level `pavia` key.
 pub const FORMAT_VERSION: u64 = 1;
 
@@ -726,6 +730,13 @@ pub enum ManifestError {
     /// Where the field is.
     at: String,
   },
+  /// An open enum that declares a variant named `Unknown`, the name of its decode-only catch-all
+  /// (§12.1).
+  #[error("{at} is an open enum with a variant named `Unknown`, the name of its catch-all (spec 12.1)")]
+  UnknownInOpenEnum {
+    /// Where the enum is: "type `Status`".
+    at: String,
+  },
   /// A named type that leads back to itself through aliases only, so it never reaches a type.
   #[error("type `{name}` leads back to itself through aliases only, so it never reaches a type")]
   AliasCycle {
@@ -796,6 +807,9 @@ impl Check<'_> {
     match definition {
       Definition::Struct(fields) => self.fields(fields, &at),
       Definition::Enum(variants) => {
+        if variants.is_open() && variants.variants().iter().any(|variant| variant.name() == "Unknown") {
+          self.errors.push(ManifestError::UnknownInOpenEnum { at: at.clone() });
+        }
         self.unique(
           &format!("variant of {at}"),
           variants.variants().iter().map(|variant| variant.name()),

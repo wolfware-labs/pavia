@@ -197,3 +197,12 @@ fn fingerprints_the_committed_manifest() {
   assert_eq!(manifest::fingerprint(NAME, &methods).unwrap().bytes(), expected);
   assert_eq!(manifest::fingerprint("another-name", &methods).unwrap().bytes(), expected);
 }
+
+#[test]
+fn reads_the_committed_manifest_back_as_the_same_contract() {
+  let text = fs::read_to_string(committed()).unwrap();
+  let read = pavia_contract::manifest::Manifest::read(&text).unwrap();
+  assert_eq!(read.render().unwrap(), text);
+  let methods = registry(server_methods(), client_methods());
+  assert_eq!(read.fingerprint().unwrap(), manifest::fingerprint(NAME, &methods).unwrap().bytes());
+}

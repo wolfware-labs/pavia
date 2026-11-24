@@ -78,7 +78,7 @@ fn chat() -> Service {
     .client_method(Method::call("confirm", Call::unary(Primitive::Bool.into())).param(Param::new("prompt", string())))
 }
 
-fn spec_example() -> Manifest {
+pub(super) fn spec_example() -> Manifest {
   Manifest::new("example-app")
     .service(chat())
     .channel(
@@ -523,6 +523,20 @@ fn refuses_params_fields_and_variants_with_one_name_or_outside_the_grammar() {
       "more than one field of type `Pair` is named `x`",
     ]
   );
+}
+
+#[test]
+fn refuses_an_open_enum_with_a_variant_named_unknown_and_takes_it_in_a_closed_one() {
+  let variants = || vec![Variant::unit("Idle"), Variant::unit("Unknown")];
+  let manifest =
+    |definition: Enum| Manifest::new("app").types(BTreeMap::from([("Status".into(), Definition::Enum(definition))]));
+  assert_eq!(
+    errors(&manifest(Enum::new(variants()).open())),
+    [ManifestError::UnknownInOpenEnum {
+      at: "type `Status`".into()
+    }]
+  );
+  assert!(manifest(Enum::new(variants())).render().is_ok());
 }
 
 #[test]
