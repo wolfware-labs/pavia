@@ -320,7 +320,7 @@ describe("call", () => {
     expect((await pending).code).toBe(StatusCode.DEADLINE_EXCEEDED);
   });
 
-  it("refuses a call beyond WELCOME max_calls with RESOURCE_EXHAUSTED and nx", async () => {
+  it("refuses a call over max_calls unsent, RESOURCE_EXHAUSTED nx (8.4; 6.5 binds the callee)", async () => {
     const { connection, ws } = await open({ limits: { ...welcome().limits, maxCalls: 2n } });
     void connection.call(SEND, ["a", 1]);
     void connection.call(SEND, ["b", 2]);
