@@ -2,16 +2,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type CallSignature,
   CloseCode,
+  type ConnectOptions,
   type Connection,
   encodeData,
   type Frame,
   StatusCode,
   StatusError,
 } from "../src/index.js";
-import { established, FakeSocket, type options } from "./fake-socket.js";
+import { established, FakeSocket } from "./fake-socket.js";
 import { welcome } from "./support.js";
 
-type Extra = Parameters<typeof options>[0];
+type Extra = Partial<ConnectOptions>;
 
 const TYPES = { Problem: { struct: { fields: [{ name: "reason", type: "string" as const }] } } };
 

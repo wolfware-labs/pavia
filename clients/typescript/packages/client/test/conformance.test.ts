@@ -87,6 +87,11 @@ describe("calls in client scripts", () => {
     expect(next).toEqual({ ok: true, value: { kind: "uint", value: 1n }, trailers: undefined });
   });
 
+  it("send json arguments and read a json RESULT with the json codec", async () => {
+    const [call] = await outcomes("client-call-json");
+    expect(call).toEqual({ ok: true, value: { kind: "uint", value: 42n }, trailers: undefined });
+  });
+
   it("map an unknown status code to UNKNOWN", async () => {
     expect(failed((await outcomes("client-call-unknown-status"))[0]).code).toBe(StatusCode.UNKNOWN);
   });

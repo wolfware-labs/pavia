@@ -189,6 +189,20 @@
         {"expect": {"stream": 2, "type": 20, "name": "ERROR", "header": "{6: 99, 7: \"?\"}", "data": null}},
         {"expect_nothing_within": {"ms": 100}}
       ]
+    },
+    {
+      "id": "client-call-json",
+      "spec": ["8.2", "8.4", "12.3"],
+      "note": "With the json codec, CALL carries the arguments as compact JSON text and the RESULT's value is read as JSON.",
+      "binding": "ws",
+      "codec": "json",
+      "steps": [
+        {"send": {"stream": 0, "type": 1, "name": "HELLO", "header": "{14: [1], 16: [\"json\"], 18: [\"calls\"], ...}", "data": null}},
+        {"expect": {"stream": 0, "type": 2, "name": "WELCOME", "header": "{15: 1, 17: \"json\", 18: [\"calls\"], 19: \"s_test\", 21: {40: 262144, 48: 100, 49: 1048576, 50: 256, 51: 1100}, 22: 15000, 23: 45000}", "data": null}},
+        {"send": {"stream": 2, "type": 16, "name": "CALL", "header": "{2: \"chat/send\", 5: 0}", "data": "[\"hi\",7]"}},
+        {"expect": {"stream": 2, "type": 19, "name": "RESULT", "header": null, "data": "42"}},
+        {"expect_nothing_within": {"ms": 100}}
+      ]
     }
   ]
 }
