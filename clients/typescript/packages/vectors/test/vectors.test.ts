@@ -316,11 +316,13 @@ describe("scripts", () => {
         if (verb !== "send" && verb !== "expect") return;
         const where = `${ctx} step ${i}`;
         if (client) expect(body.capture, `${where}: a client script captures nothing`).toBeUndefined();
+        const call = client && verb === "send" && body.type === 16;
         for (const key of ["header", "data"] as const) {
           const text = body[key];
           if (typeof text !== "string") continue;
           const d: Diag = parse(text);
           if (verb === concrete) expect(patternCount(d), `${where}: ${verb} uses * or ...`).toBe(refs(d).length);
+          if (call) expect(patternCount(d), `${where}: a CALL send is concrete`).toBe(0);
           if (client) expect(refs(d), `${where}: a client script uses no $name`).toEqual([]);
           for (const name of refs(d)) expect(captured.has(name), `${where}: $${name} before capture`).toBe(true);
         }

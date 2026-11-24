@@ -2,6 +2,7 @@ import { decode, encode, same } from "@pavia/vectors/cbor";
 import { type Diag, hexToBytes, parse, patternCount, refs } from "@pavia/vectors/diag";
 import { vi } from "vitest";
 import {
+  type CallSignature,
   CloseCode,
   type Codec,
   type Connection,
@@ -17,9 +18,9 @@ import {
   type WebSocketLike,
   type WsFrame,
 } from "../src/index.js";
-import { arrayBufferOf, files, type Json } from "./support.js";
+import { arrayBufferOf, files, type Json, value } from "./support.js";
 
-const { HELLO, PING, PONG, CLOSE } = FrameType;
+const { HELLO, PING, PONG, CLOSE, CALL, CANCEL } = FrameType;
 const HEARTBEATS = new Set<number>([PING, PONG]);
 const SEND_WITHIN = 5000;
 const ABNORMAL_CLOSURE = 1006;
@@ -40,10 +41,29 @@ export function clientCases(): ClientCase[] {
     );
 }
 
+/** How a call a script made settled: its value and trailers, or its error. */
+export type CallOutcome =
+  | { readonly ok: true; readonly value: unknown; readonly trailers: unknown }
+  | { readonly ok: false; readonly error: unknown };
+
 /** What a script run leaves for checks the wire cannot express. */
 export interface Run {
   readonly connection: Connection | undefined;
   readonly warnings: readonly string[];
+  /** Each call a `send` of CALL made, by its stream, settled or still pending. */
+  readonly calls: ReadonlyMap<number, Promise<CallOutcome>>;
+}
+
+interface Started {
+  readonly outcome: Promise<CallOutcome>;
+  readonly abort: AbortController;
+  readonly deadline: boolean;
+}
+
+interface Script {
+  readonly server: ScriptServer;
+  readonly connection: () => Connection | undefined;
+  readonly calls: Map<number, Started>;
 }
 
 /** Hooks a test passes to {@link runClientScript}. */
@@ -105,30 +125,30 @@ export async function runClientScript(c: Json, hooks: RunHooks = {}): Promise<Ru
   server.socket().open(SUBPROTOCOL);
   await settle();
   let explained = false;
+  const script: Script = { server, connection: () => connection, calls: new Map() };
   for (const [index, step] of steps.entries()) {
     const where = `${id}: step ${index + 1} (${step.verb})`;
-    const problem = await play(step, server, () => connection);
+    const problem = await play(step, script);
     if (problem !== undefined) throw new Error(`${where}: ${problem}`);
     if (step.verb === "expect_close" || step.verb === "close_transport") explained = true;
   }
   if (failure !== undefined && !explained) {
     throw new Error(`${id}: connect() failed and no step expects it: ${failure.message}`);
   }
-  return { connection, warnings };
+  const calls = new Map([...script.calls].map(([stream, started]) => [stream, started.outcome]));
+  return { connection, warnings, calls };
 }
 
 type Problem = string | undefined;
 
-async function play(step: Step, server: ScriptServer, connection: () => Connection | undefined): Promise<Problem> {
-  const socket = server.socket();
+async function play(step: Step, script: Script): Promise<Problem> {
+  const socket = script.server.socket();
   switch (step.verb) {
     case "send": {
       socket.passing = step.frame.type;
       try {
-        if (step.frame.type === CLOSE) {
-          const problem = askToClose(step.frame, connection());
-          if (problem !== undefined) return problem;
-        }
+        const problem = ask(step.frame, script);
+        if (problem !== undefined) return problem;
         for (let n = 0; n < step.repeat; n++) {
           const { stream, type } = step.frame;
           const window = type === PONG ? 0 : SEND_WITHIN;
@@ -168,6 +188,72 @@ async function play(step: Step, server: ScriptServer, connection: () => Connecti
       return socket.closedWith === wanted ? undefined : `closed with ${socket.closedWith}, not ${wanted}`;
     }
   }
+}
+
+function ask(frame: FrameSpec, script: Script): Problem {
+  switch (frame.type) {
+    case CLOSE:
+      return askToClose(frame, script.connection());
+    case CALL:
+      return askToCall(frame, script);
+    case CANCEL: {
+      const started = script.calls.get(frame.stream);
+      if (started === undefined) return `a CANCEL send needs a call on stream ${frame.stream}`;
+      if (!started.deadline) started.abort.abort();
+      return undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
+function askToCall(frame: FrameSpec, script: Script): Problem {
+  const connection = script.connection();
+  if (connection === undefined) return "a CALL send needs an established session";
+  const method = entry(frame.header, Key.METHOD);
+  const deadline = entry(frame.header, Key.DEADLINE);
+  const meta = entry(frame.header, Key.META);
+  const args = frame.data.kind === "cbor" ? frame.data.diag : undefined;
+  if (method?.kind !== "text") return "a CALL send needs a concrete method (key 2)";
+  if (deadline !== undefined && deadline.kind !== "uint") return "a CALL send's deadline (key 4) is not a uint";
+  if (args?.kind !== "array") return "a CALL send's data is not an argument array";
+  const metaInput = metaOf(meta);
+  if (typeof metaInput === "string") return metaInput;
+  const signature: CallSignature = {
+    method: method.value,
+    params: args.items.map(() => "any"),
+    returns: "any",
+    error: "any",
+    types: {},
+  };
+  const abort = new AbortController();
+  let trailers: unknown;
+  const outcome = connection
+    .call(signature, args.items.map(value), {
+      signal: abort.signal,
+      ...(deadline === undefined ? {} : { deadline: Number(deadline.value) }),
+      ...(metaInput === undefined ? {} : { meta: metaInput }),
+      onTrailers: (received) => (trailers = received),
+    })
+    .then(
+      (result): CallOutcome => ({ ok: true, value: result, trailers }),
+      (error: unknown): CallOutcome => ({ ok: false, error }),
+    );
+  script.calls.set(frame.stream, { outcome, abort, deadline: deadline !== undefined });
+  return undefined;
+}
+
+function metaOf(meta: Diag | undefined): Map<string, string | Uint8Array> | undefined | string {
+  if (meta === undefined) return undefined;
+  if (meta.kind !== "map") return "a CALL send's meta (key 3) is not a map";
+  const out = new Map<string, string | Uint8Array>();
+  for (const [name, item] of meta.entries) {
+    if (name.kind !== "text" || (item.kind !== "text" && item.kind !== "bytes")) {
+      return "a CALL send's meta (key 3) maps text to text or bytes";
+    }
+    out.set(name.value, item.value);
+  }
+  return out;
 }
 
 function askToClose(frame: FrameSpec, connection: Connection | undefined): string | undefined {

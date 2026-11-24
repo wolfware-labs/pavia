@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { StatusCode, StatusError } from "../src/index.js";
 import type { Json } from "./support.js";
-import { clientCases, runClientScript } from "./conformance.js";
+import { type CallOutcome, clientCases, runClientScript } from "./conformance.js";
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -43,6 +44,53 @@ function byId(id: string): Json {
   if (found === undefined) throw new Error(`no client script ${id}`);
   return found.c;
 }
+
+describe("calls in client scripts", () => {
+  async function outcomes(id: string): Promise<CallOutcome[]> {
+    const run = await runClientScript(byId(id));
+    return Promise.all(run.calls.values());
+  }
+
+  function failed(outcome: CallOutcome | undefined): StatusError {
+    expect(outcome?.ok).toBe(false);
+    const error = (outcome as { error: unknown }).error;
+    expect(error).toBeInstanceOf(StatusError);
+    return error as StatusError;
+  }
+
+  it("resolve with the RESULT's value", async () => {
+    const [call] = await outcomes("client-call-unary-result");
+    expect(call).toEqual({ ok: true, value: { kind: "uint", value: 42n }, trailers: undefined });
+  });
+
+  it("reject an aborted call with CANCELLED, without nx, and free its stream", async () => {
+    const [aborted, next] = await outcomes("client-call-abort");
+    expect([failed(aborted).code, failed(aborted).nx]).toEqual([StatusCode.CANCELLED, false]);
+    expect(next?.ok).toBe(true);
+  });
+
+  it("reject a call whose deadline passed with DEADLINE_EXCEEDED", async () => {
+    const [call] = await outcomes("client-call-deadline");
+    expect([failed(call).code, failed(call).nx]).toEqual([StatusCode.DEADLINE_EXCEEDED, false]);
+  });
+
+  it("expose an ERROR's code, message, detail and nx", async () => {
+    const error = failed((await outcomes("client-call-error-detail"))[0]);
+    const detail = { kind: "map", entries: [[{ kind: "text", value: "reason" }, { kind: "text", value: "banned" }]] };
+    const fields = [error.code, error.message, error.detail, error.nx];
+    expect(fields).toEqual([StatusCode.PERMISSION_DENIED, "denied", detail, true]);
+  });
+
+  it("complete an undecodable RESULT with INTERNAL and go on", async () => {
+    const [bad, next] = await outcomes("client-call-undecodable-result");
+    expect(failed(bad).code).toBe(StatusCode.INTERNAL);
+    expect(next).toEqual({ ok: true, value: { kind: "uint", value: 1n }, trailers: undefined });
+  });
+
+  it("map an unknown status code to UNKNOWN", async () => {
+    expect(failed((await outcomes("client-call-unknown-status"))[0]).code).toBe(StatusCode.UNKNOWN);
+  });
+});
 
 describe("the client runner", () => {
   it("reports one contractMismatch event and one warning for the mismatch script", async () => {
@@ -154,7 +202,7 @@ describe("the client runner", () => {
       ["json", { data_hex: "01" }],
     ];
     for (const [codec, extra] of variants) {
-      const frame = { stream: 2, type: 17, header: null, data, ...extra };
+      const frame = { stream: 1, type: 17, header: null, data, ...extra };
       const sent: number[][] = [];
       await runClientScript({ ...script([{ ...HELLO }, { ...welcome() }, { expect: frame }]), codec }, {
         onConnection: (connection) =>
