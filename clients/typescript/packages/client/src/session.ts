@@ -269,13 +269,17 @@ export class ClientSession {
   }
 
   /**
-   * The next client stream ID: even, from 2, never reused on this transport (spec 6.1).
+   * Opens the next client stream with `frame` (CALL or LANE_OPEN) at `now` and returns its ID:
+   * even, from 2, never reused on this transport (spec 6.1). The ID is taken only once the frame
+   * is queued, so a frame {@link send} refuses leaves it to the next one.
    *
-   * @throws {@link EncodeError} `stream_id_out_of_range` once the IDs pass 2^53 - 1.
+   * @throws {@link EncodeError} as {@link send} does, and `stream_id_out_of_range` once the IDs pass
+   * 2^53 - 1.
    */
-  openStream(): number {
+  open(frame: Frame, now: number): number {
     const stream = this.nextStream;
     if (!Number.isSafeInteger(stream)) throw new EncodeError("stream_id_out_of_range", "client stream IDs are used up");
+    this.send(stream, frame, now);
     this.nextStream += 2;
     return stream;
   }

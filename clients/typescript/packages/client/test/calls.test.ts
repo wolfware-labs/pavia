@@ -255,11 +255,44 @@ describe("call", () => {
     expect(ws.sent.length).toBe(sent);
   });
 
-  it("refuses a CALL whose header is above 16 KiB before sending", async () => {
+  it("refuses a CALL whose header is above 16 KiB before sending, and leaves its stream ID unopened", async () => {
     const { connection, ws } = await open();
     const sent = ws.sent.length;
     const refused = await failure(connection.call(SEND, ["a", 1], { meta: { "x-big": "x".repeat(17_000) } }));
     expect([refused.code, refused.nx, ws.sent.length]).toEqual([StatusCode.INVALID_ARGUMENT, true, sent]);
+    ws.receive(result(1n), 2);
+    expect(connection.closedWith).toMatchObject({ code: CloseCode.PROTOCOL_ERROR, by: "local" });
+  });
+
+  it("gives the next call the stream ID a refused CALL did not take", async () => {
+    const { connection, ws } = await open();
+    void connection.call(SEND, ["a", 1], { meta: { "x-big": "x".repeat(17_000) } }).catch(() => {});
+    const next = connection.call(SEND, ["b", 2]);
+    expect(callsOn(ws).map(({ stream }) => stream)).toEqual([2]);
+    ws.receive(result(2n), 2);
+    await expect(next).resolves.toBe(2n);
+  });
+
+  it("measures the local deadline from the call, before its arguments are encoded", async () => {
+    const { connection } = await open();
+    const slow: CallSignature = {
+      method: "slow",
+      params: [{ struct: { fields: [{ name: "text", type: "string" }] } }],
+      returns: "unit",
+      types: {},
+    };
+    const started = Date.now();
+    const arg = {
+      get text() {
+        vi.setSystemTime(started + 60);
+        return "x";
+      },
+    };
+    const pending = failure(connection.call(slow, [arg], { deadline: 100 }));
+    await vi.advanceTimersByTimeAsync(39);
+    expect(await settledWithin(pending)).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect((await pending).code).toBe(StatusCode.DEADLINE_EXCEEDED);
   });
 
   it("refuses a call beyond WELCOME max_calls with RESOURCE_EXHAUSTED and nx", async () => {

@@ -121,7 +121,7 @@ export class Connection extends EventTarget {
       get ended() {
         return session.ended;
       },
-      openStream: () => session.openStream(),
+      open: (frame) => this.open(frame),
       send: (stream, frame) => this.send(stream, frame),
       now,
     });
@@ -167,6 +167,12 @@ export class Connection extends EventTarget {
     const pending = this.calls.call(signature, args, options);
     this.arm();
     return pending as Promise<R>;
+  }
+
+  private open(frame: Frame): number {
+    const stream = this.session.open(frame, this.now());
+    this.drain();
+    return stream;
   }
 
   private send(stream: number, frame: Frame): void {

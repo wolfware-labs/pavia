@@ -45,7 +45,8 @@ export interface CallHost {
   readonly lastStream: number;
   /** Whether the session has ended. */
   readonly ended: boolean;
-  openStream(): number;
+  /** Opens the next client stream with `frame` and returns its ID; a refused frame takes none. */
+  open(frame: Frame): number;
   send(stream: number, frame: Frame): void;
   now(): number;
 }
@@ -101,6 +102,7 @@ export class Calls {
    * RangeError for a `deadline` that is not a positive number of milliseconds up to 2^53 - 1.
    */
   call(signature: CallSignature, args: readonly unknown[], options: CallOptions = {}): Promise<unknown> {
+    const start = this.host.now();
     return new Promise((resolve, reject) => {
       const refuse = (code: StatusCode, message: string, cause?: unknown) =>
         reject(new StatusError(code, message, { nx: true, cause }));
@@ -137,8 +139,7 @@ export class Calls {
       };
       let stream: number;
       try {
-        stream = this.host.openStream();
-        this.host.send(stream, frame);
+        stream = this.host.open(frame);
       } catch (error) {
         if (!(error instanceof EncodeError)) throw error;
         return refuse(StatusCode.INVALID_ARGUMENT, `the CALL does not encode: ${error.message}`, error);
@@ -151,7 +152,7 @@ export class Calls {
         onTrailers: options.onTrailers,
         signal,
         onAbort: () => this.cancel(stream, entry, StatusCode.CANCELLED, "the call was cancelled"),
-        deadlineAt: millis === undefined ? undefined : this.host.now() + millis,
+        deadlineAt: millis === undefined ? undefined : start + millis,
         settled: false,
       };
       this.pending.set(stream, entry);
