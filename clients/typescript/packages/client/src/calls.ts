@@ -47,7 +47,9 @@ export interface CallHost {
   readonly ended: boolean;
   /** Opens the next client stream with `frame` and returns its ID; a refused frame takes none. */
   open(frame: Frame): number;
+  /** Sends `frame` on the open client stream `stream`. */
   send(stream: number, frame: Frame): void;
+  /** The monotonic clock, in milliseconds. */
   now(): number;
 }
 
