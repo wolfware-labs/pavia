@@ -473,9 +473,9 @@ export type Frame =
   | DgramBind
   | Extension;
 
-/** Whether `name` is a metadata name: non-empty `[a-z0-9-]` (spec 8.7). */
-export function isMetaName(name: string): boolean {
-  return /^[a-z0-9-]+$/.test(name);
+/** Whether `name` is a metadata name: non-empty `[a-z0-9-]` text (spec 8.7). */
+export function isMetaName(name: unknown): name is string {
+  return typeof name === "string" && /^[a-z0-9-]+$/.test(name);
 }
 
 class Bad {

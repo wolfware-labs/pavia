@@ -264,7 +264,7 @@ function metaOf(input: MetaInput | undefined): Meta | undefined | string {
   if (input === undefined) return undefined;
   const entries = input instanceof Map ? [...input.entries()] : Object.entries(input);
   for (const [name, value] of entries) {
-    if (!isMetaName(name)) return `metadata name ${JSON.stringify(name)} is not [a-z0-9-]`;
+    if (!isMetaName(name)) return `metadata name ${JSON.stringify(name)} is not [a-z0-9-] text`;
     if (typeof value !== "string" && !isBytes(value)) {
       return `metadata ${JSON.stringify(name)} is neither text nor bytes`;
     }

@@ -244,6 +244,13 @@ describe("call", () => {
     expect([bad.code, bad.nx, ws.sent.length]).toEqual([StatusCode.INVALID_ARGUMENT, true, sent]);
     const value = await failure(connection.call(SEND, ["a", 1], { meta: new Map([["x-n", 1 as never]]) }));
     expect([value.code, value.nx, ws.sent.length]).toEqual([StatusCode.INVALID_ARGUMENT, true, sent]);
+    const key = await failure(connection.call(SEND, ["a", 1], { meta: new Map([[1 as never, "x"]]) }));
+    expect([key.code, key.nx, key.message, ws.sent.length]).toEqual([
+      StatusCode.INVALID_ARGUMENT,
+      true,
+      "metadata name 1 is not [a-z0-9-] text",
+      sent,
+    ]);
   });
 
   it("refuses arguments of the wrong count or type before sending", async () => {
