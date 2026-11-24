@@ -1,4 +1,4 @@
-import { ByteWriter, compareBytes, isBytes } from "./bytes.js";
+import { ByteWriter, compareBytes } from "./bytes.js";
 import {
   ARRAY,
   BYTES,
@@ -19,6 +19,7 @@ import {
 } from "./cbor.js";
 import { type DataErrorReason, DataError, EncodeError, type EncodeErrorKind, type HeaderErrorReason } from "./errors.js";
 import { compareCodePoints, type JsonErrorReason, type JsonValue, jsonNumber, jsonString, parseJson } from "./json.js";
+import { isBytes, isDate, isMap } from "./realm.js";
 import {
   base64url,
   bytesOfBase64url,
@@ -35,7 +36,6 @@ import {
   uuidText,
 } from "./scalars.js";
 import type { ContractType, EnumValue, Field, NamedType, Primitive, Types, Variant } from "./types.js";
-import { isDate, isMap } from "./realm.js";
 import { utf8Of } from "./utf8.js";
 
 /** The data codec of a session (spec 6.1): `cbor` or `json`. */

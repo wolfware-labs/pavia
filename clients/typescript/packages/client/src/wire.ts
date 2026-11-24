@@ -1,5 +1,6 @@
-import { ByteWriter, isByte, isBytes } from "./bytes.js";
+import { ByteWriter, isByte } from "./bytes.js";
 import { EncodeError, ProtocolError } from "./errors.js";
+import { isBytes } from "./realm.js";
 import { decodeVarint, MAX_VARINT, varintLength, writeVarint } from "./varint.js";
 
 /** The lowest `max_frame` a peer may advertise, and the one assumed before WELCOME (spec 4.1). */

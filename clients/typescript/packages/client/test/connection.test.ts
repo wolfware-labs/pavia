@@ -1,3 +1,4 @@
+import { runInNewContext } from "node:vm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CloseCode, ConnectError, connect, type Ending } from "../src/index.js";
 import { established, FakeSocket, options, socket } from "./fake-socket.js";
@@ -21,6 +22,18 @@ describe("connect", () => {
     expect(ws.binaryType).toBe("arraybuffer");
     expect(ws.sent[0]).toMatchObject({ type: "HELLO", codecs: ["json"] });
     expect(connection.welcome.session).toBe("s1");
+  });
+
+  it("reads a message whose ArrayBuffer was made in another realm", async () => {
+    const pending = connect("wss://example.test/rt", options());
+    const ws = socket();
+    ws.open();
+    const bytes = message(welcome());
+    const foreign = runInNewContext(`new ArrayBuffer(${bytes.length})`) as ArrayBuffer;
+    expect(foreign instanceof ArrayBuffer).toBe(false);
+    new Uint8Array(foreign).set(bytes);
+    ws.onmessage?.({ data: foreign });
+    expect((await pending).welcome.session).toBe("s1");
   });
 
   it("fails before opening a socket when the options make a HELLO no server accepts", () => {

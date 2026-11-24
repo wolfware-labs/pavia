@@ -1,8 +1,7 @@
-import { isBytes } from "./bytes.js";
 import { type Codec, decodeData, encodeData } from "./data.js";
 import { DataError, EncodeError, StatusCode, StatusError, statusCodeFromWire } from "./errors.js";
 import { type Call, type CallError, type CallResult, type Frame, isMetaName, type Meta } from "./frames.js";
-import { isMap } from "./realm.js";
+import { isBytes, isMap } from "./realm.js";
 import type { ContractType, Types } from "./types.js";
 
 /**

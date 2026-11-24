@@ -3,6 +3,7 @@ import { type CallOptions, Calls, type CallSignature } from "./calls.js";
 import type { Codec } from "./data.js";
 import { CloseCode } from "./errors.js";
 import type { Frame, Welcome } from "./frames.js";
+import { isArrayBuffer } from "./realm.js";
 import { ClientSession, type Ending, type SessionInput, type SessionOptions } from "./session.js";
 
 /** The WebSocket subprotocol of this protocol version (spec 4.3). */
@@ -272,7 +273,7 @@ export class Connection extends EventTarget {
 }
 
 function messageData(data: unknown): Uint8Array | ArrayBuffer | string {
-  if (typeof data === "string" || data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
+  if (typeof data === "string" || isArrayBuffer(data) || ArrayBuffer.isView(data)) {
     return ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : data;
   }
   return "";
