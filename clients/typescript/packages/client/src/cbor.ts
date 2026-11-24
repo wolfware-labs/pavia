@@ -1,5 +1,6 @@
-import { ByteWriter, compareBytes, isByte, isBytes, toHex } from "./bytes.js";
+import { ByteWriter, compareBytes, isByte, toHex } from "./bytes.js";
 import { EncodeError, type HeaderErrorReason, ProtocolError } from "./errors.js";
+import { isBytes } from "./realm.js";
 import { textOfUtf8, utf8Of } from "./utf8.js";
 
 /**

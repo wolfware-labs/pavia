@@ -137,6 +137,10 @@ export function message(frame: Frame, stream = 0): Uint8Array {
   return encodeMessages([{ stream, frame: toRawFrame(frame) }], DEFAULT_MAX_FRAME)[0] as Uint8Array;
 }
 
+export function framesOnStreams(data: Uint8Array): { stream: number; frame: Frame }[] {
+  return decodeMessage(data, DEFAULT_MAX_FRAME).map(({ stream, frame }) => ({ stream, frame: decodeFrame(frame) }));
+}
+
 export function framesOf(data: Uint8Array): Frame[] {
-  return decodeMessage(data, DEFAULT_MAX_FRAME).map(({ frame }) => decodeFrame(frame));
+  return framesOnStreams(data).map(({ frame }) => frame);
 }

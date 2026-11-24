@@ -473,9 +473,9 @@ export type Frame =
   | DgramBind
   | Extension;
 
-/** Whether `name` is a metadata name: non-empty `[a-z0-9-]` (spec 8.7). */
-export function isMetaName(name: string): boolean {
-  return /^[a-z0-9-]+$/.test(name);
+/** Whether `name` is a metadata name: non-empty `[a-z0-9-]` text (spec 8.7). */
+export function isMetaName(name: unknown): name is string {
+  return typeof name === "string" && /^[a-z0-9-]+$/.test(name);
 }
 
 class Bad {
@@ -901,7 +901,8 @@ function metaValue(value: Meta | undefined): CborItem | undefined {
   const entries: [CborItem, CborItem][] = [];
   for (const [name, v] of value) {
     if (!isMetaName(name)) {
-      throw new EncodeError("invalid_field", `metadata name ${JSON.stringify(name)} is outside [a-z0-9-]`);
+      const text = typeof name === "string" ? JSON.stringify(name) : `of type ${typeof name}`;
+      throw new EncodeError("invalid_field", `metadata name ${text} is outside [a-z0-9-]`);
     }
     const item: CborItem = typeof v === "string" ? { kind: "text", value: v } : { kind: "bytes", value: v };
     entries.push([{ kind: "text", value: name }, item]);

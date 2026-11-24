@@ -161,6 +161,19 @@ const json = (text: string): Uint8Array => TEXT.encode(text);
 const UUID = "00112233-4455-6677-8899-aabbccddeeff";
 
 describe("typed codec", () => {
+  it("takes a Map and a Date made in another realm, and refuses look-alikes", () => {
+    const map = runInNewContext('new Map([["a", 1]])') as Map<string, number>;
+    const date = runInNewContext("new Date(1000)") as Date;
+    for (const codec of ["cbor", "json"] as const) {
+      const local = new Map([["a", 1]]);
+      expect(encodeData({ map: "u8" }, {}, map, codec)).toEqual(encodeData({ map: "u8" }, {}, local, codec));
+      expect(encodeData("timestamp", {}, date, codec)).toEqual(encodeData("timestamp", {}, new Date(1000), codec));
+    }
+    const fake = (tag: string) => ({ [Symbol.toStringTag]: tag, getTime: () => 1000, entries: () => [].values() });
+    expect(encodeError(() => encodeData({ map: "u8" }, {}, fake("Map"), "cbor")).kind).toBe("invalid_value");
+    expect(encodeError(() => encodeData("timestamp", {}, fake("Date"), "cbor")).kind).toBe("invalid_value");
+  });
+
   it("maps variants an open enum does not declare to the catch-all, and refuses to encode it", () => {
     expect(decodeData({ ref: "Status" }, TYPES, json('"Gone"'), "json")).toEqual({ kind: "Unknown", name: "Gone" });
     expect(decodeData({ ref: "Status" }, TYPES, json('{"Moved":[1]}'), "json")).toEqual({ kind: "Unknown", name: "Moved" });

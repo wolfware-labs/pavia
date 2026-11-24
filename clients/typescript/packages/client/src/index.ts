@@ -1,4 +1,5 @@
 export { ByteWriter } from "./bytes.js";
+export { type CallOptions, type CallSignature, type MetaInput } from "./calls.js";
 export {
   ConnectError,
   type ConnectOptions,
@@ -29,10 +30,13 @@ export {
   type FieldError,
   type FieldProblem,
   type HeaderErrorReason,
-  INVALID_ARGUMENT,
   type Outcome,
   ProtocolError,
   type ProtocolErrorKind,
+  StatusCode,
+  statusCodeFromWire,
+  StatusError,
+  type StatusErrorFields,
 } from "./errors.js";
 export {
   decodeMessage,

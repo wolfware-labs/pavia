@@ -1,4 +1,4 @@
-import { ByteWriter, compareBytes, isBytes } from "./bytes.js";
+import { ByteWriter, compareBytes } from "./bytes.js";
 import {
   ARRAY,
   BYTES,
@@ -19,6 +19,7 @@ import {
 } from "./cbor.js";
 import { type DataErrorReason, DataError, EncodeError, type EncodeErrorKind, type HeaderErrorReason } from "./errors.js";
 import { compareCodePoints, type JsonErrorReason, type JsonValue, jsonNumber, jsonString, parseJson } from "./json.js";
+import { isBytes, isDate, isMap } from "./realm.js";
 import {
   base64url,
   bytesOfBase64url,
@@ -313,7 +314,7 @@ function floatOf(primitive: Primitive, value: unknown): number {
 }
 
 function millisOf(value: unknown): number {
-  if (!(value instanceof Date)) throw encodeFailure("invalid_value", "timestamp takes a Date");
+  if (!isDate(value)) throw encodeFailure("invalid_value", "timestamp takes a Date");
   const millis = value.getTime();
   if (!(millis >= MIN_MILLIS && millis <= MAX_MILLIS)) {
     throw encodeFailure("out_of_range", "timestamp is outside 0000-01-01 to 9999-12-31");
@@ -340,7 +341,7 @@ function arrayOf(value: unknown, what: string): readonly unknown[] {
 }
 
 function mapOf(value: unknown): ReadonlyMap<unknown, unknown> {
-  if (!(value instanceof Map)) throw encodeFailure("invalid_value", "map takes a Map");
+  if (!isMap(value)) throw encodeFailure("invalid_value", "map takes a Map");
   return value;
 }
 

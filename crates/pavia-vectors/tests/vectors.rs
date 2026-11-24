@@ -231,6 +231,9 @@ fn scripts_parse_and_captures_resolve() {
             "{ctx} step {i}: {verb} may use $name but not * or ..."
           );
         }
+        if concrete == "expect" && verb == "send" && body["type"] == 16 {
+          assert_eq!(count_patterns(&d), 0, "{ctx} step {i}: a CALL send is concrete");
+        }
         if concrete == "expect" {
           assert!(d.refs().is_empty(), "{ctx} step {i}: a client script uses no $name");
         }

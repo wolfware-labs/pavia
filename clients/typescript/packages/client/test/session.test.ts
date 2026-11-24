@@ -466,10 +466,15 @@ describe("client session", () => {
     expect(drain(session)).toEqual([{ kind: "frame", stream: 2, frame: decodeFrame(toRawFrame(end)) }]);
   });
 
-  it("allocates even stream IDs from 2 and sends only once established", () => {
-    const session = new ClientSession({}, 0);
-    expect([session.openStream(), session.openStream(), session.openStream()]).toEqual([2, 4, 6]);
-    expect(encodeError(() => session.send(2, { type: "CANCEL" } as Frame, 0)).kind).toBe("invalid_value");
+  it("opens even stream IDs from 2, takes none for a refused frame, and sends only once established", () => {
+    const cancel = { type: "CANCEL" } as Frame;
+    expect(encodeError(() => new ClientSession({}, 0).open(cancel, 0)).kind).toBe("invalid_value");
+    expect(encodeError(() => new ClientSession({}, 0).send(2, cancel, 0)).kind).toBe("invalid_value");
+    const session = established();
+    const big = { type: "CANCEL", msg: "x".repeat(17_000) } as Frame;
+    expect(encodeError(() => session.open(big, 20)).kind).toBe("frame_too_large");
+    expect([session.open(cancel, 20), session.open(cancel, 20), session.open(cancel, 20)]).toEqual([2, 4, 6]);
+    expect(session.lastStream).toBe(6);
   });
 
   it("holds sent frames to the server's max_frame, read as at most 2^53 - 1, and to 16 KiB of header", () => {

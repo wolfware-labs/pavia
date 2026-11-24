@@ -101,6 +101,108 @@
         {"expect": {"stream": 0, "type": 4, "name": "PING", "header": null, "data": null}},
         {"send": {"stream": 0, "type": 5, "name": "PONG", "header": null, "data": null}}
       ]
+    },
+    {
+      "id": "client-call-unary-result",
+      "spec": ["8.2", "8.4", "6.3"],
+      "note": "The client calls chat/send with two arguments: CALL on stream 2 with the method, shape 0 and the argument array; the RESULT completes the call with its value.",
+      "binding": "ws",
+      "codec": "cbor",
+      "steps": [
+        {"send": {"stream": 0, "type": 1, "name": "HELLO", "header": "{14: [1], 16: [\"cbor\"], 18: [\"calls\"], ...}", "data": null}},
+        {"expect": {"stream": 0, "type": 2, "name": "WELCOME", "header": "{15: 1, 17: \"cbor\", 18: [\"calls\"], 19: \"s_test\", 21: {40: 262144, 48: 100, 49: 1048576, 50: 256, 51: 1100}, 22: 15000, 23: 45000}", "data": null}},
+        {"send": {"stream": 2, "type": 16, "name": "CALL", "header": "{2: \"chat/send\", 5: 0}", "data": "[\"hi\", 7]"}},
+        {"expect": {"stream": 2, "type": 19, "name": "RESULT", "header": null, "data": "42"}},
+        {"expect_nothing_within": {"ms": 100}}
+      ]
+    },
+    {
+      "id": "client-call-abort",
+      "spec": ["8.5", "6.3", "6.5"],
+      "note": "The client aborts a pending call: it sends CANCEL and ignores the stream until the server's terminal ERROR CANCELLED. With max_calls 1, the next call can only go out once that ERROR freed the stream, on stream 4.",
+      "binding": "ws",
+      "codec": "cbor",
+      "steps": [
+        {"send": {"stream": 0, "type": 1, "name": "HELLO", "header": "{14: [1], 16: [\"cbor\"], 18: [\"calls\"], ...}", "data": null}},
+        {"expect": {"stream": 0, "type": 2, "name": "WELCOME", "header": "{15: 1, 17: \"cbor\", 18: [\"calls\"], 19: \"s_test\", 21: {40: 262144, 48: 1, 49: 1048576, 50: 256, 51: 1100}, 22: 15000, 23: 45000}", "data": null}},
+        {"send": {"stream": 2, "type": 16, "name": "CALL", "header": "{2: \"chat/send\", 5: 0}", "data": "[\"hi\", 7]"}},
+        {"send": {"stream": 2, "type": 21, "name": "CANCEL", "header": null, "data": null}},
+        {"expect": {"stream": 2, "type": 20, "name": "ERROR", "header": "{6: 1, 7: \"cancelled\"}", "data": null}},
+        {"send": {"stream": 4, "type": 16, "name": "CALL", "header": "{2: \"chat/send\", 5: 0}", "data": "[\"hi\", 7]"}},
+        {"expect": {"stream": 4, "type": 19, "name": "RESULT", "header": null, "data": "1"}}
+      ]
+    },
+    {
+      "id": "client-call-deadline",
+      "spec": ["8.6", "8.5"],
+      "note": "A call with a 100 ms deadline that the server never answers: the client sends the deadline in CALL, stays quiet until it passes, then sends CANCEL on its own and completes the call with DEADLINE_EXCEEDED.",
+      "binding": "ws",
+      "codec": "cbor",
+      "steps": [
+        {"send": {"stream": 0, "type": 1, "name": "HELLO", "header": "{14: [1], 16: [\"cbor\"], 18: [\"calls\"], ...}", "data": null}},
+        {"expect": {"stream": 0, "type": 2, "name": "WELCOME", "header": "{15: 1, 17: \"cbor\", 18: [\"calls\"], 19: \"s_test\", 21: {40: 262144, 48: 100, 49: 1048576, 50: 256, 51: 1100}, 22: 15000, 23: 45000}", "data": null}},
+        {"send": {"stream": 2, "type": 16, "name": "CALL", "header": "{2: \"chat/send\", 5: 0, 4: 100}", "data": "[\"hi\", 7]"}},
+        {"expect_nothing_within": {"ms": 99}},
+        {"send": {"stream": 2, "type": 21, "name": "CANCEL", "header": null, "data": null}},
+        {"expect": {"stream": 2, "type": 20, "name": "ERROR", "header": "{6: 4, 7: \"deadline exceeded\"}", "data": null}}
+      ]
+    },
+    {
+      "id": "client-call-error-detail",
+      "spec": ["8.4"],
+      "note": "An ERROR with code 7, a message, nx and a typed detail completes the call with an error that carries all four.",
+      "binding": "ws",
+      "codec": "cbor",
+      "steps": [
+        {"send": {"stream": 0, "type": 1, "name": "HELLO", "header": "{14: [1], 16: [\"cbor\"], 18: [\"calls\"], ...}", "data": null}},
+        {"expect": {"stream": 0, "type": 2, "name": "WELCOME", "header": "{15: 1, 17: \"cbor\", 18: [\"calls\"], 19: \"s_test\", 21: {40: 262144, 48: 100, 49: 1048576, 50: 256, 51: 1100}, 22: 15000, 23: 45000}", "data": null}},
+        {"send": {"stream": 2, "type": 16, "name": "CALL", "header": "{2: \"chat/send\", 5: 0}", "data": "[\"hi\", 7]"}},
+        {"expect": {"stream": 2, "type": 20, "name": "ERROR", "header": "{6: 7, 7: \"denied\", 45: true}", "data": "{\"reason\": \"banned\"}"}},
+        {"expect_nothing_within": {"ms": 100}}
+      ]
+    },
+    {
+      "id": "client-call-undecodable-result",
+      "spec": ["8.10"],
+      "note": "A RESULT whose data section does not decode completes that call locally with INTERNAL; the session goes on, and the next call, on stream 4, completes normally.",
+      "binding": "ws",
+      "codec": "cbor",
+      "steps": [
+        {"send": {"stream": 0, "type": 1, "name": "HELLO", "header": "{14: [1], 16: [\"cbor\"], 18: [\"calls\"], ...}", "data": null}},
+        {"expect": {"stream": 0, "type": 2, "name": "WELCOME", "header": "{15: 1, 17: \"cbor\", 18: [\"calls\"], 19: \"s_test\", 21: {40: 262144, 48: 100, 49: 1048576, 50: 256, 51: 1100}, 22: 15000, 23: 45000}", "data": null}},
+        {"send": {"stream": 2, "type": 16, "name": "CALL", "header": "{2: \"chat/send\", 5: 0}", "data": "[\"hi\", 7]"}},
+        {"expect": {"stream": 2, "type": 19, "name": "RESULT", "header": null, "data": null, "data_hex": "ff"}},
+        {"send": {"stream": 4, "type": 16, "name": "CALL", "header": "{2: \"chat/send\", 5: 0}", "data": "[\"hi\", 7]"}},
+        {"expect": {"stream": 4, "type": 19, "name": "RESULT", "header": null, "data": "1"}}
+      ]
+    },
+    {
+      "id": "client-call-unknown-status",
+      "spec": ["8.4", "15"],
+      "note": "An ERROR with status code 99, which the client does not know, completes the call with UNKNOWN (2).",
+      "binding": "ws",
+      "codec": "cbor",
+      "steps": [
+        {"send": {"stream": 0, "type": 1, "name": "HELLO", "header": "{14: [1], 16: [\"cbor\"], 18: [\"calls\"], ...}", "data": null}},
+        {"expect": {"stream": 0, "type": 2, "name": "WELCOME", "header": "{15: 1, 17: \"cbor\", 18: [\"calls\"], 19: \"s_test\", 21: {40: 262144, 48: 100, 49: 1048576, 50: 256, 51: 1100}, 22: 15000, 23: 45000}", "data": null}},
+        {"send": {"stream": 2, "type": 16, "name": "CALL", "header": "{2: \"chat/send\", 5: 0}", "data": "[\"hi\", 7]"}},
+        {"expect": {"stream": 2, "type": 20, "name": "ERROR", "header": "{6: 99, 7: \"?\"}", "data": null}},
+        {"expect_nothing_within": {"ms": 100}}
+      ]
+    },
+    {
+      "id": "client-call-json",
+      "spec": ["8.2", "8.4", "12.3"],
+      "note": "With the json codec, CALL carries the arguments as compact JSON text and the RESULT's value is read as JSON.",
+      "binding": "ws",
+      "codec": "json",
+      "steps": [
+        {"send": {"stream": 0, "type": 1, "name": "HELLO", "header": "{14: [1], 16: [\"json\"], 18: [\"calls\"], ...}", "data": null}},
+        {"expect": {"stream": 0, "type": 2, "name": "WELCOME", "header": "{15: 1, 17: \"json\", 18: [\"calls\"], 19: \"s_test\", 21: {40: 262144, 48: 100, 49: 1048576, 50: 256, 51: 1100}, 22: 15000, 23: 45000}", "data": null}},
+        {"send": {"stream": 2, "type": 16, "name": "CALL", "header": "{2: \"chat/send\", 5: 0}", "data": "[\"hi\",7]"}},
+        {"expect": {"stream": 2, "type": 19, "name": "RESULT", "header": null, "data": "42"}},
+        {"expect_nothing_within": {"ms": 100}}
+      ]
     }
   ]
 }
