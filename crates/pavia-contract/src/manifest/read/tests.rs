@@ -578,3 +578,23 @@ fn refuses_a_document_validation_refuses_and_reports_every_error() {
     other => panic!("expected validation errors, got {other:?}"),
   }
 }
+
+#[test]
+fn reads_docs_in_the_types_table_as_a_type_named_docs_as_the_fingerprint_does() {
+  let named = json!({
+    "pavia": 1,
+    "name": "app",
+    "services": [],
+    "channels": [],
+    "datagrams": [],
+    "types": { "docs": { "alias": "string" } }
+  });
+  let manifest = read(&named).unwrap();
+  assert!(manifest.types.contains_key("docs"));
+  assert_eq!(
+    manifest.fingerprint().unwrap(),
+    crate::fingerprint::fingerprint(&named).unwrap()
+  );
+  let text = json!({ "pavia": 1, "name": "app", "types": { "docs": "The types." } });
+  assert_eq!(form(&text), ("$.types.docs".into(), "is not an object".into()));
+}
