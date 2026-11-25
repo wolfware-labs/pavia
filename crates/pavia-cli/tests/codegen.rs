@@ -94,6 +94,47 @@ fn says_why_a_manifest_cannot_be_read_or_generated() {
 }
 
 #[test]
+fn writes_control_characters_from_a_manifest_as_escapes() {
+  let dir = scratch("control");
+  fs::create_dir_all(&dir).unwrap();
+  let manifest = dir.join("control.json");
+  fs::write(
+    &manifest,
+    r#"{"pavia": 1, "name": "app", "types": {"\u001b[2J\u0007Bad\nName": {"alias": "u8"}}}"#,
+  )
+  .unwrap();
+  let out = dir.join("out");
+  let output = pavia(&["codegen", "ts", manifest.to_str().unwrap(), "--out", out.to_str().unwrap()]);
+  assert_eq!(output.status.code(), Some(1));
+  let stderr = stderr(&output);
+  assert!(!stderr.trim_end_matches('\n').chars().any(char::is_control), "{stderr:?}");
+  assert!(stderr.contains(r"\u{1b}[2J\u{7}Bad\nName"), "{stderr:?}");
+  fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn cuts_a_long_message_short_even_inside_a_character() {
+  let dir = scratch("long");
+  fs::create_dir_all(&dir).unwrap();
+  let out = dir.join("out");
+  for pad in ["", "v"] {
+    let manifest = dir.join("long.json");
+    fs::write(
+      &manifest,
+      format!(r#"{{"pavia": "{pad}{}", "name": "app"}}"#, "é".repeat(1 << 19)),
+    )
+    .unwrap();
+    let output = pavia(&["codegen", "ts", manifest.to_str().unwrap(), "--out", out.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).expect("the message stays UTF-8");
+    assert!(stderr.contains("format version"), "{}", &stderr[..200]);
+    assert!(stderr.len() < 70_000, "{} bytes", stderr.len());
+    assert!(stderr.trim_end().ends_with("more bytes)"), "{pad:?}");
+  }
+  fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn refuses_a_manifest_over_the_bound_even_when_the_bound_cuts_a_character() {
   let dir = scratch("large");
   fs::create_dir_all(&dir).unwrap();

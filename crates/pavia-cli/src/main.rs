@@ -31,10 +31,36 @@ fn main() -> ExitCode {
       ExitCode::from(2)
     }
     Err(Failure::Failed(message)) => {
-      eprintln!("pavia: {message}");
+      eprintln!("pavia: {}", printable(&message));
       ExitCode::FAILURE
     }
   }
+}
+
+/// The most of a message [`printable`] keeps, in bytes: room for every error a manifest can report.
+const MAX_MESSAGE_BYTES: usize = 64 * 1024;
+
+/// `message` as the terminal may show it: a message quotes text from the manifest, so control
+/// characters are written as escapes (`\u{1b}`, `\n`), and the text after [`MAX_MESSAGE_BYTES`] is
+/// cut.
+fn printable(message: &str) -> String {
+  let mut cut = MAX_MESSAGE_BYTES.min(message.len());
+  while !message.is_char_boundary(cut) {
+    cut -= 1;
+  }
+  let (kept, rest) = message.split_at(cut);
+  let mut shown = String::with_capacity(kept.len());
+  for character in kept.chars() {
+    if character.is_control() {
+      shown.extend(character.escape_debug());
+    } else {
+      shown.push(character);
+    }
+  }
+  if !rest.is_empty() {
+    shown.push_str(&format!("… ({} more bytes)", rest.len()));
+  }
+  shown
 }
 
 fn run(args: &[OsString]) -> Result<PathBuf, Failure> {
