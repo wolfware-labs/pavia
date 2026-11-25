@@ -84,7 +84,7 @@ fn maps_every_composite_type() {
       ])),
       "{ x: number; label?: string | null }",
     ),
-    (Type::Struct(Struct::new(Vec::new())), "{}"),
+    (Type::Struct(Struct::new(Vec::new())), "Record<string, never>"),
     (reference("Other"), "Other"),
   ];
   for (ty, ts) in cases {
@@ -94,6 +94,12 @@ fn maps_every_composite_type() {
     ]));
     has(&code, &format!("export type T = {ts};"));
   }
+}
+
+#[test]
+fn writes_a_struct_without_fields_as_an_object_without_keys() {
+  let code = code(&with_types(vec![("Empty", Definition::Struct(Struct::new(Vec::new())))]));
+  has(&code, "export type Empty = Record<string, never>;");
 }
 
 #[test]
@@ -322,6 +328,9 @@ fn refuses_names_typescript_reserves_or_the_generated_code_uses() {
     "TYPES",
     "string",
     "class",
+    "__proto__",
+    "constructor",
+    "then",
   ] {
     assert_eq!(reserved(alias(name)), name);
   }
@@ -333,7 +342,7 @@ fn refuses_names_typescript_reserves_or_the_generated_code_uses() {
     Manifest::new("app")
       .service(Service::new("s").server_method(Method::notify("n").param(Param::new(name, prim(Primitive::U8)))))
   };
-  for name in ["class", "options", "error", "CALLS", "eval"] {
+  for name in ["class", "options", "error", "items", "CALLS", "eval"] {
     assert_eq!(reserved(param(name)), name);
   }
   let fields = |name: &str| Struct::new(vec![Field::new(name, prim(Primitive::U8))]);
@@ -397,6 +406,83 @@ fn gives_the_input_form_to_every_type_on_a_cycle_that_reaches_an_open_enum() {
   has(&code, "  next: EdgeInput | null;");
   has(&code, "  to: NodeInput | null;");
   assert!(!code.contains("LoopInput"), "{code}");
+}
+
+#[test]
+fn starts_a_derived_class_name_with_an_underscore_when_its_service_name_gives_a_digit() {
+  let service = Service::new("_2fa")
+    .server_method(Method::call(
+      "verify",
+      Call::unary(prim(Primitive::Bool)).error(prim(Primitive::String)),
+    ))
+    .client_method(Method::notify("prompt"));
+  let code = code(&Manifest::new("app").service(service));
+  has(&code, "export class _2faClient {");
+  has(&code, "export class _2faVerifyError extends StatusError {");
+  has(&code, "export interface _2faHandlers {");
+}
+
+#[test]
+fn quotes_a_handler_named_new_so_it_stays_a_method() {
+  let service = Service::new("s").client_method(Method::notify("new").param(Param::new("x", prim(Primitive::String))));
+  let code = code(&Manifest::new("app").service(service));
+  has(&code, "  \"new\"(x: string): void | Promise<void>;");
+}
+
+#[test]
+fn refuses_a_type_that_is_an_option_of_itself() {
+  let option = |ty: Type| Type::Option(Box::new(ty));
+  let cycle = |types: Vec<(&str, Definition)>| match generate(&with_types(types)) {
+    Err(GenerateError::OptionCycle { name, .. }) => name,
+    other => panic!("expected an option cycle, got {other:?}"),
+  };
+  assert_eq!(cycle(vec![("A", Definition::Alias(option(reference("A"))))]), "A");
+  assert_eq!(
+    cycle(vec![
+      ("B", Definition::Alias(option(option(reference("C"))))),
+      ("C", Definition::Alias(reference("B"))),
+    ]),
+    "B"
+  );
+  let fine = with_types(vec![
+    ("L", Definition::Alias(option(Type::List(Box::new(reference("L")))))),
+    (
+      "S",
+      Definition::Struct(Struct::new(vec![Field::new("next", option(reference("T")))])),
+    ),
+    ("T", Definition::Alias(option(reference("S")))),
+  ]);
+  let code = code(&fine);
+  has(&code, "export type L = L[] | null;");
+  has(&code, "export type T = S | null;");
+}
+
+#[test]
+fn types_what_the_client_sends_in_the_input_form_and_what_it_receives_as_decoded() {
+  let status = || reference("Status");
+  let service = Service::new("s")
+    .server_method(Method::call("set", Call::unary(status()).error(status())).param(Param::new("value", status())))
+    .server_method(Method::notify("tell").param(Param::new("value", status())))
+    .server_method(Method::call("push", Call::client_stream(status(), status())))
+    .server_method(Method::call("watch", Call::server_stream(status())))
+    .client_method(Method::call("ask", Call::unary(status())).param(Param::new("value", status())))
+    .client_method(Method::call("feed", Call::bidi(status(), status())));
+  let manifest = Manifest::new("app").service(service).types(BTreeMap::from([(
+    "Status".into(),
+    Definition::Enum(Enum::new(vec![Variant::unit("Idle")]).open()),
+  )]));
+  let code = code(&manifest);
+  for line in [
+    "  async set(value: StatusInput, options?: CallOptions): Promise<Status> {",
+    "  declare readonly detail: Status | undefined;",
+    "  tell(value: StatusInput, options?: NotifyOptions): void {",
+    "  push(items: AsyncIterable<StatusInput>, options?: CallOptions): Promise<Status> {",
+    "  watch(options?: CallOptions): AsyncIterable<Status> {",
+    "  ask(value: Status): StatusInput | Promise<StatusInput>;",
+    "  feed(items: AsyncIterable<Status>): AsyncIterable<StatusInput>;",
+  ] {
+    has(&code, line);
+  }
 }
 
 #[test]

@@ -100,7 +100,7 @@ const NOTIFICATIONS = {
   },
 } satisfies Record<string, NotifySignature>;
 
-/** chat/send failed: the server's ERROR, with its detail typed as the method's error type. */
+/** chat/send failed, with the detail of the server's ERROR typed as the method's error type. */
 export class ChatSendError extends StatusError {
   override readonly name = "ChatSendError";
   declare readonly detail: SendError | undefined;

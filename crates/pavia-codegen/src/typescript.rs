@@ -6,6 +6,7 @@
 //! `chat/send` gives `ChatSendError`). A name the TypeScript code cannot carry, a keyword, a global the
 //! generated code uses, or a member every object has, fails generation instead of being renamed.
 
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use pavia_contract::manifest::{Call, Manifest, Method, Param, Service, Shape};
@@ -139,8 +140,9 @@ const RUNTIME: &[&str] = &[
 
 const CONSTANTS: &[&str] = &["CALLS", "CONTRACT", "NOTIFICATIONS", "TYPES"];
 
-/// Names a method or a field cannot take: members every object has, `prototype`, and `then`, which
-/// makes an object a thenable that `await` calls.
+/// Names a type, a method or a field cannot take: members every object has, `prototype`, and `then`,
+/// which makes an object a thenable that `await` calls. A type named `__proto__` would set the
+/// prototype of the types table instead of adding its entry.
 const MEMBERS: &[&str] = &[
   "__proto__",
   "constructor",
@@ -154,6 +156,10 @@ const MEMBERS: &[&str] = &[
   "valueOf",
 ];
 
+/// The type of a struct without fields: an object without keys. TypeScript's `{}` would take any
+/// value but null and undefined, `0` and `""` included.
+const EMPTY: &str = "Record<string, never>";
+
 const LOCALS: &[&str] = &["arguments", "error", "eval", "items", "options"];
 
 /// The TypeScript module for `manifest`, for a file next to the application's code.
@@ -166,6 +172,7 @@ const LOCALS: &[&str] = &["arguments", "error", "eval", "items", "options"];
 pub fn generate(manifest: &Manifest) -> Result<String, GenerateError> {
   let front = Front::new(manifest)?;
   check_types(manifest)?;
+  check_option_cycles(manifest)?;
   let names = claim_names(&front)?;
   check_members(manifest, &names)?;
   Ok(Writer::new(&front).module())
@@ -185,7 +192,7 @@ fn claim_names(front: &Front<'_>) -> Result<Names, GenerateError> {
     names.claim(name, "the generated code")?;
   }
   for name in front.manifest.type_table().keys() {
-    if KEYWORDS.contains(&name.as_str()) || names.contains(name) {
+    if KEYWORDS.contains(&name.as_str()) || MEMBERS.contains(&name.as_str()) || names.contains(name) {
       return Err(reserved("type", name));
     }
     names.claim(name, format!("type `{name}`"))?;
@@ -244,6 +251,43 @@ fn known(ty: &Type) -> Result<(), GenerateError> {
     Form::Primitive(primitive) => primitive_ty(*primitive).map(drop),
     Form::Option(_) | Form::List(_) | Form::Map(_) | Form::Tuple(_) | Form::Struct(_) | Form::Ref(_) => Ok(()),
   })
+}
+
+/// Refuses a named type that is an option of itself: `A = option<A>`, or a longer loop of aliases
+/// with an option on it, gives a TypeScript alias that refers to itself. Each alias leads to at most
+/// one other through its options, so one walk along each chain finds every loop.
+fn check_option_cycles(manifest: &Manifest) -> Result<(), GenerateError> {
+  let table = manifest.type_table();
+  let mut done = BTreeSet::new();
+  for start in table.keys() {
+    let mut path = BTreeSet::new();
+    let mut current = Some(start.as_str());
+    while let Some(name) = current.filter(|name| !done.contains(name)) {
+      if !path.insert(name) {
+        return Err(GenerateError::OptionCycle {
+          name: name.to_owned(),
+          target: TARGET,
+        });
+      }
+      current = table.get(name).and_then(|definition| optional_alias_of(definition));
+    }
+    done.extend(path);
+  }
+  Ok(())
+}
+
+/// The named type an alias stands for once its options are taken off: `option<B>` gives `B`.
+fn optional_alias_of(definition: &Definition) -> Option<&str> {
+  let Body::Alias(mut ty) = checked_body(definition) else {
+    return None;
+  };
+  while let Form::Option(inner) = checked(ty) {
+    ty = inner;
+  }
+  match checked(ty) {
+    Form::Ref(name) => Some(name),
+    _ => None,
+  }
 }
 
 /// `ty` in a form this back end knows, which [`check_types`] made sure of.
@@ -331,17 +375,36 @@ fn method_path(service: &Service, method: &Method) -> String {
 
 /// The client class of `service`: `chat` gives `ChatClient`.
 fn client_class(service: &Service) -> String {
-  format!("{}Client", pascal(service.name()))
+  identifier(format!("{}Client", pascal(service.name())))
 }
 
 /// The handler interface of `service`: `chat` gives `ChatHandlers`.
 fn handlers_interface(service: &Service) -> String {
-  format!("{}Handlers", pascal(service.name()))
+  identifier(format!("{}Handlers", pascal(service.name())))
 }
 
 /// The error class of a unary method with an error type: `chat/send` gives `ChatSendError`.
 fn error_class(service: &Service, method: &Method) -> String {
-  format!("{}{}Error", pascal(service.name()), pascal(method.name()))
+  identifier(format!("{}{}Error", pascal(service.name()), pascal(method.name())))
+}
+
+/// `name` with an underscore before a leading digit, which [`pascal`] leaves when it drops the
+/// underscores of a name such as `_2fa`.
+fn identifier(name: String) -> String {
+  if name.starts_with(|first: char| first.is_ascii_digit()) {
+    format!("_{name}")
+  } else {
+    name
+  }
+}
+
+/// The name of a handler method in its interface: `new` quoted, since `new(...)` there declares a
+/// construct signature.
+fn handler_member(method: &Method) -> String {
+  match method.name() {
+    "new" => quoted("new"),
+    name => name.to_owned(),
+  }
 }
 
 /// The input form of the named type `name`: `Status` gives `StatusInput`.
@@ -499,7 +562,7 @@ impl<'f, 'm> Writer<'f, 'm> {
     let declared = if input { input_name(name) } else { name.to_owned() };
     match definition {
       Body::Struct(fields) if fields.fields().is_empty() => {
-        emit!(self.out, "export interface {declared} {{}}");
+        emit!(self.out, "export type {declared} = {EMPTY};");
       }
       Body::Struct(fields) => {
         emit!(self.out, "export interface {declared} {{");
@@ -566,7 +629,7 @@ impl<'f, 'm> Writer<'f, 'm> {
 
   fn inline_struct(&self, fields: &Struct, input: bool) -> String {
     if fields.fields().is_empty() {
-      return "{}".to_owned();
+      return EMPTY.to_owned();
     }
     let fields: Vec<String> = fields.fields().iter().map(|field| self.field(field, input)).collect();
     format!("{{ {} }}", fields.join("; "))
@@ -633,7 +696,7 @@ impl<'f, 'm> Writer<'f, 'm> {
     let path = method_path(service, method);
     emit!(
       self.out,
-      "/** {path} failed: the server's ERROR, with its detail typed as the method's error type. */\n\
+      "/** {path} failed, with the detail of the server's ERROR typed as the method's error type. */\n\
        export class {class} extends StatusError {{\n  override readonly name = {};\n  declare readonly detail: {detail} \
        | undefined;\n\n  static from(error: StatusError): {class} {{\n    return new {class}(error.code, error.message, \
        {{\n      detail: error.detail,\n      nx: error.nx,\n      meta: error.meta,\n      cause: error.cause,\n    \
@@ -769,7 +832,7 @@ impl<'f, 'm> Writer<'f, 'm> {
           }
         }
       };
-      emit!(self.out, "  {}({}): {returns};", method.name(), params.join(", "));
+      emit!(self.out, "  {}({}): {returns};", handler_member(method), params.join(", "));
     }
     self.out.push_str("}\n");
   }

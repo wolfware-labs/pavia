@@ -1,0 +1,166 @@
+{
+  "pavia": 1,
+  "name": "corpus",
+  "channels": [],
+  "datagrams": [],
+  "services": [
+    {
+      "name": "_2fa",
+      "server_methods": [
+        {
+          "kind": "call",
+          "name": "verify",
+          "params": [
+            { "name": "code", "type": "string" },
+            { "name": "status", "type": { "ref": "Status" } }
+          ],
+          "shape": "unary",
+          "returns": { "ref": "Holder" },
+          "error": { "ref": "Status" },
+          "idempotent": true
+        },
+        {
+          "kind": "notify",
+          "name": "tell",
+          "params": [{ "name": "status", "type": { "ref": "Status" } }]
+        },
+        {
+          "kind": "call",
+          "name": "upload",
+          "params": [],
+          "shape": "client_stream",
+          "accepts": { "ref": "Status" },
+          "returns": { "ref": "Status" }
+        },
+        {
+          "kind": "call",
+          "name": "watch",
+          "params": [{ "name": "holder", "type": { "ref": "Holder" } }],
+          "shape": "server_stream",
+          "yields": { "ref": "Status" }
+        },
+        {
+          "kind": "call",
+          "name": "relay",
+          "params": [],
+          "shape": "bidi",
+          "accepts": { "ref": "Shapes" },
+          "yields": { "ref": "Shapes" }
+        },
+        {
+          "kind": "call",
+          "name": "clear",
+          "params": [],
+          "shape": "unary",
+          "returns": "unit"
+        },
+        {
+          "kind": "call",
+          "name": "new",
+          "params": [{ "name": "tree", "type": { "ref": "Tree" } }],
+          "shape": "unary",
+          "returns": { "ref": "Maybe" }
+        }
+      ],
+      "client_methods": [
+        {
+          "kind": "call",
+          "name": "new",
+          "params": [{ "name": "status", "type": { "ref": "Status" } }],
+          "shape": "unary",
+          "returns": { "ref": "Status" }
+        },
+        {
+          "kind": "notify",
+          "name": "get",
+          "params": [{ "name": "holder", "type": { "ref": "Holder" } }]
+        },
+        {
+          "kind": "notify",
+          "name": "delete",
+          "params": []
+        },
+        {
+          "kind": "call",
+          "name": "static",
+          "params": [],
+          "shape": "unary",
+          "returns": "unit"
+        },
+        {
+          "kind": "call",
+          "name": "feed",
+          "params": [],
+          "shape": "bidi",
+          "accepts": { "ref": "Status" },
+          "yields": { "ref": "Status" }
+        }
+      ]
+    }
+  ],
+  "types": {
+    "Status": {
+      "enum": {
+        "variants": [{ "name": "Idle" }, { "name": "Busy", "type": "u8" }],
+        "open": true
+      }
+    },
+    "Holder": {
+      "struct": {
+        "fields": [
+          { "name": "status", "type": { "ref": "Status" } },
+          { "name": "label", "type": { "option": "string" }, "optional": true },
+          { "name": "new", "type": "u8" },
+          { "name": "class", "type": "string" },
+          { "name": "default", "type": "bool" }
+        ]
+      }
+    },
+    "Shapes": {
+      "struct": {
+        "fields": [
+          { "name": "flag", "type": "bool" },
+          { "name": "small", "type": "i8" },
+          { "name": "big", "type": "i64" },
+          { "name": "unsigned", "type": "u64" },
+          { "name": "ratio", "type": "f64" },
+          { "name": "at", "type": "timestamp" },
+          { "name": "id", "type": "uuid" },
+          { "name": "blob", "type": "bytes" },
+          { "name": "anything", "type": "any" },
+          { "name": "nothing", "type": "unit" },
+          { "name": "maybe", "type": { "option": "u8" } },
+          { "name": "gaps", "type": { "list": { "option": "u8" } } },
+          { "name": "holders", "type": { "map": { "ref": "Holder" } } },
+          { "name": "pair", "type": { "tuple": ["string", { "ref": "Status" }] } },
+          { "name": "none", "type": { "tuple": [] } },
+          {
+            "name": "inline",
+            "type": {
+              "struct": {
+                "fields": [
+                  { "name": "x", "type": "f32" },
+                  { "name": "nested", "type": { "struct": { "fields": [] } } }
+                ]
+              }
+            }
+          },
+          { "name": "empty", "type": { "ref": "Empty" } },
+          { "name": "never", "type": { "ref": "Never" } }
+        ]
+      }
+    },
+    "Empty": { "struct": { "fields": [] } },
+    "Never": { "enum": { "variants": [] } },
+    "Tree": {
+      "struct": {
+        "fields": [
+          { "name": "children", "type": { "list": { "ref": "Tree" } } },
+          { "name": "parent", "type": { "option": { "ref": "Tree" } }, "optional": true }
+        ]
+      }
+    },
+    "Maybe": { "alias": { "option": { "list": { "ref": "Maybe" } } } },
+    "Chain": { "alias": { "ref": "Holder" } }
+  }
+}

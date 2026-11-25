@@ -31,6 +31,15 @@ pub enum GenerateError {
     /// The type or definition, as manifest JSON.
     form: String,
   },
+  /// A named type that is an option of itself through aliases and options alone, such as
+  /// `A = option<A>`: its only value is null, and the target language cannot declare it.
+  #[error("type `{name}` is an option of itself, which {target} code cannot declare")]
+  OptionCycle {
+    /// A type on the cycle.
+    name: String,
+    /// The target language.
+    target: &'static str,
+  },
   /// Two parts of the manifest would get one name in the generated code.
   #[error("`{name}` would name both {first} and {second}")]
   Collision {
