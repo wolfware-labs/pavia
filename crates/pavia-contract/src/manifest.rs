@@ -57,10 +57,11 @@ pub const MAX_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_TYPE_DEPTH: usize = 32;
 
 /// The longest service, method, param, type, field, variant or datagram topic name, in bytes (§12.2, §16).
-/// Errors quote at most this much of any name, so their text stays bounded.
+/// Errors from [`Manifest::validate`] and [`Manifest::read`] quote at most this much of any name, key
+/// or string from the manifest, with control characters escaped, so their text stays bounded.
 pub const MAX_NAME_BYTES: usize = 255;
 
-/// How many errors [`Manifest::validate`] collects before it stops reporting more.
+/// How many errors [`Manifest::validate`] collects: a manifest with more gets the first this many.
 pub const MAX_ERRORS: usize = 100;
 
 /// How much deeper than an `option`, `list` or `map` its inner type sits.
@@ -140,7 +141,7 @@ impl Manifest {
   ///
   /// # Errors
   ///
-  /// The [`ManifestError`]s found, in the order of the output: every one, up to [`MAX_ERRORS`].
+  /// The [`ManifestError`]s found, in the order of the output: the first [`MAX_ERRORS`] of them.
   pub fn validate(&self) -> Result<(), Vec<ManifestError>> {
     let mut check = Check {
       types: &self.types,
@@ -852,7 +853,7 @@ impl Check<'_> {
     } else if !name::is_valid(name) {
       self.report(ManifestError::InvalidName {
         what: what.to_owned(),
-        name: name.to_owned(),
+        name: shown(name).to_string(),
       });
     }
   }
@@ -989,23 +990,32 @@ impl Check<'_> {
   }
 }
 
-/// A name as an error quotes it: its first [`MAX_NAME_BYTES`], then `…` when it is longer.
+/// Text from a manifest as an error quotes it: its first [`MAX_NAME_BYTES`], then `…` when it is
+/// longer, with control characters written as escapes (`\u{1b}`, `\n`), so the error stays one short
+/// line of plain text.
 struct Shown<'a>(&'a str);
 
-fn shown(name: &str) -> Shown<'_> {
-  Shown(name)
+fn shown(text: &str) -> Shown<'_> {
+  Shown(text)
 }
 
 impl fmt::Display for Shown<'_> {
   fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-    if self.0.len() <= MAX_NAME_BYTES {
-      return formatter.write_str(self.0);
-    }
-    let end = (0..=MAX_NAME_BYTES)
+    let end = (0..=MAX_NAME_BYTES.min(self.0.len()))
       .rev()
       .find(|&end| self.0.is_char_boundary(end))
       .unwrap_or(0);
-    write!(formatter, "{}…", &self.0[..end])
+    for character in self.0[..end].chars() {
+      if character.is_control() {
+        write!(formatter, "{}", character.escape_debug())?;
+      } else {
+        write!(formatter, "{character}")?;
+      }
+    }
+    if end < self.0.len() {
+      formatter.write_str("…")?;
+    }
+    Ok(())
   }
 }
 

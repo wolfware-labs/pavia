@@ -24,7 +24,7 @@ use thiserror::Error;
 
 use super::{
   Call, Channel, Datagram, Direction, FIELD_STEP, FORMAT_VERSION, INNER_STEP, ITEM_STEP, MAX_MANIFEST_BYTES, MAX_TYPE_DEPTH,
-  Manifest, ManifestError, Method, Mode, Param, Service, Shape,
+  Manifest, ManifestError, Method, Mode, Param, Service, Shape, shown,
 };
 use crate::schema::{Definition, Enum, Field, Primitive, Struct, Type, Types, Variant};
 
@@ -81,7 +81,7 @@ impl ReadError {
 
   /// A problem with the value under `key`.
   fn form_at(key: &str, problem: impl Into<String>) -> Self {
-    Self::form(problem).under(&format!(".{key}"))
+    Self::form(problem).under(&format!(".{}", shown(key)))
   }
 
   /// The same problem, one `step` further from the root.
@@ -95,7 +95,7 @@ impl ReadError {
 
 /// Moves a problem found in the value under `key` to its place in the object.
 fn under_key(key: &str) -> impl FnOnce(ReadError) -> ReadError + '_ {
-  move |error| error.under(&format!(".{key}"))
+  move |error| error.under(&format!(".{}", shown(key)))
 }
 
 fn joined(errors: &[ManifestError]) -> String {
@@ -145,7 +145,7 @@ fn manifest(document: &Value) -> Result<Manifest, ReadError> {
   let version = top.required("pavia")?;
   if version.as_u64() != Some(FORMAT_VERSION) {
     return Err(ReadError::Version {
-      found: version.to_string(),
+      found: shown(&version.to_string()).to_string(),
     });
   }
   top.keys(&["pavia", "name", "docs", "services", "channels", "datagrams", "types"])?;
@@ -339,7 +339,7 @@ fn ty(value: &Value, depth: usize) -> Result<Type, ReadError> {
   if let Value::String(name) = value {
     return named(name, &Primitive::ALL, Primitive::name)
       .map(Type::Primitive)
-      .ok_or_else(|| ReadError::form(format!("`{name}` is not a primitive type")));
+      .ok_or_else(|| ReadError::form(format!("`{}` is not a primitive type", shown(name))));
   }
   let object = Object::new(value)?;
   let form = object.form(&["option", "list", "map", "tuple", "struct", "ref"])?;
@@ -539,7 +539,7 @@ impl<'de> Visitor<'de> for StrictVisitor {
     let mut object = Map::new();
     while let Some(key) = map.next_key::<String>()? {
       if object.contains_key(&key) {
-        return Err(de::Error::custom(format!("an object has the key `{key}` twice")));
+        return Err(de::Error::custom(format!("an object has the key `{}` twice", shown(&key))));
       }
       let Strict(value) = map.next_value()?;
       object.insert(key, value);

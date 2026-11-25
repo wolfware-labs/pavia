@@ -433,6 +433,41 @@ fn quotes_at_most_255_bytes_of_a_name_in_an_error() {
 }
 
 #[test]
+fn cuts_a_quoted_name_on_a_character_boundary() {
+  let long = "é".repeat(200);
+  let found = errors(&Manifest::new("app").service(Service::new(&long)));
+  assert!(
+    matches!(found.as_slice(), [ManifestError::NameTooLong { size: 400, .. }]),
+    "{found:?}"
+  );
+  assert!(
+    found[0].to_string().contains(&format!("`{}…`", "é".repeat(127))),
+    "{}",
+    found[0]
+  );
+}
+
+#[test]
+fn refuses_a_long_name_outside_the_grammar_for_its_length() {
+  let long = "-".repeat(256);
+  let found = errors(&Manifest::new("app").service(Service::new(&long)));
+  assert!(
+    matches!(found.as_slice(), [ManifestError::NameTooLong { size: 256, .. }]),
+    "{found:?}"
+  );
+  assert!(found[0].to_string().len() < 400, "{}", found[0]);
+}
+
+#[test]
+fn writes_control_characters_of_a_quoted_name_as_escapes() {
+  let found = errors(&Manifest::new("app").service(Service::new("a\u{1b}[2J\nb")));
+  assert!(matches!(found.as_slice(), [ManifestError::InvalidName { .. }]), "{found:?}");
+  let text = found[0].to_string();
+  assert!(!text.chars().any(char::is_control), "{text:?}");
+  assert!(text.contains(r"`a\u{1b}[2J\nb`"), "{text}");
+}
+
+#[test]
 fn stops_collecting_errors_after_100() {
   let mut method = Method::notify("n");
   for index in 0..500 {

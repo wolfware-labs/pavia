@@ -929,10 +929,11 @@ function isTagged(primitive: Primitive): boolean {
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
- * The longest variant name an open enum's catch-all keeps, in bytes (the name grammar is ASCII), so
- * a peer cannot put a frame-sized label into application logs or metrics (#70).
+ * The longest variant name an open enum's catch-all keeps, in bytes (the name grammar is ASCII): the
+ * manifest's name limit (spec 12.1, 12.2), so a peer cannot put a frame-sized label into application
+ * logs or metrics, and any variant a newer contract adds still decodes.
  */
-const MAX_UNKNOWN_NAME = 128;
+const MAX_UNKNOWN_NAME = 255;
 
 function unknownVariant(codec: Codec, open: boolean, name: string): void {
   if (!open || name.length > MAX_UNKNOWN_NAME || !NAME.test(name)) {

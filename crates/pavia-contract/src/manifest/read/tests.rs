@@ -168,6 +168,26 @@ fn refuses_a_key_written_twice_in_one_object() {
 }
 
 #[test]
+fn quotes_at_most_255_bytes_of_document_text_with_control_characters_escaped() {
+  let long = format!("\u{1b}[2J\n{}", "é".repeat(100_000));
+  let quoted = serde_json::to_string(&long).unwrap();
+  let texts = [
+    format!(r#"{{"pavia": 1, "name": "app", {quoted}: 1}}"#),
+    format!(r#"{{"pavia": 1, "name": "app", "types": {{{quoted}: {{"alias": "nope"}}}}}}"#),
+    format!(r#"{{"pavia": 1, "name": "app", "types": {{"T": {{"alias": {quoted}}}}}}}"#),
+    format!(r#"{{"pavia": 1, "name": "app", {quoted}: 1, {quoted}: 2}}"#),
+    format!(r#"{{"pavia": {quoted}, "name": "app"}}"#),
+  ];
+  for text in &texts {
+    let message = Manifest::read(text).unwrap_err().to_string();
+    let start: String = message.chars().take(150).collect();
+    assert!(message.len() < 1_000, "{} bytes: {start}", message.len());
+    assert!(!message.chars().any(char::is_control), "{message:?}");
+    assert!(message.contains('…'), "{message}");
+  }
+}
+
+#[test]
 fn refuses_text_after_the_document_and_text_that_is_not_json() {
   let text = format!("{} {{}}", spec_example().render().unwrap());
   assert!(matches!(Manifest::read(&text), Err(ReadError::Json(_))));

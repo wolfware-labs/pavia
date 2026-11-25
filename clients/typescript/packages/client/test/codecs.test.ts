@@ -214,8 +214,8 @@ describe("typed codec", () => {
     expect(dataError(() => decodeData({ ref: "Status" }, TYPES, json('"A\\n"'), "json")).message).not.toContain("\n");
   });
 
-  it("caps an unknown open-enum name at 128 bytes and names a missing field", () => {
-    const long = "a".repeat(128);
+  it("caps an unknown open-enum name at 255 bytes, the manifest's name limit, and names a missing field", () => {
+    const long = "a".repeat(255);
     const status = (input: Uint8Array, codec: Codec): unknown => decodeData({ ref: "Status" }, TYPES, input, codec);
     expect(status(json(JSON.stringify(long)), "json")).toEqual({ kind: "Unknown", name: long });
     for (const name of [`${long}b`, "a".repeat(65_536)]) {

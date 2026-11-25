@@ -784,7 +784,7 @@ The contract is the single source of truth for everything typed: server methods,
 
 Named types (in the manifest's `types` table):
 - **Struct:** `{"struct": {"fields": [{"name": "...", "type": T, "optional": bool}]}}`. `optional` is only valid on fields whose type is `{"option": T}`; it means the field may be omitted on the wire. A missing key for an `optional` field decodes as absent (`null`); a missing key for any other field is a decode error (INVALID_ARGUMENT).
-- **Enum:** `{"enum": {"variants": [{"name": "...", "type": T?}], "open": bool?}}`. A variant without `type` is a unit variant. An **open** enum (`open: true`, default false) tells decoders to map an unknown variant to a generated catch-all (`Unknown` carrying the raw variant name) instead of failing, which makes adding variants a compatible change (§12.7). Application code MUST handle the catch-all. In an open enum a variant MUST NOT be named `Unknown` (manifest validation error). The catch-all is decode-only; encoding it is a local error. Closed enums stay strict.
+- **Enum:** `{"enum": {"variants": [{"name": "...", "type": T?}], "open": bool?}}`. A variant without `type` is a unit variant. An **open** enum (`open: true`, default false) tells decoders to map an unknown variant to a generated catch-all (`Unknown` carrying the raw variant name) instead of failing, which makes adding variants a compatible change (§12.7). Application code MUST handle the catch-all. In an open enum a variant MUST NOT be named `Unknown` (manifest validation error). The catch-all keeps only a name that follows the name grammar and is at most 255 bytes, the manifest's name limit (§12.2); any other unknown name is a decode error. The catch-all is decode-only; encoding it is a local error. Closed enums stay strict.
 - **Alias:** `{"alias": T}`
 
 Generics are not supported in the manifest. Implementations monomorphize each instantiation into a distinct named type: the outer type name, followed for each type argument in order by an underscore and the argument's name as it appears in the type table, or the primitive name (`Page_Message`, `Page_u32`, `Page_List_Message` for a nested instantiation). A collision with a user-defined name is a manifest validation error.
@@ -1252,6 +1252,7 @@ S→C  sid=0  PUBLICATION {9: "room:general", 11: 45, 12: 5}  data: {...}   ← 
 
 ### draft 0.10
 - Manifest limits: at most 4 MiB of UTF-8 text, types at most 32 deep, depth counted form by form, and names at most 255 bytes; exporters do not write past them and readers refuse past them; abuse scripts cover the session limits of §16, manifest vectors the manifest limits (§12.2, §14, §16, §17.2).
+- An open enum's catch-all keeps an unknown variant name of at most 255 bytes, the manifest's name limit, so a variant a newer contract adds always decodes (§12.1).
 
 ### draft 0.9
 - Data sections have one encoding per value: struct fields in declaration order, `map` keys sorted, shortest integer and float forms, compact `json` with RFC 8785 strings and numbers; decoders accept any order (§5.5, §12.3).
