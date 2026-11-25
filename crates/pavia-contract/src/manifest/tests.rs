@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 
 use super::{
   Call, Channel, Datagram, Direction, MAX_ERRORS, MAX_NAME_BYTES, Manifest, ManifestError, Method, Mode, Param, Service, Shape,
+  escaped,
 };
 use crate::fingerprint::tests::{SPEC_EXAMPLE, hex};
 use crate::schema::{Definition, Enum, Field, Primitive, Struct, Type, Types, Variant};
@@ -473,6 +474,15 @@ fn writes_line_separators_and_direction_marks_of_a_quoted_name_as_escapes() {
   let found = errors(&Manifest::new("app").service(Service::new(name)));
   let text = found[0].to_string();
   assert!(text.contains(r"`a\u{2028}b\u{2029}c\u{202e}d\u{2066}e\u{200f}f`"), "{text:?}");
+}
+
+#[test]
+fn escapes_text_of_any_length_without_cutting_it() {
+  let long = "é".repeat(MAX_NAME_BYTES);
+  assert_eq!(
+    escaped(&format!("a\u{1b}\n\u{2029}\u{2067}{long}")).to_string(),
+    format!(r"a\u{{1b}}\n\u{{2029}}\u{{2067}}{long}")
+  );
 }
 
 #[test]

@@ -9,7 +9,7 @@ use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use pavia_contract::manifest::{MAX_MANIFEST_BYTES, Manifest};
+use pavia_contract::manifest::{MAX_MANIFEST_BYTES, Manifest, escaped};
 
 const USAGE: &str = "usage: pavia codegen ts <manifest.json> --out <dir>";
 
@@ -37,26 +37,20 @@ fn main() -> ExitCode {
   }
 }
 
-/// The most of a message [`printable`] keeps, in bytes: room for every error a manifest can report.
+/// The most of a message [`printable`] keeps, in bytes, so a manifest with many long errors still
+/// prints a bounded message.
 const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 
-/// `message` as the terminal may show it: control characters written as escapes (`\u{1b}`, `\n`),
-/// and the text after [`MAX_MESSAGE_BYTES`] cut. Manifest errors already arrive that way; this also
-/// covers the paths and system errors a message carries.
+/// `message` as the terminal may show it: [`escaped`], and cut after [`MAX_MESSAGE_BYTES`] with a
+/// count of the bytes left out. Manifest errors already arrive escaped; this also covers the paths
+/// and system errors a message carries.
 fn printable(message: &str) -> String {
   let (kept, rest) = message.split_at(message.floor_char_boundary(MAX_MESSAGE_BYTES));
-  let mut shown = String::with_capacity(kept.len());
-  for character in kept.chars() {
-    if character.is_control() {
-      shown.extend(character.escape_debug());
-    } else {
-      shown.push(character);
-    }
+  if rest.is_empty() {
+    escaped(kept).to_string()
+  } else {
+    format!("{}… ({} more bytes)", escaped(kept), rest.len())
   }
-  if !rest.is_empty() {
-    shown.push_str(&format!("… ({} more bytes)", rest.len()));
-  }
-  shown
 }
 
 fn run(args: &[OsString]) -> Result<PathBuf, Failure> {

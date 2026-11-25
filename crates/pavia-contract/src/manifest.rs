@@ -11,7 +11,8 @@
 //! type is not an `option`, an open enum with a variant named `Unknown`, an alias that leads back to itself,
 //! and two entries of one list with one name. It also refuses a type nested deeper than [`MAX_TYPE_DEPTH`],
 //! and [`Manifest::render`] text longer than [`MAX_MANIFEST_BYTES`]: [`Manifest::read`] would refuse both.
-//! It reports at most [`MAX_ERRORS`] errors, and quotes at most [`MAX_NAME_BYTES`] of any manifest text.
+//! It reports at most [`MAX_ERRORS`] errors, and quotes at most [`MAX_NAME_BYTES`] of any manifest text,
+//! [`escaped`].
 //!
 //! The output depends only on the manifest's content: services, methods, channels and datagram topics
 //! are sorted by name in byte order, while params, struct fields and enum variants keep the order they
@@ -1116,9 +1117,8 @@ impl Check<'_> {
 }
 
 /// Text from a manifest as an error quotes it: its first [`MAX_NAME_BYTES`], then `…` when it is
-/// longer, with control characters, line and paragraph separators and direction marks written as
-/// escapes (`\u{1b}`, `\n`, `\u{2028}`, `\u{202e}`), so the error stays one short line of text that
-/// shows in the order it was written.
+/// longer, [`escaped`], so the error stays one short line of text that shows in the order it was
+/// written.
 struct Shown<'a>(&'a str);
 
 fn shown(text: &str) -> Shown<'_> {
@@ -1128,7 +1128,28 @@ fn shown(text: &str) -> Shown<'_> {
 impl fmt::Display for Shown<'_> {
   fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
     let end = self.0.floor_char_boundary(MAX_NAME_BYTES);
-    for character in self.0[..end].chars() {
+    write!(formatter, "{}", escaped(&self.0[..end]))?;
+    if end < self.0.len() {
+      formatter.write_str("…")?;
+    }
+    Ok(())
+  }
+}
+
+/// `text` whole, with control characters, line and paragraph separators and direction marks written
+/// as escapes (`\u{1b}`, `\n`, `\u{2028}`, `\u{202e}`), so a terminal shows it on the lines and in the
+/// order it was written. The errors of this module quote manifest text this way; a tool that prints
+/// other outside text, such as a path, writes it the same way with this.
+#[must_use]
+pub fn escaped(text: &str) -> impl fmt::Display + '_ {
+  Escaped(text)
+}
+
+struct Escaped<'a>(&'a str);
+
+impl fmt::Display for Escaped<'_> {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    for character in self.0.chars() {
       if character.is_control() {
         write!(formatter, "{}", character.escape_debug())?;
       } else if moves_text(character) {
@@ -1136,9 +1157,6 @@ impl fmt::Display for Shown<'_> {
       } else {
         write!(formatter, "{character}")?;
       }
-    }
-    if end < self.0.len() {
-      formatter.write_str("…")?;
     }
     Ok(())
   }

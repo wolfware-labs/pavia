@@ -21,3 +21,8 @@ fn cuts_a_long_message_on_a_character_boundary_and_counts_the_rest() {
 fn writes_control_characters_as_escapes() {
   assert_eq!(printable("a\u{1b}[2J\nb"), r"a\u{1b}[2J\nb");
 }
+
+#[test]
+fn writes_line_separators_and_direction_marks_as_escapes() {
+  assert_eq!(printable("a\u{2028}b\u{202e}c"), r"a\u{2028}b\u{202e}c");
+}
