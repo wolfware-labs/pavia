@@ -1,3 +1,4 @@
 exclude_re = [
+  "replace <impl Visitor<'de> for StrictVisitor>::visit_unit -> Result<Value, E> with Ok\\(Default::default\\(\\)\\)",
   'replace match guard !number\.as_f64\(\)\.is_some_and\(f64::is_finite\) with false in check',
 ]

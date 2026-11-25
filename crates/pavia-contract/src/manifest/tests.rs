@@ -557,6 +557,8 @@ fn refuses_an_open_enum_with_a_variant_named_unknown_and_takes_it_in_a_closed_on
     }]
   );
   assert!(manifest(Enum::new(variants())).render().is_ok());
+  let declared = vec![Variant::unit("Idle"), Variant::unit("Busy")];
+  assert!(manifest(Enum::new(declared).open()).render().is_ok());
 }
 
 #[test]

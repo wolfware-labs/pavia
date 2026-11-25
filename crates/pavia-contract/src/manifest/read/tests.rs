@@ -60,7 +60,7 @@ fn reads_what_the_writer_writes_and_writes_it_back_the_same() {
 }
 
 #[test]
-fn reads_defaults_written_out_and_named_entries_in_any_order() {
+fn reads_defaults_written_out_and_named_entries_in_any_order_to_the_same_bytes_and_fingerprint() {
   let mut document = written();
   let methods = document["services"][0]["server_methods"].as_array_mut().unwrap();
   methods.reverse();
@@ -72,7 +72,21 @@ fn reads_defaults_written_out_and_named_entries_in_any_order() {
   }
   document["types"]["SendError"]["enum"]["open"] = json!(false);
   document["types"]["Message"]["struct"]["fields"][0]["optional"] = json!(false);
-  assert_eq!(read(&document).unwrap().render().unwrap(), spec_example().render().unwrap());
+  document["services"].as_array_mut().unwrap().push(json!({ "name": "aaa" }));
+  document["services"].as_array_mut().unwrap().reverse();
+  let read = read(&document).unwrap();
+  let expected = spec_example().service(Service::new("aaa"));
+  assert_eq!(read.render().unwrap(), expected.render().unwrap());
+  assert_eq!(read.fingerprint().unwrap(), expected.fingerprint().unwrap());
+}
+
+#[test]
+fn takes_text_of_exactly_the_size_bound_both_ways() {
+  let bare = Manifest::new("app").docs("").render().unwrap().len();
+  let manifest = Manifest::new("app").docs("d".repeat(MAX_MANIFEST_BYTES - bare));
+  let text = manifest.render().unwrap();
+  assert_eq!(text.len(), MAX_MANIFEST_BYTES);
+  assert_eq!(Manifest::read(&text).unwrap(), manifest);
 }
 
 #[test]
