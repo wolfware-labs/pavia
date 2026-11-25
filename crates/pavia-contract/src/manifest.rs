@@ -42,10 +42,11 @@ mod read;
 
 pub use read::ReadError;
 
-/// The largest manifest text [`Manifest::read`] takes, and [`Manifest::render`] writes, in bytes.
+/// The largest manifest text [`Manifest::read`] takes, and [`Manifest::render`] writes, in bytes (§12.2,
+/// §16).
 pub const MAX_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
 
-/// How deep a type may nest, counted in the JSON levels of its form (§12.2): `"u8"` is 1 deep,
+/// How deep a type may nest (§12.2, §16), counted in the JSON levels of its form: `"u8"` is 1 deep,
 /// `{"list": {"list": "u8"}}` is 3, a tuple's items sit 2 deeper than the tuple and an inline struct's
 /// field types 4 deeper. Each type a manifest names (a param, a result, a channel or datagram type, an
 /// alias, and a field or variant type of a named type) starts at 1. [`Manifest::validate`] refuses a
