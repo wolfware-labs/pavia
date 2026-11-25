@@ -336,11 +336,16 @@ fn refuses_names_typescript_reserves_or_the_generated_code_uses() {
   for name in ["class", "options", "error", "CALLS", "eval"] {
     assert_eq!(reserved(param(name)), name);
   }
-  let field = with_types(vec![(
-    "T",
-    Definition::Struct(Struct::new(vec![Field::new("__proto__", prim(Primitive::U8))])),
-  )]);
-  assert_eq!(reserved(field), "__proto__");
+  let fields = |name: &str| Struct::new(vec![Field::new(name, prim(Primitive::U8))]);
+  for name in ["__proto__", "constructor", "prototype", "then", "toString"] {
+    assert_eq!(reserved(with_types(vec![("T", Definition::Struct(fields(name)))])), name);
+    let inline = Manifest::new("app")
+      .service(Service::new("s").server_method(Method::notify("n").param(Param::new("p", Type::Struct(fields(name))))));
+    assert_eq!(reserved(inline), name);
+  }
+  assert_eq!(reserved(method("prototype")), "prototype");
+  let variant = with_types(vec![("T", Definition::Enum(Enum::new(vec![Variant::unit("__proto__")])))]);
+  assert!(generate(&variant).is_ok());
 }
 
 #[test]
@@ -398,4 +403,25 @@ fn gives_the_input_form_to_every_type_on_a_cycle_that_reaches_an_open_enum() {
 fn refuses_a_manifest_that_does_not_validate() {
   let manifest = with_types(vec![("T", Definition::Alias(reference("Missing")))]);
   assert!(matches!(generate(&manifest), Err(GenerateError::Invalid(_))));
+}
+
+#[test]
+fn gives_input_forms_along_a_long_chain_of_aliases_in_one_walk() {
+  let count = 50_000;
+  let mut types: Vec<(String, Definition)> = (0..count - 1)
+    .map(|index| {
+      (
+        format!("A{index:05}"),
+        Definition::Alias(reference(&format!("A{:05}", index + 1))),
+      )
+    })
+    .collect();
+  types.push((
+    format!("A{:05}", count - 1),
+    Definition::Enum(Enum::new(vec![Variant::unit("Idle")]).open()),
+  ));
+  let manifest = Manifest::new("app").types(types.into_iter().collect());
+  let code = code(&manifest);
+  has(&code, "export type A00000Input = A00001Input;");
+  has(&code, &format!("export type A{:05}Input = {{ kind: \"Idle\" }};", count - 1));
 }

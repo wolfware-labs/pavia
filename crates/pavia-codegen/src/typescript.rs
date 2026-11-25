@@ -139,12 +139,15 @@ const RUNTIME: &[&str] = &[
 
 const CONSTANTS: &[&str] = &["CALLS", "CONTRACT", "NOTIFICATIONS", "TYPES"];
 
+/// Names a method or a field cannot take: members every object has, `prototype`, and `then`, which
+/// makes an object a thenable that `await` calls.
 const MEMBERS: &[&str] = &[
   "__proto__",
   "constructor",
   "hasOwnProperty",
   "isPrototypeOf",
   "propertyIsEnumerable",
+  "prototype",
   "then",
   "toLocaleString",
   "toString",
@@ -258,15 +261,30 @@ fn is_unit(ty: &Type) -> bool {
   matches!(checked(ty), Form::Primitive(Primitive::Unit))
 }
 
+fn check_fields(fields: &Struct, what: &str) -> Result<(), GenerateError> {
+  match fields.fields().iter().find(|field| MEMBERS.contains(&field.name())) {
+    Some(field) => Err(reserved(format!("field of {what}"), field.name())),
+    None => Ok(()),
+  }
+}
+
+/// Checks the fields of every struct `ty` holds, named types' fields aside.
+fn check_inline_fields(ty: &Type, what: &str) -> Result<(), GenerateError> {
+  walk(ty, &mut |form| match form {
+    Form::Struct(fields) => check_fields(fields, what),
+    _ => Ok(()),
+  })
+}
+
 fn check_members(manifest: &Manifest, names: &Names) -> Result<(), GenerateError> {
   for (name, definition) in manifest.type_table() {
-    let fields: Vec<&str> = match checked_body(definition) {
-      Body::Struct(fields) => fields.fields().iter().map(Field::name).collect(),
-      Body::Enum(variants) => variants.variants().iter().map(|variant| variant.name()).collect(),
-      Body::Alias(_) => Vec::new(),
-    };
-    if let Some(field) = fields.into_iter().find(|field| *field == "__proto__") {
-      return Err(reserved(format!("field or variant of type `{name}`"), field));
+    let what = format!("type `{name}`");
+    let body = checked_body(definition);
+    if let Body::Struct(fields) = body {
+      check_fields(fields, &what)?;
+    }
+    for ty in body.types() {
+      check_inline_fields(ty, &what)?;
     }
   }
   for service in manifest.services() {
@@ -275,6 +293,18 @@ fn check_members(manifest: &Manifest, names: &Names) -> Result<(), GenerateError
         let what = format!("{side} method of service `{}`", service.name());
         if MEMBERS.contains(&method.name()) {
           return Err(reserved(what, method.name()));
+        }
+        let place = format!("{what} `{}`", method.name());
+        let call_types = method
+          .as_call()
+          .map(|call| [call.accepts(), call.yields(), call.returns(), call.error_type()]);
+        for ty in method
+          .params()
+          .iter()
+          .map(Param::ty)
+          .chain(call_types.into_iter().flatten().flatten())
+        {
+          check_inline_fields(ty, &place)?;
         }
         for param in method.params() {
           let name = param.name();
