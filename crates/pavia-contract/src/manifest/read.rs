@@ -2,8 +2,10 @@
 //! a file exported by an application, or one a server published.
 //!
 //! The text may come from anyone, so [`Manifest::read`] bounds it before it trusts it: its size, the
-//! depth of every type, and one value per object key (serde_json's own nesting limit bounds every other
-//! value). It then builds the model and runs [`Manifest::validate`] on it, so what it returns is a manifest
+//! depth of every type ([`MAX_TYPE_DEPTH`], the bound [`Manifest::validate`] keeps too), and one value per
+//! object key. serde_json's own nesting limit bounds every other value; a manifest within those bounds
+//! nests far less. It checks the format version before anything else, since a newer format may add keys.
+//! It then builds the model and runs [`Manifest::validate`] on it, so what it returns is a manifest
 //! [`Manifest::render`] accepts. It reads what the writer omits as its default, accepts a default written
 //! out, and takes named entries in any order; it refuses `null` for an optional field, a key §12.2 does not
 //! define, and a format version other than [`FORMAT_VERSION`]. `docs` is read where the model keeps it and
@@ -20,15 +22,11 @@ use serde::de::{self, Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Number, Value};
 use thiserror::Error;
 
-use super::{Call, Channel, Datagram, Direction, FORMAT_VERSION, Manifest, ManifestError, Method, Mode, Param, Service, Shape};
+use super::{
+  Call, Channel, Datagram, Direction, FIELD_STEP, FORMAT_VERSION, INNER_STEP, ITEM_STEP, MAX_MANIFEST_BYTES, MAX_TYPE_DEPTH,
+  Manifest, ManifestError, Method, Mode, Param, Service, Shape,
+};
 use crate::schema::{Definition, Enum, Field, Primitive, Struct, Type, Types, Variant};
-
-/// The largest manifest text [`Manifest::read`] takes, in bytes.
-pub const MAX_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
-
-/// How deep [`Manifest::read`] lets types nest: `{"list": {"list": "u8"}}` is 3 deep, and so are the
-/// field types of a named struct and the variant types of a named enum that are `{"list": "u8"}`.
-pub const MAX_TYPE_DEPTH: usize = 32;
 
 /// Why [`Manifest::read`] refused a text.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -64,7 +62,7 @@ pub enum ReadError {
   /// The top-level `pavia` is not [`FORMAT_VERSION`].
   #[error("the manifest is format version {found}, and this reader reads version {FORMAT_VERSION}")]
   Version {
-    /// The `pavia` value as written.
+    /// The `pavia` value as serde_json writes it back: `1.5`, `"1"`.
     found: String,
   },
   /// The document has the form §12.2 gives it, but [`Manifest::validate`] refuses what it says.
@@ -144,13 +142,13 @@ impl Manifest {
 
 fn manifest(document: &Value) -> Result<Manifest, ReadError> {
   let top = Object::new(document)?;
-  top.keys(&["pavia", "name", "docs", "services", "channels", "datagrams", "types"])?;
   let version = top.required("pavia")?;
   if version.as_u64() != Some(FORMAT_VERSION) {
     return Err(ReadError::Version {
       found: version.to_string(),
     });
   }
+  top.keys(&["pavia", "name", "docs", "services", "channels", "datagrams", "types"])?;
   let mut manifest = Manifest::new(top.string("name")?);
   manifest.docs = top.docs()?;
   manifest.services = top.list("services", service)?;
@@ -301,6 +299,7 @@ fn definition(value: &Value) -> Result<Definition, ReadError> {
   .map_err(under_key(form))
 }
 
+/// An enum body, whose variant types sit at nesting `depth`.
 fn enumeration(value: &Value, depth: usize) -> Result<Enum, ReadError> {
   let object = Object::new(value)?;
   object.keys(&["variants", "open", "docs"])?;
@@ -308,7 +307,7 @@ fn enumeration(value: &Value, depth: usize) -> Result<Enum, ReadError> {
     let variant = Object::new(value)?;
     variant.keys(&["name", "type", "docs"])?;
     let name = variant.string("name")?;
-    Ok(match variant.ty("type", depth + 1)? {
+    Ok(match variant.ty("type", depth)? {
       None => Variant::unit(name),
       Some(ty) => Variant::new(name, ty),
     })
@@ -317,13 +316,14 @@ fn enumeration(value: &Value, depth: usize) -> Result<Enum, ReadError> {
   Ok(if object.flag("open")? { definition.open() } else { definition })
 }
 
+/// A struct body, whose field types sit at nesting `depth`.
 fn structure(value: &Value, depth: usize) -> Result<Struct, ReadError> {
   let object = Object::new(value)?;
   object.keys(&["fields", "docs"])?;
   let fields = object.list("fields", |value| {
     let field = Object::new(value)?;
     field.keys(&["name", "type", "optional", "docs"])?;
-    let built = Field::new(field.string("name")?, field.required_ty("type", depth + 1)?);
+    let built = Field::new(field.string("name")?, field.required_ty("type", depth)?);
     Ok(if field.flag("optional")? { built.optional() } else { built })
   })?;
   Ok(Struct::new(fields))
@@ -345,14 +345,14 @@ fn ty(value: &Value, depth: usize) -> Result<Type, ReadError> {
   let form = object.form(&["option", "list", "map", "tuple", "struct", "ref"])?;
   let inner = object.required(form)?;
   match form {
-    "option" => ty(inner, depth + 1).map(|inner| Type::Option(Box::new(inner))),
-    "list" => ty(inner, depth + 1).map(|inner| Type::List(Box::new(inner))),
-    "map" => ty(inner, depth + 1).map(|inner| Type::Map(Box::new(inner))),
+    "option" => ty(inner, depth + INNER_STEP).map(|inner| Type::Option(Box::new(inner))),
+    "list" => ty(inner, depth + INNER_STEP).map(|inner| Type::List(Box::new(inner))),
+    "map" => ty(inner, depth + INNER_STEP).map(|inner| Type::Map(Box::new(inner))),
     "tuple" => match inner {
-      Value::Array(items) => each(items, |item| ty(item, depth + 1)).map(Type::Tuple),
+      Value::Array(items) => each(items, |item| ty(item, depth + ITEM_STEP)).map(Type::Tuple),
       _ => Err(ReadError::form("is not an array")),
     },
-    "struct" => structure(inner, depth).map(Type::Struct),
+    "struct" => structure(inner, depth + FIELD_STEP).map(Type::Struct),
     _ => match inner {
       Value::String(name) => Ok(Type::Ref(name.clone())),
       _ => Err(ReadError::form("is not a string")),

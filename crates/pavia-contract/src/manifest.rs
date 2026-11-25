@@ -35,11 +35,28 @@ use thiserror::Error;
 
 use crate::name;
 use crate::schema::{Definition, Primitive, Struct, Type, Types};
-use crate::table::{Chain, follow};
+use crate::table::{Chain, Chains};
 
 mod read;
 
-pub use read::{MAX_MANIFEST_BYTES, MAX_TYPE_DEPTH, ReadError};
+pub use read::ReadError;
+
+/// The largest manifest text [`Manifest::read`] takes, and [`Manifest::render`] writes, in bytes.
+pub const MAX_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
+
+/// How deep a type may nest, counted in the JSON levels of its form (§12.2): `"u8"` is 1 deep,
+/// `{"list": {"list": "u8"}}` is 3, a tuple's items sit 2 deeper than the tuple and an inline struct's
+/// field types 4 deeper. Each type a manifest names (a param, a result, a channel or datagram type, an
+/// alias, and a field or variant type of a named type) starts at 1. [`Manifest::validate`] refuses a
+/// deeper type and [`Manifest::read`] stops at one, so every manifest one writes the other reads.
+pub const MAX_TYPE_DEPTH: usize = 32;
+
+/// How much deeper than an `option`, `list` or `map` its inner type sits.
+const INNER_STEP: usize = 1;
+/// How much deeper than a `tuple` its items sit: `{"tuple": [item]}`.
+const ITEM_STEP: usize = 2;
+/// How much deeper than an inline struct its field types sit: `{"struct": {"fields": [{"type": t}]}}`.
+const FIELD_STEP: usize = 4;
 
 /// The manifest format version this crate writes, the top-level `pavia` key.
 pub const FORMAT_VERSION: u64 = 1;
@@ -114,6 +131,7 @@ impl Manifest {
   pub fn validate(&self) -> Result<(), Vec<ManifestError>> {
     let mut check = Check {
       types: &self.types,
+      chains: Chains::new(&self.types, &BTreeSet::new()),
       errors: Vec::new(),
     };
     check.unique("service", self.services.iter().map(|service| service.name.as_str()));
@@ -142,14 +160,14 @@ impl Manifest {
     );
     for datagram in sorted(&self.datagrams, |datagram| &datagram.topic) {
       check.name("datagram topic", &datagram.topic);
-      check.ty(&datagram.payload, &format!("datagram topic `{}`", datagram.topic));
+      check.ty(&datagram.payload, &format!("datagram topic `{}`", datagram.topic), 1);
     }
     for (name, definition) in &self.types {
       check.name("type", name);
       check.definition(name, definition);
     }
     for name in self.types.keys() {
-      if matches!(follow(&self.types, name, &BTreeSet::new()), Chain::Loops) {
+      if matches!(check.chains.from(name), Chain::Loops) {
         check.errors.push(ManifestError::AliasCycle { name: name.clone() });
       }
     }
@@ -161,13 +179,20 @@ impl Manifest {
   ///
   /// # Errors
   ///
-  /// The errors of [`Manifest::validate`]; nothing is written.
+  /// The errors of [`Manifest::validate`], or [`ManifestError::TooLarge`] for text over
+  /// [`MAX_MANIFEST_BYTES`]; nothing is written.
   pub fn render(&self) -> Result<String, Vec<ManifestError>> {
     self.validate()?;
     let mut json = self.to_json();
     json.sort_all_objects();
     let mut text = serde_json::to_string_pretty(&json).expect("a JSON value with text keys serializes");
     text.push('\n');
+    if text.len() > MAX_MANIFEST_BYTES {
+      return Err(vec![ManifestError::TooLarge {
+        size: text.len(),
+        limit: MAX_MANIFEST_BYTES,
+      }]);
+    }
     Ok(text)
   }
 
@@ -748,6 +773,21 @@ pub enum ManifestError {
     /// Where the enum is: "type `Status`".
     at: String,
   },
+  /// A type that nests deeper than [`MAX_TYPE_DEPTH`], which [`Manifest::read`] would refuse.
+  #[error("{at} nests types more than {} deep", MAX_TYPE_DEPTH)]
+  TooDeep {
+    /// Where the type is.
+    at: String,
+  },
+  /// Text longer than [`MAX_MANIFEST_BYTES`], which [`Manifest::read`] would refuse; only
+  /// [`Manifest::render`] reports it.
+  #[error("the manifest is {size} bytes, more than the {limit} a reader takes")]
+  TooLarge {
+    /// The length of the text, in bytes.
+    size: usize,
+    /// [`MAX_MANIFEST_BYTES`].
+    limit: usize,
+  },
   /// A named type that leads back to itself through aliases only, so it never reaches a type.
   #[error("type `{name}` leads back to itself through aliases only, so it never reaches a type")]
   AliasCycle {
@@ -758,6 +798,7 @@ pub enum ManifestError {
 
 struct Check<'a> {
   types: &'a Types,
+  chains: Chains<'a>,
   errors: Vec<ManifestError>,
 }
 
@@ -793,11 +834,11 @@ impl Check<'_> {
     );
     for param in &method.params {
       self.name(&format!("param of {at}"), &param.name);
-      self.ty(&param.ty, &format!("param `{}` of {at}", param.name));
+      self.ty(&param.ty, &format!("param `{}` of {at}", param.name), 1);
     }
     if let Some(call) = &method.call {
       for (key, ty) in call.types() {
-        self.ty(ty, &format!("`{key}` of {at}"));
+        self.ty(ty, &format!("`{key}` of {at}"), 1);
       }
     }
   }
@@ -809,14 +850,14 @@ impl Check<'_> {
       });
     }
     for (key, ty) in channel.types() {
-      self.ty(ty, &format!("`{key}` of channel namespace `{}`", channel.namespace));
+      self.ty(ty, &format!("`{key}` of channel namespace `{}`", channel.namespace), 1);
     }
   }
 
   fn definition(&mut self, name: &str, definition: &Definition) {
     let at = format!("type `{name}`");
     match definition {
-      Definition::Struct(fields) => self.fields(fields, &at),
+      Definition::Struct(fields) => self.fields(fields, &at, 1),
       Definition::Enum(variants) => {
         if variants.is_open() && variants.variants().iter().any(|variant| variant.name() == "Unknown") {
           self.errors.push(ManifestError::UnknownInOpenEnum { at: at.clone() });
@@ -828,15 +869,16 @@ impl Check<'_> {
         for variant in variants.variants() {
           self.name(&format!("variant of {at}"), variant.name());
           if let Some(ty) = variant.ty() {
-            self.ty(ty, &format!("variant `{}` of {at}", variant.name()));
+            self.ty(ty, &format!("variant `{}` of {at}", variant.name()), 1);
           }
         }
       }
-      Definition::Alias(target) => self.ty(target, &at),
+      Definition::Alias(target) => self.ty(target, &at, 1),
     }
   }
 
-  fn fields(&mut self, fields: &Struct, at: &str) {
+  /// Checks the fields of a struct, whose types sit at nesting `depth` ([`MAX_TYPE_DEPTH`]).
+  fn fields(&mut self, fields: &Struct, at: &str, depth: usize) {
     self.unique(&format!("field of {at}"), fields.fields().iter().map(|field| field.name()));
     for field in fields.fields() {
       let place = format!("field `{}` of {at}", field.name());
@@ -844,26 +886,35 @@ impl Check<'_> {
       if field.is_optional() && !matches!(field.ty(), Type::Option(_)) {
         self.errors.push(ManifestError::OptionalNotOption { at: place.clone() });
       }
-      self.ty(field.ty(), &place);
+      self.ty(field.ty(), &place, depth);
     }
   }
 
-  fn ty(&mut self, ty: &Type, at: &str) {
+  /// Checks `ty`, which sits at nesting `depth` ([`MAX_TYPE_DEPTH`]); a type too deep is reported once
+  /// and not entered.
+  fn ty(&mut self, ty: &Type, at: &str, depth: usize) {
+    if depth > MAX_TYPE_DEPTH {
+      let error = ManifestError::TooDeep { at: at.to_owned() };
+      if !self.errors.contains(&error) {
+        self.errors.push(error);
+      }
+      return;
+    }
     match ty {
       Type::Primitive(_) => {}
       Type::Option(inner) => {
         if self.is_unit(inner) {
           self.errors.push(ManifestError::OptionOfUnit { at: at.to_owned() });
         }
-        self.ty(inner, at);
+        self.ty(inner, at, depth + INNER_STEP);
       }
-      Type::List(inner) | Type::Map(inner) => self.ty(inner, at),
+      Type::List(inner) | Type::Map(inner) => self.ty(inner, at, depth + INNER_STEP),
       Type::Tuple(items) => {
         for item in items {
-          self.ty(item, at);
+          self.ty(item, at, depth + ITEM_STEP);
         }
       }
-      Type::Struct(fields) => self.fields(fields, at),
+      Type::Struct(fields) => self.fields(fields, at, depth + FIELD_STEP),
       Type::Ref(name) => {
         if !self.types.contains_key(name) {
           self.errors.push(ManifestError::UnknownType {
@@ -879,7 +930,7 @@ impl Check<'_> {
   fn is_unit(&self, ty: &Type) -> bool {
     match ty {
       Type::Primitive(Primitive::Unit) => true,
-      Type::Ref(name) => follow(self.types, name, &BTreeSet::new()).ends_in_unit(),
+      Type::Ref(name) => self.chains.from(name).ends_in_unit(),
       _ => false,
     }
   }

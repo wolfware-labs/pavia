@@ -123,17 +123,20 @@ impl TypeTable {
         _ => None,
       })
       .collect();
-    for name in std::mem::take(&mut self.wrapped) {
-      if follow(&self.definitions, &name, &collided).ends_in_unit() {
-        self.report(TypeError::OptionOfUnit { name });
-      }
-    }
+    let chains = Chains::new(&self.definitions, &collided);
+    let wrapped: Vec<String> = std::mem::take(&mut self.wrapped)
+      .into_iter()
+      .filter(|name| chains.from(name).ends_in_unit())
+      .collect();
     let cycles: Vec<String> = self
       .definitions
       .keys()
-      .filter(|name| matches!(follow(&self.definitions, name, &collided), Chain::Loops))
+      .filter(|name| matches!(chains.from(name), Chain::Loops))
       .cloned()
       .collect();
+    for name in wrapped {
+      self.report(TypeError::OptionOfUnit { name });
+    }
     for name in cycles {
       self.report(TypeError::AliasCycle { name });
     }
@@ -160,24 +163,52 @@ enum NameKind {
   Generated,
 }
 
-/// Where `name`'s chain of aliases through `definitions` leads. A chain through a name in `collided` ends
-/// there unknown: that name has several definitions, and the table keeps only the first.
-pub(crate) fn follow<'a>(definitions: &'a Types, name: &'a str, collided: &BTreeSet<String>) -> Chain<'a> {
-  let mut visited = BTreeSet::new();
-  let mut name = name;
-  while visited.insert(name) {
-    if collided.contains(name) {
-      return Chain::Ends(None);
+/// Where the chain of aliases from each name of a `types` table leads, every name walked once, so a table
+/// of n names costs O(n log n) however its chains run.
+pub(crate) struct Chains<'a> {
+  ends: BTreeMap<&'a str, Chain<'a>>,
+}
+
+impl<'a> Chains<'a> {
+  /// The chains through `definitions`. A chain through a name in `collided` ends there unknown: that name
+  /// has several definitions, and the table keeps only the first.
+  pub(crate) fn new(definitions: &'a Types, collided: &BTreeSet<String>) -> Self {
+    let mut ends = BTreeMap::new();
+    for start in definitions.keys() {
+      let mut path = Vec::new();
+      let mut on_path = BTreeSet::new();
+      let mut name = start.as_str();
+      let end = loop {
+        if let Some(end) = ends.get(name) {
+          break *end;
+        }
+        if !on_path.insert(name) {
+          break Chain::Loops;
+        }
+        path.push(name);
+        if collided.contains(name) {
+          break Chain::Ends(None);
+        }
+        match definitions.get(name) {
+          Some(Definition::Alias(Type::Ref(target))) => name = target,
+          definition => break Chain::Ends(definition),
+        }
+      };
+      for name in path {
+        ends.insert(name, end);
+      }
     }
-    match definitions.get(name) {
-      Some(Definition::Alias(Type::Ref(target))) => name = target,
-      definition => return Chain::Ends(definition),
-    }
+    Self { ends }
   }
-  Chain::Loops
+
+  /// Where the chain from `name` leads; a name the table does not have ends at once, unknown.
+  pub(crate) fn from(&self, name: &str) -> Chain<'a> {
+    self.ends.get(name).copied().unwrap_or(Chain::Ends(None))
+  }
 }
 
 /// Where a chain of `Alias(Ref)` definitions leads.
+#[derive(Clone, Copy)]
 pub(crate) enum Chain<'a> {
   /// To a definition that is not an alias of a reference, or to a name whose definition is not known.
   Ends(Option<&'a Definition>),

@@ -1,9 +1,10 @@
+use serde::de;
 use serde_json::{Value, json};
 
-use super::{MAX_MANIFEST_BYTES, MAX_TYPE_DEPTH, ReadError};
+use super::{MAX_MANIFEST_BYTES, MAX_TYPE_DEPTH, ReadError, StrictVisitor};
 use crate::manifest::tests::spec_example;
 use crate::manifest::{Call, Datagram, Direction, Manifest, ManifestError, Method, Mode, Service, Shape};
-use crate::schema::{Primitive, Type};
+use crate::schema::{Field, Primitive, Struct, Type};
 
 fn written() -> Value {
   serde_json::from_str(&spec_example().render().unwrap()).unwrap()
@@ -81,11 +82,22 @@ fn reads_docs_on_any_object_and_keeps_them_where_the_model_does() {
   document["types"]["Message"]["struct"]["docs"] = json!("Its fields.");
   document["types"]["Message"]["struct"]["fields"][0]["docs"] = json!("The ID.");
   document["types"]["SendError"]["enum"]["variants"][0]["docs"] = json!("No such room.");
+  let kept = [
+    "/docs",
+    "/services/0/docs",
+    "/services/0/server_methods/1/docs",
+    "/services/0/server_methods/1/params/0/docs",
+    "/channels/0/docs",
+    "/datagrams/0/docs",
+  ];
+  for pointer in kept {
+    let (parent, key) = pointer.rsplit_once('/').unwrap();
+    document.pointer_mut(parent).unwrap()[key] = json!(pointer);
+  }
   let rendered: Value = serde_json::from_str(&read(&document).unwrap().render().unwrap()).unwrap();
-  assert_eq!(
-    [&rendered["docs"], &rendered["services"][0]["docs"]],
-    [&json!("The example app."), &json!("Chat rooms.")]
-  );
+  for pointer in kept {
+    assert_eq!(rendered.pointer(pointer), Some(&json!(pointer)), "{pointer}");
+  }
   assert_eq!(rendered["types"]["Message"], written()["types"]["Message"]);
 }
 
@@ -154,6 +166,9 @@ fn refuses_another_format_version() {
   assert_eq!(read(&document).unwrap_err(), ReadError::Version { found: "2".into() });
   document["pavia"] = json!("1");
   assert_eq!(read(&document).unwrap_err(), ReadError::Version { found: "\"1\"".into() });
+  document["pavia"] = json!(2);
+  document["added_in_2"] = json!({ "docs": 7 });
+  assert_eq!(read(&document).unwrap_err(), ReadError::Version { found: "2".into() });
   for found in ["-1", "1.5"] {
     let text = format!(r#"{{"pavia": {found}, "name": "app"}}"#);
     assert_eq!(
@@ -185,28 +200,112 @@ fn reads_types_nested_to_the_depth_bound_and_refuses_one_deeper() {
     format!("$.types.Deep.alias{}", lists(MAX_TYPE_DEPTH))
   );
   let field = |ty: Value| json!({ "struct": { "fields": [{ "name": "f", "type": ty }] } });
-  assert!(read(&with_alias(field(nested(MAX_TYPE_DEPTH - 1)))).is_ok());
+  assert!(read(&with_alias(field(nested(MAX_TYPE_DEPTH - 4)))).is_ok());
   assert_eq!(
-    too_deep(&with_alias(field(nested(MAX_TYPE_DEPTH)))),
-    format!("$.types.Deep.alias.struct.fields[0].type{}", lists(MAX_TYPE_DEPTH - 1))
+    too_deep(&with_alias(field(nested(MAX_TYPE_DEPTH - 3)))),
+    format!("$.types.Deep.alias.struct.fields[0].type{}", lists(MAX_TYPE_DEPTH - 4))
+  );
+  let tuple = |ty: Value| json!({ "tuple": ["u8", ty] });
+  assert!(read(&with_alias(tuple(nested(MAX_TYPE_DEPTH - 2)))).is_ok());
+  assert_eq!(
+    too_deep(&with_alias(tuple(nested(MAX_TYPE_DEPTH - 1)))),
+    format!("$.types.Deep.alias.tuple[1]{}", lists(MAX_TYPE_DEPTH - 2))
   );
 }
 
 #[test]
-fn counts_a_named_struct_and_a_named_enum_as_one_level() {
+fn counts_the_types_of_a_named_struct_and_a_named_enum_from_one() {
   let lists = |count: usize| ".list".repeat(count);
   let field = |ty: Value| json!({ "struct": { "fields": [{ "name": "f", "type": ty }] } });
   let variant = |ty: Value| json!({ "enum": { "variants": [{ "name": "V", "type": ty }] } });
-  assert!(read(&with_type(field(nested(MAX_TYPE_DEPTH - 1)))).is_ok());
-  assert!(read(&with_type(variant(nested(MAX_TYPE_DEPTH - 1)))).is_ok());
+  assert!(read(&with_type(field(nested(MAX_TYPE_DEPTH)))).is_ok());
+  assert!(read(&with_type(variant(nested(MAX_TYPE_DEPTH)))).is_ok());
   assert_eq!(
-    too_deep(&with_type(field(nested(MAX_TYPE_DEPTH)))),
-    format!("$.types.Deep.struct.fields[0].type{}", lists(MAX_TYPE_DEPTH - 1))
+    too_deep(&with_type(field(nested(MAX_TYPE_DEPTH + 1)))),
+    format!("$.types.Deep.struct.fields[0].type{}", lists(MAX_TYPE_DEPTH))
   );
   assert_eq!(
-    too_deep(&with_type(variant(nested(MAX_TYPE_DEPTH)))),
-    format!("$.types.Deep.enum.variants[0].type{}", lists(MAX_TYPE_DEPTH - 1))
+    too_deep(&with_type(variant(nested(MAX_TYPE_DEPTH + 1)))),
+    format!("$.types.Deep.enum.variants[0].type{}", lists(MAX_TYPE_DEPTH))
   );
+}
+
+fn structs(count: usize) -> Type {
+  let mut ty = Type::from(Primitive::U8);
+  for _ in 0..count {
+    ty = Type::Struct(Struct::new(vec![Field::new("f", ty)]));
+  }
+  ty
+}
+
+fn lists_of_u8(depth: usize) -> Type {
+  let mut ty = Type::from(Primitive::U8);
+  for _ in 1..depth {
+    ty = Type::List(Box::new(ty));
+  }
+  ty
+}
+
+#[test]
+fn reads_back_every_type_the_writer_writes_and_both_refuse_one_deeper() {
+  let returns = "`returns` of server method `s/m`";
+  for (fits, deeper, at) in [
+    (
+      lists_of_u8(MAX_TYPE_DEPTH),
+      lists_of_u8(MAX_TYPE_DEPTH + 1),
+      returns.to_owned(),
+    ),
+    (structs(7), structs(8), format!("{}{returns}", "field `f` of ".repeat(8))),
+  ] {
+    let manifest = |ty: Type| Manifest::new("app").service(Service::new("s").server_method(Method::call("m", Call::unary(ty))));
+    let text = manifest(fits).render().unwrap();
+    assert_eq!(Manifest::read(&text).unwrap().render().unwrap(), text);
+    assert_eq!(manifest(deeper).render().unwrap_err(), [ManifestError::TooDeep { at }]);
+  }
+}
+
+#[test]
+fn refuses_to_render_text_over_the_size_bound() {
+  let manifest = Manifest::new("app").docs("d".repeat(MAX_MANIFEST_BYTES));
+  match manifest.render().unwrap_err().as_slice() {
+    [ManifestError::TooLarge { size, limit }] => {
+      assert!(*size > MAX_MANIFEST_BYTES);
+      assert_eq!(*limit, MAX_MANIFEST_BYTES);
+    }
+    other => panic!("expected a size error, got {other:?}"),
+  }
+}
+
+#[test]
+fn reads_a_long_chain_of_aliases_in_one_walk() {
+  let count = 50_000;
+  let mut types = serde_json::Map::new();
+  for index in 0..count {
+    let target = if index + 1 == count {
+      json!("u8")
+    } else {
+      json!({ "ref": format!("A{:06}", index + 1) })
+    };
+    types.insert(format!("A{index:06}"), json!({ "alias": target }));
+  }
+  let document = json!({ "pavia": 1, "name": "app", "types": types });
+  assert_eq!(read(&document).unwrap().types.len(), count);
+}
+
+#[test]
+fn reads_a_manifest_with_no_types_and_every_type_form() {
+  assert!(read(&json!({ "pavia": 1, "name": "app" })).unwrap().types.is_empty());
+  let forms = json!({ "map": { "tuple": ["u8", { "option": "string" }] } });
+  let manifest = read(&with_alias(forms.clone())).unwrap();
+  let rendered: Value = serde_json::from_str(&manifest.render().unwrap()).unwrap();
+  assert_eq!(rendered["types"]["Deep"]["alias"], forms);
+}
+
+#[test]
+fn a_location_moves_only_a_problem_that_has_one() {
+  assert_eq!(ReadError::Json("x".into()).under(".a"), ReadError::Json("x".into()));
+  let expected = <serde_json::Error as de::Error>::invalid_type(de::Unexpected::Unit, &StrictVisitor);
+  assert_eq!(expected.to_string(), "invalid type: null, expected a JSON value");
 }
 
 #[test]
@@ -271,7 +370,25 @@ fn refuses_docs_that_are_not_a_string_where_they_are_skipped() {
 
 #[test]
 fn refuses_a_part_out_of_its_form() {
-  let cases: [(&str, Value, &str, &str); 9] = [
+  let cases: [(&str, Value, &str, &str); 12] = [
+    (
+      "/types/RoomId/alias",
+      json!({ "tuple": "u8" }),
+      "$.types.RoomId.alias.tuple",
+      "is not an array",
+    ),
+    (
+      "/types/RoomId/alias",
+      json!({ "ref": 7 }),
+      "$.types.RoomId.alias.ref",
+      "is not a string",
+    ),
+    (
+      "/channels/0/history",
+      json!("yes"),
+      "$.channels[0].history",
+      "is not `true` or `false`",
+    ),
     (
       "/services/0/server_methods/0/kind",
       json!("stream"),
@@ -338,8 +455,15 @@ fn refuses_a_document_validation_refuses_and_reports_every_error() {
   let mut document = written();
   document["services"][0]["server_methods"][1]["name"] = json!("a(){}; evil");
   document["types"]["Message"]["struct"]["fields"][0]["name"] = json!("foo-bar");
-  match read(&document) {
-    Err(ReadError::Invalid(errors)) => {
+  let error = read(&document).unwrap_err();
+  assert_eq!(
+    error.to_string(),
+    "the manifest is not valid: server method of service `chat` name `a(){}; evil` is not a contract name: \
+     names match [A-Za-z_][A-Za-z0-9_]* (spec 12.2); field of type `Message` name `foo-bar` is not a contract \
+     name: names match [A-Za-z_][A-Za-z0-9_]* (spec 12.2)"
+  );
+  match error {
+    ReadError::Invalid(errors) => {
       let names: Vec<&str> = errors
         .iter()
         .filter_map(|error| match error {
