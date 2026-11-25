@@ -209,3 +209,21 @@ fn reads_the_committed_manifest_back_as_the_same_contract() {
     manifest::fingerprint(NAME, &methods).unwrap().bytes()
   );
 }
+
+#[test]
+fn fingerprints_no_contract_whose_manifest_it_cannot_write() {
+  let name = format!("chat/{}", "a".repeat(pavia_contract::manifest::MAX_MANIFEST_BYTES));
+  let methods = registry(vec![(name.as_str(), send())], Vec::new());
+  for result in [
+    manifest::fingerprint(NAME, &methods).map(|_| ()),
+    manifest::render(NAME, &methods).map(|_| ()),
+  ] {
+    match result {
+      Err(manifest::ExportError::Manifest(errors)) => assert!(
+        matches!(errors.as_slice(), [pavia_contract::manifest::ManifestError::TooLarge { .. }]),
+        "{errors:?}"
+      ),
+      other => panic!("expected a size error, got {other:?}"),
+    }
+  }
+}

@@ -1585,6 +1585,199 @@
       "error": "too_deep"
     },
     {
+      "id": "client-method-param-at-the-depth-limit",
+      "spec": [
+        "12.2"
+      ],
+      "note": "`u8` inside 31 lists as the client method param type, which starts at 1: 32 deep.",
+      "manifest": {
+        "channels": [],
+        "datagrams": [],
+        "name": "limits",
+        "pavia": 1,
+        "services": [
+          {
+            "client_methods": [
+              {
+                "kind": "call",
+                "name": "m",
+                "params": [
+                  {
+                    "name": "p",
+                    "type": {
+                      "list": {
+                        "list": {
+                          "list": {
+                            "list": {
+                              "list": {
+                                "list": {
+                                  "list": {
+                                    "list": {
+                                      "list": {
+                                        "list": {
+                                          "list": {
+                                            "list": {
+                                              "list": {
+                                                "list": {
+                                                  "list": {
+                                                    "list": {
+                                                      "list": {
+                                                        "list": {
+                                                          "list": {
+                                                            "list": {
+                                                              "list": {
+                                                                "list": {
+                                                                  "list": {
+                                                                    "list": {
+                                                                      "list": {
+                                                                        "list": {
+                                                                          "list": {
+                                                                            "list": {
+                                                                              "list": {
+                                                                                "list": {
+                                                                                  "list": "u8"
+                                                                                }
+                                                                              }
+                                                                            }
+                                                                          }
+                                                                        }
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "shape": "unary"
+              }
+            ],
+            "name": "s",
+            "server_methods": []
+          }
+        ],
+        "types": {}
+      }
+    },
+    {
+      "id": "client-method-param-past-the-depth-limit",
+      "spec": [
+        "12.2"
+      ],
+      "note": "`u8` inside 32 lists as the client method param type: 33 deep.",
+      "manifest": {
+        "channels": [],
+        "datagrams": [],
+        "name": "limits",
+        "pavia": 1,
+        "services": [
+          {
+            "client_methods": [
+              {
+                "kind": "call",
+                "name": "m",
+                "params": [
+                  {
+                    "name": "p",
+                    "type": {
+                      "list": {
+                        "list": {
+                          "list": {
+                            "list": {
+                              "list": {
+                                "list": {
+                                  "list": {
+                                    "list": {
+                                      "list": {
+                                        "list": {
+                                          "list": {
+                                            "list": {
+                                              "list": {
+                                                "list": {
+                                                  "list": {
+                                                    "list": {
+                                                      "list": {
+                                                        "list": {
+                                                          "list": {
+                                                            "list": {
+                                                              "list": {
+                                                                "list": {
+                                                                  "list": {
+                                                                    "list": {
+                                                                      "list": {
+                                                                        "list": {
+                                                                          "list": {
+                                                                            "list": {
+                                                                              "list": {
+                                                                                "list": {
+                                                                                  "list": {
+                                                                                    "list": "u8"
+                                                                                  }
+                                                                                }
+                                                                              }
+                                                                            }
+                                                                          }
+                                                                        }
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "shape": "unary"
+              }
+            ],
+            "name": "s",
+            "server_methods": []
+          }
+        ],
+        "types": {}
+      },
+      "error": "too_deep"
+    },
+    {
       "id": "accepts-at-the-depth-limit",
       "spec": [
         "12.2"

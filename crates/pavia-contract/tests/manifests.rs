@@ -32,5 +32,5 @@ fn runs_every_manifest_vector() {
       count += 1;
     }
   }
-  assert!(count >= 41, "only {count} manifest vectors");
+  assert!(count >= 43, "only {count} manifest vectors");
 }
