@@ -312,6 +312,15 @@ fn escapes_docs_so_they_cannot_end_the_comment() {
 }
 
 #[test]
+fn keeps_a_blank_line_of_docs_as_a_bare_star() {
+  let manifest = with_types(vec![("T", Definition::Alias(prim(Primitive::U8)))]).docs("First.\n\nSecond.");
+  let code = code(&manifest);
+  let start = code.find("/**").expect("the doc comment");
+  let doc: Vec<&str> = code[start..].lines().take(5).collect();
+  assert_eq!(doc, ["/**", " * First.", " *", " * Second.", " */"]);
+}
+
+#[test]
 fn refuses_names_typescript_reserves_or_the_generated_code_uses() {
   let reserved = |manifest: Manifest| match generate(&manifest) {
     Err(GenerateError::Reserved { name, .. }) => name,
