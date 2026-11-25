@@ -238,10 +238,10 @@ fn structs(count: usize) -> Type {
   ty
 }
 
-fn lists_of_u8(depth: usize) -> Type {
+fn around_u8(count: usize, wrap: fn(Type) -> Type) -> Type {
   let mut ty = Type::from(Primitive::U8);
-  for _ in 1..depth {
-    ty = Type::List(Box::new(ty));
+  for _ in 0..count {
+    ty = wrap(ty);
   }
   ty
 }
@@ -249,14 +249,25 @@ fn lists_of_u8(depth: usize) -> Type {
 #[test]
 fn reads_back_every_type_the_writer_writes_and_both_refuse_one_deeper() {
   let returns = "`returns` of server method `s/m`";
-  for (fits, deeper, at) in [
-    (
-      lists_of_u8(MAX_TYPE_DEPTH),
-      lists_of_u8(MAX_TYPE_DEPTH + 1),
-      returns.to_owned(),
-    ),
-    (structs(7), structs(8), format!("{}{returns}", "field `f` of ".repeat(8))),
-  ] {
+  let inner: [fn(Type) -> Type; 3] = [
+    |ty| Type::List(Box::new(ty)),
+    |ty| Type::Map(Box::new(ty)),
+    |ty| Type::Option(Box::new(ty)),
+  ];
+  let mut cases: Vec<(Type, Type, String)> = inner
+    .into_iter()
+    .map(|wrap| {
+      (
+        around_u8(MAX_TYPE_DEPTH - 1, wrap),
+        around_u8(MAX_TYPE_DEPTH, wrap),
+        returns.to_owned(),
+      )
+    })
+    .collect();
+  let tuple: fn(Type) -> Type = |ty| Type::Tuple(vec![Type::from(Primitive::U8), ty]);
+  cases.push((around_u8(15, tuple), around_u8(16, tuple), returns.to_owned()));
+  cases.push((structs(7), structs(8), format!("{}{returns}", "field `f` of ".repeat(8))));
+  for (fits, deeper, at) in cases {
     let manifest = |ty: Type| Manifest::new("app").service(Service::new("s").server_method(Method::call("m", Call::unary(ty))));
     let text = manifest(fits).render().unwrap();
     assert_eq!(Manifest::read(&text).unwrap().render().unwrap(), text);
@@ -267,6 +278,7 @@ fn reads_back_every_type_the_writer_writes_and_both_refuse_one_deeper() {
 #[test]
 fn refuses_to_render_text_over_the_size_bound() {
   let manifest = Manifest::new("app").docs("d".repeat(MAX_MANIFEST_BYTES));
+  assert_eq!(manifest.fingerprint().unwrap_err(), manifest.render().unwrap_err());
   match manifest.render().unwrap_err().as_slice() {
     [ManifestError::TooLarge { size, limit }] => {
       assert!(*size > MAX_MANIFEST_BYTES);

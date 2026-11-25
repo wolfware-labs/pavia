@@ -201,9 +201,10 @@ impl Manifest {
   ///
   /// # Errors
   ///
-  /// The errors of [`Manifest::validate`].
+  /// The errors of [`Manifest::render`]: a contract has a fingerprint only when its manifest can be
+  /// written and read back.
   pub fn fingerprint(&self) -> Result<[u8; 32], Vec<ManifestError>> {
-    self.validate()?;
+    self.render()?;
     Ok(crate::fingerprint::fingerprint(&self.to_json()).expect("the writer's output is in canonical form"))
   }
 
