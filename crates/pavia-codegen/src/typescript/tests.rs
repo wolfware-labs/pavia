@@ -356,6 +356,42 @@ fn refuses_two_parts_that_would_get_one_name() {
     ("StatusInput", Definition::Alias(prim(Primitive::U8))),
   ]);
   assert_eq!(collision(input), "StatusInput");
+  let global = Manifest::new("app").service(Service::new("_").server_method(Method::call(
+    "_",
+    Call::unary(prim(Primitive::U8)).error(prim(Primitive::String)),
+  )));
+  assert_eq!(collision(global), "Error");
+}
+
+#[test]
+fn gives_the_input_form_to_every_type_on_a_cycle_that_reaches_an_open_enum() {
+  let code = code(&with_types(vec![
+    ("Status", Definition::Enum(Enum::new(vec![Variant::unit("Idle")]).open())),
+    (
+      "Node",
+      Definition::Struct(Struct::new(vec![Field::new(
+        "next",
+        Type::Option(Box::new(reference("Edge"))),
+      )])),
+    ),
+    (
+      "Edge",
+      Definition::Struct(Struct::new(vec![
+        Field::new("to", Type::Option(Box::new(reference("Node")))),
+        Field::new("status", reference("Status")),
+      ])),
+    ),
+    (
+      "Loop",
+      Definition::Struct(Struct::new(vec![Field::new(
+        "again",
+        Type::Option(Box::new(reference("Loop"))),
+      )])),
+    ),
+  ]));
+  has(&code, "  next: EdgeInput | null;");
+  has(&code, "  to: NodeInput | null;");
+  assert!(!code.contains("LoopInput"), "{code}");
 }
 
 #[test]

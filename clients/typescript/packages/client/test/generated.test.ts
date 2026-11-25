@@ -1,9 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { encodeData, StatusCode, StatusError, type Types } from "../src/index.js";
-import { established, FakeSocket } from "./fake-socket.js";
+import { establishedQuietly, FakeSocket } from "./fake-socket.js";
+import { failure } from "./support.js";
 import { ChatClient, ChatSendError, CONTRACT, type SendError } from "./generated/contract.js";
-
-const QUIET = { hb: 60_000n, idle: 600_000n };
 
 const SEND_ERROR: Types = {
   SendError: {
@@ -17,8 +16,7 @@ const SEND_ERROR: Types = {
 };
 
 async function open() {
-  const { connection, ws } = await established({}, QUIET);
-  vi.advanceTimersByTime(0);
+  const { connection, ws } = await establishedQuietly();
   return { connection, ws, chat: new ChatClient(connection) };
 }
 
@@ -54,10 +52,7 @@ describe("the generated client of the example app", () => {
     const detail: SendError = { kind: "TooLong", value: { max: 4000 } };
     const data = encodeData({ ref: "SendError" }, SEND_ERROR, detail, "cbor");
     ws.receive({ type: "ERROR", code: 3n, msg: "too long", data }, 2);
-    const error = await pending.then(
-      () => undefined,
-      (e: unknown) => e,
-    );
+    const error = await failure(pending);
     expect(error).toBeInstanceOf(ChatSendError);
     expect(error).toBeInstanceOf(StatusError);
     const failed = error as ChatSendError;
@@ -73,10 +68,7 @@ describe("the generated client of the example app", () => {
   it("passes a local refusal through as a ChatSendError with nx", async () => {
     const { ws, chat } = await open();
     ws.receive({ type: "CLOSE", code: 7n });
-    const error = await chat.send("lobby", "hi").then(
-      () => undefined,
-      (e: unknown) => e,
-    );
+    const error = await failure(chat.send("lobby", "hi"));
     expect(error).toBeInstanceOf(ChatSendError);
     expect([(error as ChatSendError).code, (error as ChatSendError).nx]).toEqual([StatusCode.UNAVAILABLE, true]);
   });

@@ -1,3 +1,4 @@
+import { vi } from "vitest";
 import { type ConnectOptions, connect, type Frame, type WebSocketLike, type Welcome } from "../src/index.js";
 import { arrayBufferOf, framesOnStreams, message, welcome } from "./support.js";
 
@@ -60,4 +61,17 @@ export async function established(extra: Partial<ConnectOptions> = {}, fields: P
   socket().open();
   socket().receive(welcome(fields));
   return { connection: await pending, ws: socket() };
+}
+
+/** WELCOME heartbeat and idle times no test reaches, so no PING or idle close gets in the way. */
+export const QUIET = { hb: 60_000n, idle: 600_000n };
+
+/**
+ * {@link established} with a {@link QUIET} WELCOME (plus `fields`), after the timers due at once
+ * have run. Needs fake timers.
+ */
+export async function establishedQuietly(fields: Partial<Welcome> = {}, extra: Partial<ConnectOptions> = {}) {
+  const opened = await established(extra, { ...QUIET, ...fields });
+  vi.advanceTimersByTime(0);
+  return opened;
 }

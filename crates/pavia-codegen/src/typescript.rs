@@ -9,11 +9,18 @@
 use std::fmt::Write as _;
 
 use pavia_contract::manifest::{Call, Manifest, Method, Param, Service, Shape};
-use pavia_contract::schema::{Enum, Field, Primitive, Struct, Type};
+use pavia_contract::schema::{Definition, Enum, Field, Primitive, Struct, Type};
 use serde_json::Value;
 
 use crate::GenerateError;
-use crate::front::{Body, Form, Front, Names, body, form, pascal, unsupported};
+use crate::front::{Body, Form, Front, Names, body, form, json, pascal, unsupported, walk};
+
+/// `writeln!` into a `String`, which cannot fail.
+macro_rules! emit {
+  ($out:expr, $($format:tt)*) => {
+    writeln!($out, $($format)*).expect("writing to a String")
+  };
+}
 
 const TARGET: &str = "TypeScript";
 
@@ -171,34 +178,30 @@ fn reserved(what: impl Into<String>, name: &str) -> GenerateError {
 
 fn claim_names(front: &Front<'_>) -> Result<Names, GenerateError> {
   let mut names = Names::default();
-  for name in RUNTIME.iter().chain(CONSTANTS) {
+  for name in RUNTIME.iter().chain(CONSTANTS).chain(GLOBALS) {
     names.claim(name, "the generated code")?;
   }
   for name in front.manifest.type_table().keys() {
-    if KEYWORDS.contains(&name.as_str()) || GLOBALS.contains(&name.as_str()) || names.contains(name) {
+    if KEYWORDS.contains(&name.as_str()) || names.contains(name) {
       return Err(reserved("type", name));
     }
     names.claim(name, format!("type `{name}`"))?;
   }
   for name in front.manifest.type_table().keys().filter(|name| front.has_input_form(name)) {
-    names.claim(&format!("{name}Input"), format!("the input form of type `{name}`"))?;
+    names.claim(&input_name(name), format!("the input form of type `{name}`"))?;
   }
   for service in front.manifest.services() {
-    let class = pascal(service.name());
-    names.claim(
-      &format!("{class}Client"),
-      format!("the client of service `{}`", service.name()),
-    )?;
+    names.claim(&client_class(service), format!("the client of service `{}`", service.name()))?;
     if !service.client_methods().is_empty() {
       names.claim(
-        &format!("{class}Handlers"),
+        &handlers_interface(service),
         format!("the handlers of service `{}`", service.name()),
       )?;
     }
-    for method in service.server_methods().iter().filter(|method| error_class(method)) {
+    for method in service.server_methods().iter().filter(|method| has_error_class(method)) {
       names.claim(
-        &format!("{class}{}Error", pascal(method.name())),
-        format!("the error of `{}/{}`", service.name(), method.name()),
+        &error_class(service, method),
+        format!("the error of `{}`", method_path(service, method)),
       )?;
     }
   }
@@ -209,14 +212,8 @@ fn claim_names(front: &Front<'_>) -> Result<Names, GenerateError> {
 /// count on it.
 fn check_types(manifest: &Manifest) -> Result<(), GenerateError> {
   for definition in manifest.type_table().values() {
-    match body(definition)? {
-      Body::Struct(fields) => known_fields(fields)?,
-      Body::Enum(variants) => {
-        for ty in variants.variants().iter().filter_map(|variant| variant.ty()) {
-          known(ty)?;
-        }
-      }
-      Body::Alias(target) => known(target)?,
+    for ty in body(definition)?.types() {
+      known(ty)?;
     }
   }
   for method in manifest
@@ -239,18 +236,11 @@ fn check_types(manifest: &Manifest) -> Result<(), GenerateError> {
   Ok(())
 }
 
-fn known_fields(fields: &Struct) -> Result<(), GenerateError> {
-  fields.fields().iter().try_for_each(|field| known(field.ty()))
-}
-
 fn known(ty: &Type) -> Result<(), GenerateError> {
-  match form(ty)? {
-    Form::Primitive(primitive) => primitive_ty(primitive).map(drop),
-    Form::Option(inner) | Form::List(inner) | Form::Map(inner) => known(inner),
-    Form::Tuple(items) => items.iter().try_for_each(known),
-    Form::Struct(fields) => known_fields(fields),
-    Form::Ref(_) => Ok(()),
-  }
+  walk(ty, &mut |form| match form {
+    Form::Primitive(primitive) => primitive_ty(*primitive).map(drop),
+    Form::Option(_) | Form::List(_) | Form::Map(_) | Form::Tuple(_) | Form::Struct(_) | Form::Ref(_) => Ok(()),
+  })
 }
 
 /// `ty` in a form this back end knows, which [`check_types`] made sure of.
@@ -258,9 +248,19 @@ fn checked(ty: &Type) -> Form<'_> {
   form(ty).expect("check_types refuses a type in a form this back end does not know")
 }
 
+/// `definition` in a form this back end knows, which [`check_types`] made sure of.
+fn checked_body(definition: &Definition) -> Body<'_> {
+  body(definition).expect("check_types refuses a definition it does not know")
+}
+
+/// Whether `ty` is `unit`, which a callee answers with as `void`.
+fn is_unit(ty: &Type) -> bool {
+  matches!(checked(ty), Form::Primitive(Primitive::Unit))
+}
+
 fn check_members(manifest: &Manifest, names: &Names) -> Result<(), GenerateError> {
   for (name, definition) in manifest.type_table() {
-    let fields: Vec<&str> = match body(definition).expect("check_types refuses a definition it does not know") {
+    let fields: Vec<&str> = match checked_body(definition) {
       Body::Struct(fields) => fields.fields().iter().map(Field::name).collect(),
       Body::Enum(variants) => variants.variants().iter().map(|variant| variant.name()).collect(),
       Body::Alias(_) => Vec::new(),
@@ -278,7 +278,7 @@ fn check_members(manifest: &Manifest, names: &Names) -> Result<(), GenerateError
         }
         for param in method.params() {
           let name = param.name();
-          if KEYWORDS.contains(&name) || GLOBALS.contains(&name) || LOCALS.contains(&name) || names.contains(name) {
+          if KEYWORDS.contains(&name) || LOCALS.contains(&name) || names.contains(name) {
             return Err(reserved(format!("param of {what} `{}`", method.name()), name));
           }
         }
@@ -288,14 +288,35 @@ fn check_members(manifest: &Manifest, names: &Names) -> Result<(), GenerateError
   Ok(())
 }
 
-fn error_class(method: &Method) -> bool {
+fn has_error_class(method: &Method) -> bool {
   method
     .as_call()
     .is_some_and(|call| call.shape() == Shape::Unary && call.error_type().is_some())
 }
 
-fn json(value: &Value) -> String {
-  serde_json::to_string(value).expect("a JSON value serializes")
+/// The method's path (§8.1): `chat/send`.
+fn method_path(service: &Service, method: &Method) -> String {
+  format!("{}/{}", service.name(), method.name())
+}
+
+/// The client class of `service`: `chat` gives `ChatClient`.
+fn client_class(service: &Service) -> String {
+  format!("{}Client", pascal(service.name()))
+}
+
+/// The handler interface of `service`: `chat` gives `ChatHandlers`.
+fn handlers_interface(service: &Service) -> String {
+  format!("{}Handlers", pascal(service.name()))
+}
+
+/// The error class of a unary method with an error type: `chat/send` gives `ChatSendError`.
+fn error_class(service: &Service, method: &Method) -> String {
+  format!("{}{}Error", pascal(service.name()), pascal(method.name()))
+}
+
+/// The input form of the named type `name`: `Status` gives `StatusInput`.
+fn input_name(name: &str) -> String {
+  format!("{name}Input")
 }
 
 fn quoted(text: &str) -> String {
@@ -368,15 +389,14 @@ impl<'f, 'm> Writer<'f, 'm> {
       .chunks(16)
       .map(|row| row.iter().map(u8::to_string).collect::<Vec<_>>().join(", "))
       .collect();
-    writeln!(
+    emit!(
       self.out,
       "export const CONTRACT: Uint8Array = Uint8Array.from([\n  {},\n]);",
       rows.join(",\n  ")
-    )
-    .expect("writing to a String");
+    );
     for (name, definition) in self.manifest().type_table() {
       self.out.push('\n');
-      let definition = body(definition).expect("check_types refuses a definition it does not know");
+      let definition = checked_body(definition);
       self.definition(name, &definition, false);
       if self.front.has_input_form(name) {
         self.out.push('\n');
@@ -387,7 +407,7 @@ impl<'f, 'm> Writer<'f, 'm> {
     for (service, method, call) in self.unary() {
       if let Some(error) = call.error_type() {
         self.out.push('\n');
-        self.error_class(service, method, error);
+        self.error_type_class(service, method, error);
       }
     }
     for service in self.manifest().services() {
@@ -407,9 +427,10 @@ impl<'f, 'm> Writer<'f, 'm> {
       .iter()
       .flat_map(Service::server_methods)
       .any(|method| method.as_call().is_some());
-    let unary = !self.unary().is_empty();
+    let unary = self.unary();
+    let errors = unary.iter().any(|(_, _, call)| call.error_type().is_some());
+    let unary = !unary.is_empty();
     let notifications = !self.notifications().is_empty();
-    let errors = self.unary().iter().any(|(_, _, call)| call.error_type().is_some());
     let used = [
       ("type CallOptions", calls),
       ("type CallSignature", unary),
@@ -425,46 +446,46 @@ impl<'f, 'm> Writer<'f, 'm> {
     }
     let line = format!("import {{ {} }} from \"@pavia/client\";", names.join(", "));
     if line.len() <= WIDTH {
-      writeln!(self.out, "{line}").expect("writing to a String");
+      emit!(self.out, "{line}");
     } else {
-      writeln!(self.out, "import {{\n  {},\n}} from \"@pavia/client\";", names.join(",\n  ")).expect("writing to a String");
+      emit!(self.out, "import {{\n  {},\n}} from \"@pavia/client\";", names.join(",\n  "));
     }
   }
 
   fn doc(&mut self, indent: &str, text: Option<&str>) {
     let Some(text) = text else { return };
-    writeln!(self.out, "{indent}/**").expect("writing to a String");
+    emit!(self.out, "{indent}/**");
     for line in comment_lines(text) {
       if line.is_empty() {
-        writeln!(self.out, "{indent} *").expect("writing to a String");
+        emit!(self.out, "{indent} *");
       } else {
-        writeln!(self.out, "{indent} * {line}").expect("writing to a String");
+        emit!(self.out, "{indent} * {line}");
       }
     }
-    writeln!(self.out, "{indent} */").expect("writing to a String");
+    emit!(self.out, "{indent} */");
   }
 
   fn definition(&mut self, name: &str, definition: &Body<'_>, input: bool) {
-    let declared = if input { format!("{name}Input") } else { name.to_owned() };
+    let declared = if input { input_name(name) } else { name.to_owned() };
     match definition {
       Body::Struct(fields) if fields.fields().is_empty() => {
-        writeln!(self.out, "export interface {declared} {{}}").expect("writing to a String");
+        emit!(self.out, "export interface {declared} {{}}");
       }
       Body::Struct(fields) => {
-        writeln!(self.out, "export interface {declared} {{").expect("writing to a String");
+        emit!(self.out, "export interface {declared} {{");
         for field in fields.fields() {
           let field = self.field(field, input);
-          writeln!(self.out, "  {field};").expect("writing to a String");
+          emit!(self.out, "  {field};");
         }
         self.out.push_str("}\n");
       }
       Body::Enum(variants) => {
         let union = self.variants(variants, input);
-        writeln!(self.out, "export type {declared} = {union};").expect("writing to a String");
+        emit!(self.out, "export type {declared} = {union};");
       }
       Body::Alias(target) => {
         let ty = self.ty(target, input);
-        writeln!(self.out, "export type {declared} = {ty};").expect("writing to a String");
+        emit!(self.out, "export type {declared} = {ty};");
       }
     }
   }
@@ -508,7 +529,7 @@ impl<'f, 'm> Writer<'f, 'm> {
         format!("[{}]", items.join(", "))
       }
       Form::Struct(fields) => self.inline_struct(fields, input),
-      Form::Ref(name) if input && self.front.has_input_form(name) => format!("{name}Input"),
+      Form::Ref(name) if input && self.front.has_input_form(name) => input_name(name),
       Form::Ref(name) => name.to_owned(),
     }
   }
@@ -523,10 +544,7 @@ impl<'f, 'm> Writer<'f, 'm> {
 
   /// The type of a value a callee answers with: `void` for `unit`, and the form `input` asks for.
   fn result(&self, ty: &Type, input: bool) -> String {
-    match checked(ty) {
-      Form::Primitive(Primitive::Unit) => "void".to_owned(),
-      _ => self.ty(ty, input),
-    }
+    if is_unit(ty) { "void".to_owned() } else { self.ty(ty, input) }
   }
 
   fn signatures(&mut self) {
@@ -542,15 +560,15 @@ impl<'f, 'm> Writer<'f, 'm> {
       .map(|(name, definition)| (name.clone(), definition.to_json()))
       .collect();
     let table = serde_json::to_string_pretty(&Value::Object(table)).expect("a JSON value serializes");
-    write!(self.out, "\nconst TYPES: Types = {table};\n").expect("writing to a String");
+    emit!(self.out, "\nconst TYPES: Types = {table};");
     if !unary.is_empty() {
       self.out.push_str("\nconst CALLS = {\n");
       for (service, method, call) in unary {
         let returns = call.returns().expect("a unary call has a result type");
         self.signature_start(service, method);
-        writeln!(self.out, "    returns: {},", json(&returns.to_json())).expect("writing to a String");
+        emit!(self.out, "    returns: {},", json(&returns.to_json()));
         if let Some(error) = call.error_type() {
-          writeln!(self.out, "    error: {},", json(&error.to_json())).expect("writing to a String");
+          emit!(self.out, "    error: {},", json(&error.to_json()));
         }
         if call.is_idempotent() {
           self.out.push_str("    idempotent: true,\n");
@@ -570,21 +588,20 @@ impl<'f, 'm> Writer<'f, 'm> {
   }
 
   fn signature_start(&mut self, service: &Service, method: &Method) {
-    let key = quoted(&format!("{}/{}", service.name(), method.name()));
+    let key = quoted(&method_path(service, method));
     let params: Vec<Value> = method.params().iter().map(|param| param.ty().to_json()).collect();
-    writeln!(
+    emit!(
       self.out,
       "  {key}: {{\n    method: {key},\n    params: {},",
       json(&Value::Array(params))
-    )
-    .expect("writing to a String");
+    );
   }
 
-  fn error_class(&mut self, service: &Service, method: &Method, error: &Type) {
-    let class = format!("{}{}Error", pascal(service.name()), pascal(method.name()));
+  fn error_type_class(&mut self, service: &Service, method: &Method, error: &Type) {
+    let class = error_class(service, method);
     let detail = self.ty(error, false);
-    let path = format!("{}/{}", service.name(), method.name());
-    writeln!(
+    let path = method_path(service, method);
+    emit!(
       self.out,
       "/** {path} failed: the server's ERROR, with its detail typed as the method's error type. */\n\
        export class {class} extends StatusError {{\n  override readonly name = {};\n  declare readonly detail: {detail} \
@@ -592,8 +609,7 @@ impl<'f, 'm> Writer<'f, 'm> {
        {{\n      detail: error.detail,\n      nx: error.nx,\n      meta: error.meta,\n      cause: error.cause,\n    \
        }});\n  }}\n}}",
       quoted(&class)
-    )
-    .expect("writing to a String");
+    );
   }
 
   fn params(&self, params: &[Param], input: bool) -> Vec<String> {
@@ -605,13 +621,12 @@ impl<'f, 'm> Writer<'f, 'm> {
 
   fn client(&mut self, service: &Service) {
     self.doc("", service.documentation());
-    let class = pascal(service.name());
-    writeln!(
+    let class = client_class(service);
+    emit!(
       self.out,
-      "export class {class}Client {{\n  readonly #connection: Connection;\n\n  constructor(connection: Connection) \
+      "export class {class} {{\n  readonly #connection: Connection;\n\n  constructor(connection: Connection) \
        {{\n    this.#connection = connection;\n  }}"
-    )
-    .expect("writing to a String");
+    );
     for method in service.server_methods() {
       self.out.push('\n');
       self.doc("  ", method.documentation());
@@ -621,19 +636,18 @@ impl<'f, 'm> Writer<'f, 'm> {
   }
 
   fn proxy(&mut self, service: &Service, method: &Method) {
-    let path = format!("{}/{}", service.name(), method.name());
+    let path = method_path(service, method);
     let key = quoted(&path);
     let mut params = self.params(method.params(), true);
     let args = method.params().iter().map(Param::name).collect::<Vec<_>>().join(", ");
     let Some(call) = method.as_call() else {
       params.push("options?: NotifyOptions".to_owned());
-      writeln!(
+      emit!(
         self.out,
         "  {}({}): void {{\n    this.#connection.notify(NOTIFICATIONS[{key}], [{args}], options);\n  }}",
         method.name(),
         params.join(", ")
-      )
-      .expect("writing to a String");
+      );
       return;
     };
     if let Some(accepts) = call.accepts() {
@@ -656,19 +670,17 @@ impl<'f, 'm> Writer<'f, 'm> {
     };
     match (call.shape(), call.returns()) {
       (Shape::Unary, Some(returns)) => self.unary_proxy(service, method, call, returns, &invocation),
-      (_, Some(returns)) => writeln!(
+      (_, Some(returns)) => emit!(
         self.out,
         "  {name}({params}): Promise<{}> {{\n    void [{used}];\n    return Promise.reject(new Error({stub}));\n  }}",
         self.result(returns, false)
-      )
-      .expect("writing to a String"),
+      ),
       (_, None) => {
         let yields = self.ty(call.yields().expect("a call without a result type yields"), false);
-        writeln!(
+        emit!(
           self.out,
           "  {name}({params}): AsyncIterable<{yields}> {{\n    void [{used}];\n    throw new Error({stub});\n  }}"
-        )
-        .expect("writing to a String");
+        );
       }
     }
   }
@@ -676,7 +688,7 @@ impl<'f, 'm> Writer<'f, 'm> {
   fn unary_proxy(&mut self, service: &Service, method: &Method, call: &Call, returns: &Type, invocation: &Invocation<'_>) {
     let Invocation { params, key, args } = invocation;
     let result = self.result(returns, false);
-    let unit = result == "void";
+    let unit = is_unit(returns);
     let invoke = if unit {
       format!("await this.#connection.call(CALLS[{key}], [{args}], options);")
     } else if call.error_type().is_some() {
@@ -684,30 +696,28 @@ impl<'f, 'm> Writer<'f, 'm> {
     } else {
       format!("return this.#connection.call<{result}>(CALLS[{key}], [{args}], options);")
     };
-    writeln!(self.out, "  async {}({params}): Promise<{result}> {{", method.name()).expect("writing to a String");
+    emit!(self.out, "  async {}({params}): Promise<{result}> {{", method.name());
     if call.error_type().is_some() {
-      let class = format!("{}{}Error", pascal(service.name()), pascal(method.name()));
-      writeln!(
+      let class = error_class(service, method);
+      emit!(
         self.out,
         "    try {{\n      {invoke}\n    }} catch (error) {{\n      if (error instanceof StatusError) throw \
          {class}.from(error);\n      throw error;\n    }}"
-      )
-      .expect("writing to a String");
+      );
     } else {
-      writeln!(self.out, "    {invoke}").expect("writing to a String");
+      emit!(self.out, "    {invoke}");
     }
     self.out.push_str("  }\n");
   }
 
   fn handlers(&mut self, service: &Service) {
-    let class = pascal(service.name());
-    writeln!(
+    let interface = handlers_interface(service);
+    emit!(
       self.out,
       "/** The client methods of service `{}`: what the server may call on this client. */\nexport interface \
-       {class}Handlers {{",
-      comment_lines(service.name()).join(" ")
-    )
-    .expect("writing to a String");
+       {interface} {{",
+      service.name()
+    );
     for method in service.client_methods() {
       self.doc("  ", method.documentation());
       let mut params = self.params(method.params(), false);
@@ -729,7 +739,7 @@ impl<'f, 'm> Writer<'f, 'm> {
           }
         }
       };
-      writeln!(self.out, "  {}({}): {returns};", method.name(), params.join(", ")).expect("writing to a String");
+      emit!(self.out, "  {}({}): {returns};", method.name(), params.join(", "));
     }
     self.out.push_str("}\n");
   }

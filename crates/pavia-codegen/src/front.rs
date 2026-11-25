@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use pavia_contract::manifest::{Manifest, ManifestError};
-use pavia_contract::schema::{Definition, Enum, Primitive, Struct, Type};
+use pavia_contract::schema::{Definition, Enum, Field, Primitive, Struct, Type, Variant};
 use thiserror::Error;
 
 /// Why a back end could not generate code for a manifest.
@@ -111,67 +111,68 @@ pub(crate) fn body(definition: &Definition) -> Result<Body<'_>, GenerateError> {
   })
 }
 
-pub(crate) fn unsupported(json: &serde_json::Value) -> GenerateError {
-  GenerateError::Unsupported {
-    form: serde_json::to_string(json).expect("a JSON value serializes"),
+impl<'d> Body<'d> {
+  /// The types the definition holds: its fields' types, its variants' value types or its target.
+  pub(crate) fn types(&self) -> Vec<&'d Type> {
+    match self {
+      Self::Struct(fields) => fields.fields().iter().map(Field::ty).collect(),
+      Self::Enum(variants) => variants.variants().iter().filter_map(Variant::ty).collect(),
+      Self::Alias(target) => vec![target],
+    }
   }
 }
 
-/// The named types that reach an open enum, the open enums included: grown until no definition
-/// adds one, so a cycle of references ends.
+/// Hands `visit` the form of `ty` and of every type inside it, outermost first; a named type's
+/// definition is not entered. The manifest's depth bound (§12.2) bounds the recursion.
+pub(crate) fn walk<'t>(
+  ty: &'t Type,
+  visit: &mut impl FnMut(&Form<'t>) -> Result<(), GenerateError>,
+) -> Result<(), GenerateError> {
+  let form = form(ty)?;
+  visit(&form)?;
+  match form {
+    Form::Primitive(_) | Form::Ref(_) => Ok(()),
+    Form::Option(inner) | Form::List(inner) | Form::Map(inner) => walk(inner, visit),
+    Form::Tuple(items) => items.iter().try_for_each(|item| walk(item, visit)),
+    Form::Struct(fields) => fields.fields().iter().try_for_each(|field| walk(field.ty(), visit)),
+  }
+}
+
+/// `value` as compact JSON text.
+pub(crate) fn json(value: &serde_json::Value) -> String {
+  serde_json::to_string(value).expect("a JSON value serializes")
+}
+
+pub(crate) fn unsupported(value: &serde_json::Value) -> GenerateError {
+  GenerateError::Unsupported { form: json(value) }
+}
+
+/// The named types that reach an open enum, the open enums included: a walk back from each open
+/// enum along the references to it, which visits each name once, so a cycle of references ends.
 fn inputs(manifest: &Manifest) -> Result<BTreeSet<&str>, GenerateError> {
-  let mut inputs = BTreeSet::new();
-  let mut uses = BTreeMap::new();
+  let mut users: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+  let mut pending = Vec::new();
   for (name, definition) in manifest.type_table() {
-    let mut names = Vec::new();
-    match body(definition)? {
-      Body::Struct(fields) => {
-        for field in fields.fields() {
-          refs(field.ty(), &mut names)?;
+    let body = body(definition)?;
+    if matches!(body, Body::Enum(variants) if variants.is_open()) {
+      pending.push(name.as_str());
+    }
+    for ty in body.types() {
+      walk(ty, &mut |form| {
+        if let Form::Ref(used) = form {
+          users.entry(used).or_default().push(name.as_str());
         }
-      }
-      Body::Enum(variants) => {
-        if variants.is_open() {
-          inputs.insert(name.as_str());
-        }
-        for ty in variants.variants().iter().filter_map(|variant| variant.ty()) {
-          refs(ty, &mut names)?;
-        }
-      }
-      Body::Alias(target) => refs(target, &mut names)?,
+        Ok(())
+      })?;
     }
-    uses.insert(name.as_str(), names);
   }
-  loop {
-    let added: Vec<&str> = uses
-      .iter()
-      .filter(|(name, used)| !inputs.contains(*name) && used.iter().any(|used| inputs.contains(used)))
-      .map(|(name, _)| *name)
-      .collect();
-    if added.is_empty() {
-      return Ok(inputs);
+  let mut inputs = BTreeSet::new();
+  while let Some(name) = pending.pop() {
+    if inputs.insert(name) {
+      pending.extend(users.get(name).into_iter().flatten());
     }
-    inputs.extend(added);
   }
-}
-
-fn refs<'t>(ty: &'t Type, names: &mut Vec<&'t str>) -> Result<(), GenerateError> {
-  match form(ty)? {
-    Form::Primitive(_) => {}
-    Form::Option(inner) | Form::List(inner) | Form::Map(inner) => refs(inner, names)?,
-    Form::Tuple(items) => {
-      for item in items {
-        refs(item, names)?;
-      }
-    }
-    Form::Struct(fields) => {
-      for field in fields.fields() {
-        refs(field.ty(), names)?;
-      }
-    }
-    Form::Ref(name) => names.push(name),
-  }
-  Ok(())
+  Ok(inputs)
 }
 
 /// `name` with each part between underscores capitalized and the underscores dropped: `system_notice`

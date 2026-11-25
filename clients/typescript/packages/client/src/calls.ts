@@ -11,6 +11,7 @@ import {
 } from "./frames.js";
 import { isBytes, isMap } from "./realm.js";
 import type { ContractType, Types } from "./types.js";
+import { CONTROL_STREAM } from "./wire.js";
 
 /**
  * What the runtime needs to know about a server method to notify it: generated code holds one per
@@ -33,7 +34,8 @@ export interface CallSignature extends NotifySignature {
   readonly error?: ContractType | undefined;
   /**
    * Whether the method is `idempotent` in the manifest (spec 12.2): a client may retry it after a
-   * failure whose outcome is unknown. Read by the retry policy; a call is sent the same either way.
+   * failure whose outcome is unknown. Nothing reads it yet (the retry policy is #83); a call is sent
+   * the same either way.
    */
   readonly idempotent?: boolean | undefined;
 }
@@ -84,7 +86,6 @@ export interface CallHost {
 export type Delivery = "handled" | "ignored" | "protocol_error";
 
 const UNARY = 0n;
-const CONTROL_STREAM = 0;
 
 interface Pending {
   readonly signature: CallSignature;
@@ -174,8 +175,7 @@ export class Calls {
   call(signature: CallSignature, args: readonly unknown[], options: CallOptions = {}): Promise<unknown> {
     const start = this.host.now();
     return new Promise((resolve, reject) => {
-      const refuse = (code: StatusCode, message: string, cause?: unknown) =>
-        reject(new StatusError(code, message, { nx: true, cause }));
+      const refuse = (code: StatusCode, message: string, cause?: unknown) => reject(refusal(code, message, cause));
       if (this.host.ended) return refuse(StatusCode.UNAVAILABLE, "the session has ended");
       if (options.signal?.aborted) return refuse(StatusCode.CANCELLED, "the call was cancelled before it was sent");
       const deadline = options.deadline;
@@ -323,11 +323,12 @@ function nameText(name: unknown): string {
   return typeof name === "string" ? JSON.stringify(name) : `of type ${typeof name}`;
 }
 
-/** `input` as a {@link Meta}, `undefined` when absent, or why it is not metadata. */
+/** A call or notification refused before anything was sent: `nx` is true. */
 function refusal(code: StatusCode, message: string, cause?: unknown): StatusError {
   return new StatusError(code, message, { nx: true, cause });
 }
 
+/** `input` as a {@link Meta}, `undefined` when absent, or why it is not metadata. */
 function metaOf(input: MetaInput | undefined): Meta | undefined | string {
   if (input === undefined) return undefined;
   const entries = isMap(input) ? [...input.entries()] : Object.entries(input);

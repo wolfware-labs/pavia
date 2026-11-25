@@ -6,6 +6,9 @@ import { decodeVarint, MAX_VARINT, varintLength, writeVarint } from "./varint.js
 /** The lowest `max_frame` a peer may advertise, and the one assumed before WELCOME (spec 4.1). */
 export const MAX_FRAME_FLOOR = 65_536;
 
+/** The control stream's ID (spec 6.1). */
+export const CONTROL_STREAM = 0;
+
 /**
  * A frame as it is on the wire (spec 5.2), before its header is parsed. `header` and `data` are
  * views of the received bytes; an empty `header` means HeaderLength 0.

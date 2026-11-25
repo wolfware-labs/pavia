@@ -740,8 +740,6 @@ fn gives_back_every_part_through_its_accessors() {
   assert_eq!(manifest.name(), "app");
   assert_eq!(manifest.documentation(), Some("The app."));
   assert_eq!(manifest.type_table(), spec_example().type_table());
-  assert!(manifest.channels().is_empty() && manifest.datagrams().is_empty());
-  assert_eq!((spec_example().channels().len(), spec_example().datagrams().len()), (1, 1));
   let [service] = manifest.services() else {
     panic!("one service")
   };

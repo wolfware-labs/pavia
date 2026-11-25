@@ -155,18 +155,6 @@ impl Manifest {
     &self.services
   }
 
-  /// The channel namespaces, in the order they were added.
-  #[must_use]
-  pub fn channels(&self) -> &[Channel] {
-    &self.channels
-  }
-
-  /// The datagram topics, in the order they were added.
-  #[must_use]
-  pub fn datagrams(&self) -> &[Datagram] {
-    &self.datagrams
-  }
-
   /// The named types by name.
   #[must_use]
   pub const fn type_table(&self) -> &Types {
@@ -338,6 +326,7 @@ impl Service {
     self.client_methods.push(method);
     self
   }
+
   /// The service's name.
   #[must_use]
   pub fn name(&self) -> &str {
@@ -428,6 +417,7 @@ impl Method {
     self.docs = Some(docs.into());
     self
   }
+
   /// The method's name within its service.
   #[must_use]
   pub fn name(&self) -> &str {
@@ -497,6 +487,7 @@ impl Param {
     self.docs = Some(docs.into());
     self
   }
+
   /// The parameter's name.
   #[must_use]
   pub fn name(&self) -> &str {
@@ -669,18 +660,12 @@ impl Call {
   }
 
   fn types(&self) -> impl Iterator<Item = (&'static str, &Type)> {
-    let (accepts, yields, returns) = match &self.streams {
-      Streams::Unary { returns } => (None, None, Some(returns)),
-      Streams::ServerStream { yields } => (None, Some(yields), None),
-      Streams::ClientStream { accepts, returns } => (Some(accepts), None, Some(returns)),
-      Streams::Bidi { accepts, yields } => (Some(accepts), Some(yields), None),
-    };
     [
-      ("accepts", accepts),
-      ("yields", yields),
+      ("accepts", self.accepts()),
+      ("yields", self.yields()),
       (
         "returns",
-        returns.filter(|returns| **returns != Type::Primitive(Primitive::Unit)),
+        self.returns().filter(|returns| **returns != Type::Primitive(Primitive::Unit)),
       ),
       ("error", self.error.as_ref()),
     ]
