@@ -792,6 +792,7 @@ version = "0.1.0-alpha.0"
 name = "pavia-contract"
 version = "0.1.0-alpha.0"
 dependencies = [
+ "codspeed-criterion-compat",
  "pavia-contract-derive",
  "pavia-vectors",
  "ryu-js",
