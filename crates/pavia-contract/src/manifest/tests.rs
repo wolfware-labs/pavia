@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 
-use super::{Call, Channel, Datagram, Direction, Manifest, ManifestError, Method, Mode, Param, Service, Shape};
+use super::{
+  Call, Channel, Datagram, Direction, MAX_ERRORS, MAX_NAME_BYTES, Manifest, ManifestError, Method, Mode, Param, Service, Shape,
+};
 use crate::fingerprint::tests::{SPEC_EXAMPLE, hex};
 use crate::schema::{Definition, Enum, Field, Primitive, Struct, Type, Types, Variant};
 
@@ -382,6 +384,62 @@ fn refuses_names_outside_the_grammar() {
     ]
     .map(|(what, name)| (what.to_owned(), name.to_owned()))
   );
+}
+
+#[test]
+fn refuses_a_name_longer_than_255_bytes_wherever_it_names() {
+  let long = "a".repeat(MAX_NAME_BYTES + 1);
+  let manifest = |name: &str| {
+    Manifest::new("app")
+      .service(Service::new(name).server_method(Method::notify(name).param(Param::new(name, string()))))
+      .datagram(Datagram::new(name, Direction::Both, Mode::All, string()))
+      .types(BTreeMap::from([
+        (
+          name.to_owned(),
+          Definition::Struct(Struct::new(vec![Field::new(name, string())])),
+        ),
+        (
+          format!("E{}", &name[1..]),
+          Definition::Enum(Enum::new(vec![Variant::unit(name)])),
+        ),
+      ]))
+  };
+  assert!(errors(&manifest(&long)).iter().all(|error| matches!(
+    error,
+    ManifestError::NameTooLong {
+      size: 256,
+      limit: 255,
+      ..
+    }
+  )));
+  assert_eq!(errors(&manifest(&long)).len(), 8);
+  assert!(manifest(&long[1..]).render().is_ok());
+}
+
+#[test]
+fn quotes_at_most_255_bytes_of_a_name_in_an_error() {
+  let long = "a".repeat(100_000);
+  let mut method = Method::notify("n");
+  for _ in 0..50 {
+    method = method.param(Param::new("-", reference("Missing")));
+  }
+  let manifest = Manifest::new("app").service(Service::new(&long).server_method(method));
+  let found = errors(&manifest);
+  assert!(found.len() > 50);
+  for error in &found {
+    assert!(error.to_string().len() < 1_000, "{error}");
+  }
+  assert!(found[0].to_string().contains(&format!("`{}…`", "a".repeat(255))));
+}
+
+#[test]
+fn stops_collecting_errors_after_100() {
+  let mut method = Method::notify("n");
+  for index in 0..500 {
+    method = method.param(Param::new(format!("-{index}"), string()));
+  }
+  let manifest = Manifest::new("app").service(Service::new("s").server_method(method));
+  assert_eq!(errors(&manifest).len(), MAX_ERRORS);
 }
 
 #[test]

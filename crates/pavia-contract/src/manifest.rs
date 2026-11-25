@@ -30,6 +30,7 @@
 //! ```
 
 use std::collections::BTreeSet;
+use std::fmt;
 
 use serde_json::{Map, Value};
 use thiserror::Error;
@@ -54,6 +55,13 @@ pub const MAX_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
 /// at 1. [`Manifest::validate`] refuses a deeper type and [`Manifest::read`] stops at one, so every
 /// manifest one writes the other reads.
 pub const MAX_TYPE_DEPTH: usize = 32;
+
+/// The longest service, method, param, type, field, variant or datagram topic name, in bytes (§12.2, §16).
+/// Errors quote at most this much of any name, so their text stays bounded.
+pub const MAX_NAME_BYTES: usize = 255;
+
+/// How many errors [`Manifest::validate`] collects before it stops reporting more.
+pub const MAX_ERRORS: usize = 100;
 
 /// How much deeper than an `option`, `list` or `map` its inner type sits.
 const INNER_STEP: usize = 1;
@@ -127,11 +135,12 @@ impl Manifest {
     self
   }
 
-  /// Checks what the model can hold but §12.1 and §12.2 forbid, and a type deeper than [`MAX_TYPE_DEPTH`].
+  /// Checks what the model can hold but §12.1 and §12.2 forbid, a type deeper than [`MAX_TYPE_DEPTH`] and
+  /// a name longer than [`MAX_NAME_BYTES`].
   ///
   /// # Errors
   ///
-  /// Every [`ManifestError`] found, in the order of the output.
+  /// The [`ManifestError`]s found, in the order of the output: every one, up to [`MAX_ERRORS`].
   pub fn validate(&self) -> Result<(), Vec<ManifestError>> {
     let mut check = Check {
       types: &self.types,
@@ -143,7 +152,7 @@ impl Manifest {
       check.name("service", &service.name);
       for (side, methods) in [("server", &service.server_methods), ("client", &service.client_methods)] {
         check.unique(
-          &format!("{side} method of service `{}`", service.name),
+          &format!("{side} method of service `{}`", shown(&service.name)),
           methods.iter().map(|method| method.name.as_str()),
         );
         for method in sorted(methods, |method| &method.name) {
@@ -164,7 +173,7 @@ impl Manifest {
     );
     for datagram in sorted(&self.datagrams, |datagram| &datagram.topic) {
       check.name("datagram topic", &datagram.topic);
-      check.ty(&datagram.payload, &format!("datagram topic `{}`", datagram.topic), 1);
+      check.ty(&datagram.payload, &format!("datagram topic `{}`", shown(&datagram.topic)), 1);
     }
     for (name, definition) in &self.types {
       check.name("type", name);
@@ -172,7 +181,9 @@ impl Manifest {
     }
     for name in self.types.keys() {
       if matches!(check.chains.from(name), Chain::Loops) {
-        check.errors.push(ManifestError::AliasCycle { name: name.clone() });
+        check.report(ManifestError::AliasCycle {
+          name: shown(name).to_string(),
+        });
       }
     }
     if check.errors.is_empty() { Ok(()) } else { Err(check.errors) }
@@ -737,6 +748,19 @@ pub enum ManifestError {
     /// The name.
     name: String,
   },
+  /// A service, method, param, type, field, variant or datagram topic name longer than
+  /// [`MAX_NAME_BYTES`].
+  #[error("{what} name `{name}` is {size} bytes, more than the {limit} a name may have (spec 12.2)")]
+  NameTooLong {
+    /// What the name names: `"service"`, `"field of type `Message`"`.
+    what: String,
+    /// The name's first [`MAX_NAME_BYTES`], then `…`.
+    name: String,
+    /// The name's length in bytes.
+    size: usize,
+    /// [`MAX_NAME_BYTES`].
+    limit: usize,
+  },
   /// A channel namespace outside the channel name characters of §10.1, or with a `:`.
   #[error("channel namespace `{namespace}` is not a namespace: 1 to 255 of [A-Za-z0-9_-./@], no `:` (spec 10.1, 12.2)")]
   InvalidNamespace {
@@ -810,9 +834,23 @@ struct Check<'a> {
 }
 
 impl Check<'_> {
+  /// Keeps `error`, unless [`MAX_ERRORS`] are kept already.
+  fn report(&mut self, error: ManifestError) {
+    if self.errors.len() < MAX_ERRORS {
+      self.errors.push(error);
+    }
+  }
+
   fn name(&mut self, what: &str, name: &str) {
-    if !name::is_valid(name) {
-      self.errors.push(ManifestError::InvalidName {
+    if name.len() > MAX_NAME_BYTES {
+      self.report(ManifestError::NameTooLong {
+        what: what.to_owned(),
+        name: shown(name).to_string(),
+        size: name.len(),
+        limit: MAX_NAME_BYTES,
+      });
+    } else if !name::is_valid(name) {
+      self.report(ManifestError::InvalidName {
         what: what.to_owned(),
         name: name.to_owned(),
       });
@@ -824,24 +862,25 @@ impl Check<'_> {
     let mut reported = BTreeSet::new();
     for name in names {
       if !seen.insert(name) && reported.insert(name) {
-        self.errors.push(ManifestError::Duplicate {
+        self.report(ManifestError::Duplicate {
           what: what.to_owned(),
-          name: name.to_owned(),
+          name: shown(name).to_string(),
         });
       }
     }
   }
 
   fn method(&mut self, service: &str, side: &str, method: &Method) {
+    let service = shown(service);
     self.name(&format!("{side} method of service `{service}`"), &method.name);
-    let at = format!("{side} method `{service}/{}`", method.name);
+    let at = format!("{side} method `{service}/{}`", shown(&method.name));
     self.unique(
       &format!("param of {at}"),
       method.params.iter().map(|param| param.name.as_str()),
     );
     for param in &method.params {
       self.name(&format!("param of {at}"), &param.name);
-      self.ty(&param.ty, &format!("param `{}` of {at}", param.name), 1);
+      self.ty(&param.ty, &format!("param `{}` of {at}", shown(&param.name)), 1);
     }
     if let Some(call) = &method.call {
       for (key, ty) in call.types() {
@@ -852,22 +891,26 @@ impl Check<'_> {
 
   fn channel(&mut self, channel: &Channel) {
     if !name::is_valid_namespace(&channel.namespace) {
-      self.errors.push(ManifestError::InvalidNamespace {
-        namespace: channel.namespace.clone(),
+      self.report(ManifestError::InvalidNamespace {
+        namespace: shown(&channel.namespace).to_string(),
       });
     }
     for (key, ty) in channel.types() {
-      self.ty(ty, &format!("`{key}` of channel namespace `{}`", channel.namespace), 1);
+      self.ty(
+        ty,
+        &format!("`{key}` of channel namespace `{}`", shown(&channel.namespace)),
+        1,
+      );
     }
   }
 
   fn definition(&mut self, name: &str, definition: &Definition) {
-    let at = format!("type `{name}`");
+    let at = format!("type `{}`", shown(name));
     match definition {
       Definition::Struct(fields) => self.fields(fields, &at, 1),
       Definition::Enum(variants) => {
         if variants.is_open() && variants.variants().iter().any(|variant| variant.name() == "Unknown") {
-          self.errors.push(ManifestError::UnknownInOpenEnum { at: at.clone() });
+          self.report(ManifestError::UnknownInOpenEnum { at: at.clone() });
         }
         self.unique(
           &format!("variant of {at}"),
@@ -876,7 +919,7 @@ impl Check<'_> {
         for variant in variants.variants() {
           self.name(&format!("variant of {at}"), variant.name());
           if let Some(ty) = variant.ty() {
-            self.ty(ty, &format!("variant `{}` of {at}", variant.name()), 1);
+            self.ty(ty, &format!("variant `{}` of {at}", shown(variant.name())), 1);
           }
         }
       }
@@ -888,10 +931,10 @@ impl Check<'_> {
   fn fields(&mut self, fields: &Struct, at: &str, depth: usize) {
     self.unique(&format!("field of {at}"), fields.fields().iter().map(|field| field.name()));
     for field in fields.fields() {
-      let place = format!("field `{}` of {at}", field.name());
+      let place = format!("field `{}` of {at}", shown(field.name()));
       self.name(&format!("field of {at}"), field.name());
       if field.is_optional() && !matches!(field.ty(), Type::Option(_)) {
-        self.errors.push(ManifestError::OptionalNotOption { at: place.clone() });
+        self.report(ManifestError::OptionalNotOption { at: place.clone() });
       }
       self.ty(field.ty(), &place, depth);
     }
@@ -906,7 +949,7 @@ impl Check<'_> {
         limit: MAX_TYPE_DEPTH,
       };
       if !self.errors.contains(&error) {
-        self.errors.push(error);
+        self.report(error);
       }
       return;
     }
@@ -914,7 +957,7 @@ impl Check<'_> {
       Type::Primitive(_) => {}
       Type::Option(inner) => {
         if self.is_unit(inner) {
-          self.errors.push(ManifestError::OptionOfUnit { at: at.to_owned() });
+          self.report(ManifestError::OptionOfUnit { at: at.to_owned() });
         }
         self.ty(inner, at, depth + INNER_STEP);
       }
@@ -927,8 +970,8 @@ impl Check<'_> {
       Type::Struct(fields) => self.fields(fields, at, depth + FIELD_STEP),
       Type::Ref(name) => {
         if !self.types.contains_key(name) {
-          self.errors.push(ManifestError::UnknownType {
-            name: name.clone(),
+          self.report(ManifestError::UnknownType {
+            name: shown(name).to_string(),
             at: at.to_owned(),
           });
         }
@@ -943,6 +986,26 @@ impl Check<'_> {
       Type::Ref(name) => self.chains.from(name).ends_in_unit(),
       _ => false,
     }
+  }
+}
+
+/// A name as an error quotes it: its first [`MAX_NAME_BYTES`], then `…` when it is longer.
+struct Shown<'a>(&'a str);
+
+fn shown(name: &str) -> Shown<'_> {
+  Shown(name)
+}
+
+impl fmt::Display for Shown<'_> {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    if self.0.len() <= MAX_NAME_BYTES {
+      return formatter.write_str(self.0);
+    }
+    let end = (0..=MAX_NAME_BYTES)
+      .rev()
+      .find(|&end| self.0.is_char_boundary(end))
+      .unwrap_or(0);
+    write!(formatter, "{}…", &self.0[..end])
   }
 }
 

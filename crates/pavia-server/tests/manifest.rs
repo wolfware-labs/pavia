@@ -212,8 +212,10 @@ fn reads_the_committed_manifest_back_as_the_same_contract() {
 
 #[test]
 fn fingerprints_no_contract_whose_manifest_it_cannot_write() {
-  let name = format!("chat/{}", "a".repeat(pavia_contract::manifest::MAX_MANIFEST_BYTES));
-  let methods = registry(vec![(name.as_str(), send())], Vec::new());
+  let names: Vec<String> = (0..20_000)
+    .map(|index| format!("chat/{}{index:05}", "a".repeat(200)))
+    .collect();
+  let methods = registry(names.iter().map(|name| (name.as_str(), send())).collect(), Vec::new());
   for result in [
     manifest::fingerprint(NAME, &methods).map(|_| ()),
     manifest::render(NAME, &methods).map(|_| ()),

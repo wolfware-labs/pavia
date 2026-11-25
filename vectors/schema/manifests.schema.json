@@ -65,7 +65,8 @@
         },
         "error": {
           "enum": [
-            "too_deep"
+            "too_deep",
+            "name_too_long"
           ]
         }
       }

@@ -78,16 +78,16 @@ Each case gives a manifest ([spec 12.2](../spec/pavia-protocol.md#122-manifest-f
 
 ## Manifest vectors (`manifests/`)
 
-Each case gives a manifest ([spec 12.2](../spec/pavia-protocol.md#122-manifest-format)) as a JSON value that a reader either takes or refuses. They cover the limits of 12.2: a type at the depth limit, and one level past it, for each form (`list`, `map`, `option`, `tuple`, inline `struct`, and the 1-deep `ref`, empty `tuple` and fieldless `struct`) and each place a type starts. Every vector nests less than 64 JSON levels, the depth below which 12.2 lets no reader refuse while parsing.
+Each case gives a manifest ([spec 12.2](../spec/pavia-protocol.md#122-manifest-format)) as a JSON value that a reader either takes or refuses. They cover the limits of 12.2: a type at the depth limit, and one level past it, for each form (`list`, `map`, `option`, `tuple`, inline `struct`, and the 1-deep `ref`, empty `tuple` and fieldless `struct`) and each place a type starts; and a name at the length limit of 255 bytes, and one byte past it, for each kind of name. Every vector nests less than 64 JSON levels, the depth below which 12.2 lets no reader refuse while parsing.
 
 | Field | Required | Meaning |
 |---|---|---|
 | `manifest` | yes | The manifest, as JSON |
-| `error` | no | Why a reader refuses the manifest: `too_deep` (a type nests more than 32 deep, counted as 12.2 says). Absent means a reader takes it, and an exporter writes it back as the same JSON value |
+| `error` | no | Why a reader refuses the manifest: `too_deep` (a type nests more than 32 deep, counted as 12.2 says) or `name_too_long` (a name is longer than 255 bytes). Absent means a reader takes it, and an exporter writes it back as the same JSON value |
 
 The size limit has no vector, since a case past it would be a file over 4 MiB.
 
-The cases in `limits.json` come in pairs built from one template: the at-limit case wraps the type in enough of its form (or in `list`s, for a place) to reach depth 32, and the past-limit case reaches 33 with the same form. Each case's `note` gives the count, so a new pair follows the same pattern by hand.
+The depth cases in `limits.json` come in pairs built from one template: the at-limit case wraps the type in enough of its form (or in `list`s, for a place) to reach depth 32, and the past-limit case reaches 33 with the same form. Each case's `note` gives the count, so a new pair follows the same pattern by hand.
 
 ## Varint vectors (`varints/`)
 

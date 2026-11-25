@@ -1,12 +1,15 @@
 //! Every manifest vector under `vectors/manifests/` (§12.2): a manifest within the limits reads and
 //! renders back to the same JSON, and one past them is refused for its `error`.
 
-use pavia_contract::manifest::{Manifest, ReadError};
+use pavia_contract::manifest::{Manifest, ManifestError, ReadError};
 use serde_json::Value;
 
 fn kind(error: &ReadError) -> &'static str {
   match error {
     ReadError::TooDeep { .. } => "too_deep",
+    ReadError::Invalid(errors) if errors.iter().all(|error| matches!(error, ManifestError::NameTooLong { .. })) => {
+      "name_too_long"
+    }
     _ => "other",
   }
 }
@@ -32,5 +35,5 @@ fn runs_every_manifest_vector() {
       count += 1;
     }
   }
-  assert!(count >= 43, "only {count} manifest vectors");
+  assert!(count >= 51, "only {count} manifest vectors");
 }
