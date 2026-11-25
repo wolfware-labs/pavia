@@ -46,11 +46,13 @@ pub use read::ReadError;
 /// §16).
 pub const MAX_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
 
-/// How deep a type may nest (§12.2, §16), counted in the JSON levels of its form: `"u8"` is 1 deep,
-/// `{"list": {"list": "u8"}}` is 3, a tuple's items sit 2 deeper than the tuple and an inline struct's
-/// field types 4 deeper. Each type a manifest names (a param, a result, a channel or datagram type, an
-/// alias, and a field or variant type of a named type) starts at 1. [`Manifest::validate`] refuses a
-/// deeper type and [`Manifest::read`] stops at one, so every manifest one writes the other reads.
+/// How deep a type may nest (§12.2, §16), counted form by form: a primitive such as `"u8"` and a `ref` are
+/// 1 deep, so `{"list": {"list": "u8"}}` is 3; a tuple's items sit 2 deeper than the tuple and an inline
+/// struct's field types 4 deeper (the JSON levels between them), while a tuple with no items and a struct
+/// with no fields are 1 deep. Each type a manifest names (a param, an `accepts`, `yields`, `returns` or
+/// `error` type, a channel or datagram type, an alias, and a field or variant type of a named type) starts
+/// at 1. [`Manifest::validate`] refuses a deeper type and [`Manifest::read`] stops at one, so every
+/// manifest one writes the other reads.
 pub const MAX_TYPE_DEPTH: usize = 32;
 
 /// How much deeper than an `option`, `list` or `map` its inner type sits.

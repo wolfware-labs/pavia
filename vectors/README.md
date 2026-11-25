@@ -165,7 +165,10 @@ CI validates every file against its schema and checks that the fixtures in `sche
 uvx check-jsonschema --schemafile vectors/schema/frames.schema.json vectors/frames/*.json
 uvx check-jsonschema --schemafile vectors/schema/codecs.schema.json vectors/codecs/*.json
 uvx check-jsonschema --schemafile vectors/schema/varints.schema.json vectors/varints/*.json
+uvx check-jsonschema --schemafile vectors/schema/headers.schema.json vectors/headers/*.json
 uvx check-jsonschema --schemafile vectors/schema/scripts.schema.json vectors/scripts/*.json
+uvx check-jsonschema --schemafile vectors/schema/fingerprints.schema.json vectors/fingerprints/*.json
+uvx check-jsonschema --schemafile vectors/schema/manifests.schema.json vectors/manifests/*.json
 ```
 
 Schema validation checks structure only. The content is checked twice, by independent implementations in each language: `crates/pavia-vectors` (Rust) and `clients/typescript/packages/vectors` (TypeScript) each parse the diagnostic notation, lay the decoded form out as a frame and compare it with `hex`, encode or decode every codec value, encode or decode every varint, and check that scripts parse and capture every `$name` before using it. Both run with the normal test commands:

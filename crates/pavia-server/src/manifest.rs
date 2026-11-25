@@ -93,6 +93,9 @@ pub fn render(name: &str, methods: &MethodRegistry<Handler>) -> Result<String, E
 /// The contract fingerprint (§12.5) of the manifest of [`manifest`], for
 /// [`Config::contract`](pavia_proto::session::Config::contract) and the WELCOME of every session.
 ///
+/// Unlike [`Manifest::fingerprint`](pavia_contract::manifest::Manifest::fingerprint), it renders the
+/// manifest first: a server fingerprints only a contract whose manifest it can write, size bound included.
+///
 /// # Errors
 ///
 /// The errors of [`render`].

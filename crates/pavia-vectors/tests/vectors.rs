@@ -457,3 +457,28 @@ fn fingerprint_vectors_have_unique_ids_and_hex_of_their_canonical_text() {
     }
   }
 }
+
+/// How deeply a JSON value nests, counted as spec 5.4.1 counts depth: arrays and objects, the outermost
+/// one at level 1.
+fn json_levels(value: &Json) -> usize {
+  match value {
+    Json::Array(items) => 1 + items.iter().map(json_levels).max().unwrap_or(0),
+    Json::Object(members) => 1 + members.values().map(json_levels).max().unwrap_or(0),
+    _ => 0,
+  }
+}
+
+/// Spec 12.2: a manifest within the limits nests at most 41 JSON levels, and no reader may refuse one
+/// under 64 while parsing, so every vector stays under 64 and the deepest one a reader takes reaches 41.
+#[test]
+fn manifest_vectors_have_unique_ids_and_nest_under_64_json_levels() {
+  let mut deepest_taken = 0;
+  for (ctx, case) in unique_ids("manifests") {
+    let levels = json_levels(&case["manifest"]);
+    assert!(levels < 64, "{ctx}: nests {levels} JSON levels");
+    if case.get("error").is_none() {
+      deepest_taken = deepest_taken.max(levels);
+    }
+  }
+  assert_eq!(deepest_taken, 41, "the deepest manifest a reader takes");
+}
