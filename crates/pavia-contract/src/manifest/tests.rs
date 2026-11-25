@@ -292,13 +292,33 @@ fn writes_every_shape_with_its_types() {
     ])
   );
   assert_eq!(Call::bidi(string(), string()).shape(), Shape::Bidi);
-  for (shape, name) in [
+  let names = [
     (Shape::Unary, "unary"),
     (Shape::ServerStream, "server_stream"),
     (Shape::ClientStream, "client_stream"),
     (Shape::Bidi, "bidi"),
-  ] {
+  ];
+  assert_eq!(names.map(|(shape, _)| shape), Shape::ALL);
+  for (shape, name) in names {
     assert_eq!(shape.name(), name);
+  }
+}
+
+#[test]
+fn names_every_direction_and_mode() {
+  let directions = [
+    (Direction::ToServer, "to_server"),
+    (Direction::ToClient, "to_client"),
+    (Direction::Both, "both"),
+  ];
+  assert_eq!(directions.map(|(direction, _)| direction), Direction::ALL);
+  for (direction, name) in directions {
+    assert_eq!(direction.name(), name);
+  }
+  let modes = [(Mode::Latest, "latest"), (Mode::All, "all")];
+  assert_eq!(modes.map(|(mode, _)| mode), Mode::ALL);
+  for (mode, name) in modes {
+    assert_eq!(mode.name(), name);
   }
 }
 

@@ -1,13 +1,15 @@
 //! The contract manifest (§12.2): the services, channels, datagram topics and named types of an endpoint,
 //! as the JSON document client generators read.
 //!
-//! A [`Manifest`] is built from its parts, then [`Manifest::render`] checks it and writes its JSON. The
-//! model leaves out what §12.2 forbids instead of checking for it: a notification has no shape or result
-//! types, an absent optional field has no `null` to write, and a field equal to its default (`"returns":
-//! "unit"`, `"idempotent": false`, `"history": false`, an empty `params`) is never written. What the
-//! model can hold but §12.1 and §12.2 forbid, [`Manifest::validate`] reports: a name outside the grammar,
+//! A [`Manifest`] is built from its parts, or read back from its JSON with [`Manifest::read`], then
+//! [`Manifest::render`] checks it and writes its JSON. The model leaves out what §12.2 forbids instead of
+//! checking for it: a notification has no shape or result types, an absent optional field has no `null` to
+//! write, and a field equal to its default (`"returns": "unit"`, `"idempotent": false`, `"history": false`,
+//! an empty `params`) is never written. What the model can hold but §12.1 and §12.2 forbid,
+//! [`Manifest::validate`] reports: a name outside the grammar,
 //! a `ref` to no named type, an `Option` of `unit` (directly or through aliases), an `optional` field whose
-//! type is not an `option`, an alias that leads back to itself, and two entries of one list with one name.
+//! type is not an `option`, an open enum with a variant named `Unknown`, an alias that leads back to itself,
+//! and two entries of one list with one name.
 //!
 //! The output depends only on the manifest's content: services, methods, channels and datagram topics
 //! are sorted by name in byte order, while params, struct fields and enum variants keep the order they
@@ -394,6 +396,9 @@ pub enum Shape {
 }
 
 impl Shape {
+  /// Every shape, in wire order (§8.1).
+  pub const ALL: [Self; 4] = [Self::Unary, Self::ServerStream, Self::ClientStream, Self::Bidi];
+
   /// The name in the manifest: `"unary"`, `"server_stream"`, `"client_stream"` or `"bidi"`.
   #[must_use]
   pub const fn name(self) -> &'static str {
@@ -612,6 +617,9 @@ pub enum Direction {
 }
 
 impl Direction {
+  /// Every direction, in the order of §12.2.
+  pub const ALL: [Self; 3] = [Self::ToServer, Self::ToClient, Self::Both];
+
   /// The name in the manifest.
   #[must_use]
   pub const fn name(self) -> &'static str {
@@ -633,6 +641,9 @@ pub enum Mode {
 }
 
 impl Mode {
+  /// Every mode.
+  pub const ALL: [Self; 2] = [Self::Latest, Self::All];
+
   /// The name in the manifest.
   #[must_use]
   pub const fn name(self) -> &'static str {

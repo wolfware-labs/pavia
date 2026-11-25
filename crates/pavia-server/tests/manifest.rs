@@ -204,5 +204,8 @@ fn reads_the_committed_manifest_back_as_the_same_contract() {
   let read = pavia_contract::manifest::Manifest::read(&text).unwrap();
   assert_eq!(read.render().unwrap(), text);
   let methods = registry(server_methods(), client_methods());
-  assert_eq!(read.fingerprint().unwrap(), manifest::fingerprint(NAME, &methods).unwrap().bytes());
+  assert_eq!(
+    read.fingerprint().unwrap(),
+    manifest::fingerprint(NAME, &methods).unwrap().bytes()
+  );
 }

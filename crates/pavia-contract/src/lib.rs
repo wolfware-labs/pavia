@@ -2,7 +2,8 @@
 //!
 //! It holds the type system (§12.1), the manifest (§12.2) and its fingerprint (§12.5): [`Contract`] maps a
 //! Rust type to its contract type, a [`TypeTable`] collects the named types the manifest's `types` table
-//! lists, [`manifest::Manifest`] checks and writes the whole document, and [`fingerprint`] hashes it.
+//! lists, [`manifest::Manifest`] checks, writes and reads back the whole document, and [`fingerprint`]
+//! hashes it.
 //!
 //! ```
 //! use pavia_contract::{Contract, Timestamp, TypeTable};
