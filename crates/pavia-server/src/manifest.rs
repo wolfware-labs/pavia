@@ -97,10 +97,9 @@ pub fn render(name: &str, methods: &MethodRegistry<Handler>) -> Result<String, E
 ///
 /// The errors of [`render`].
 pub fn fingerprint(name: &str, methods: &MethodRegistry<Handler>) -> Result<Fingerprint, ExportError> {
-  manifest(name, methods)?
-    .fingerprint()
-    .map(Fingerprint::new)
-    .map_err(ExportError::Manifest)
+  let manifest = manifest(name, methods)?;
+  manifest.render().map_err(ExportError::Manifest)?;
+  manifest.fingerprint().map(Fingerprint::new).map_err(ExportError::Manifest)
 }
 
 /// Writes the manifest of [`render`] to `writer`.

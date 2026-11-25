@@ -904,7 +904,7 @@ Field rules:
 - `error`: optional typed error detail (§8.4).
 - `idempotent`: executing the call more than once has the same effect as executing it once. Clients may retry it automatically after a failure whose outcome is unknown (§8.4), on the same session or a new one; which failures they retry is client policy (by default UNAVAILABLE and transport loss).
 - `direction` for datagrams: `to_server`, `to_client`, `both`.
-- **Limits:** a manifest is at most 4 MiB of JSON text, and its types nest at most 32 deep. Depth counts the JSON levels of a type's form: a primitive such as `"u8"` is 1 deep, an `option`, `list` or `map` is 1 deeper than its inner type, a `tuple` 2 deeper than its deepest item, and an inline `struct` 4 deeper than its deepest field type (`{"struct": {"fields": [{"type": t}]}}`). Each type the manifest names starts at depth 1: a `params` type, `accepts`, `yields`, `returns`, `error`, a channel's or datagram topic's types, an alias, and the field and variant types of a named struct or enum. Exporters MUST NOT write a manifest past either limit. Readers MUST refuse one, checking the size before parsing and the depth while descending, so a hostile manifest cannot make a reader recurse or allocate without bound. Both limits are fixed protocol values (§16).
+- **Limits:** a manifest's text is at most 4 MiB: 4,194,304 bytes of UTF-8 as written or received (after any content decoding), whitespace included. Its types nest at most 32 deep, counted form by form: a primitive such as `"u8"` and a `ref` are 1 deep; an `option`, `list` or `map` is 1 deeper than its inner type; a `tuple` is 2 deeper than its deepest item, and an inline `struct` 4 deeper than its deepest field type (the JSON levels between them, `{"tuple": [t]}` and `{"struct": {"fields": [{"type": t}]}}`); a `tuple` with no items and a `struct` with no fields are 1 deep. Each type the manifest names starts at depth 1: a `params` type, `accepts`, `yields`, `returns`, `error`, a channel's `publication`, `presence_info`, `snapshot` and `subscribe`, a datagram topic's `payload`, an alias, and the field and variant types of a named struct or enum. Exporters MUST NOT write text past the size limit or a type past the depth limit. Readers MUST refuse both, checking the size before parsing and the type depth while descending, so a hostile manifest cannot make a reader recurse or allocate without bound. A manifest within these limits nests at most 41 JSON levels; a reader MAY refuse a document nested deeper than 64 levels while parsing, with any error. The size counts formatting, so a reader may take compact text that its own exporter, writing with indentation, could not write; the fingerprint (§12.5) does not depend on formatting. This depth is a property of the contract and separate from the depth limit of data sections (§12.3), which counts arrays and maps in encoded values. Both limits are fixed protocol values (§16).
 
 ### 12.3 Codec mapping
 
@@ -1197,7 +1197,7 @@ The project maintains machine-readable test vectors (`vectors/`):
 - **Manifest vectors:** manifests at and past the limits of §12.2, and whether a reader takes them.
 - **Scripts:** ordered exchanges (`send`/`expect`/`expect_nothing_within`/`wait`/`close_transport`, where `wait` advances time, with captures and wildcards for values the peer chooses, as defined by the vector format) describing a scenario from the client's perspective. A server conformance runner replays scripts against a server under test; a client conformance runner plays the server side against a client under test.
 
-- **Abuse scripts:** scripts that exercise every limit in §16 (rapid reset, ping flood, handshake flood, slow HELLO, oversized varints, CBOR depth bombs, datagram floods) and assert the specified close code within a bounded time.
+- **Abuse scripts:** scripts that exercise every session limit in §16 (rapid reset, ping flood, handshake flood, slow HELLO, oversized varints, CBOR depth bombs, datagram floods) and assert the specified close code within a bounded time.
 
 Every normative MUST in this document should be covered by at least one vector or script. Changes to this specification MUST update vectors in the same change.
 
@@ -1250,7 +1250,7 @@ S→C  sid=0  PUBLICATION {9: "room:general", 11: 45, 12: 5}  data: {...}   ← 
 ## Changelog
 
 ### draft 0.10
-- Manifest limits: at most 4 MiB of text and types at most 32 deep, depth counted in JSON levels; exporters do not write past them and readers refuse past them (§12.2, §14, §16, §17.2).
+- Manifest limits: at most 4 MiB of UTF-8 text and types at most 32 deep, depth counted form by form; exporters do not write past them and readers refuse past them; abuse scripts cover the session limits of §16, manifest vectors the manifest limits (§12.2, §14, §16, §17.2).
 
 ### draft 0.9
 - Data sections have one encoding per value: struct fields in declaration order, `map` keys sorted, shortest integer and float forms, compact `json` with RFC 8785 strings and numbers; decoders accept any order (§5.5, §12.3).

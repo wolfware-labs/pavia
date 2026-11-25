@@ -338,7 +338,7 @@ fn both_count_every_type_a_manifest_names_from_one() {
 #[test]
 fn refuses_to_render_text_over_the_size_bound() {
   let manifest = Manifest::new("app").docs("d".repeat(MAX_MANIFEST_BYTES));
-  assert_eq!(manifest.fingerprint().unwrap_err(), manifest.render().unwrap_err());
+  assert_eq!(manifest.fingerprint(), Manifest::new("app").fingerprint());
   match manifest.render().unwrap_err().as_slice() {
     [ManifestError::TooLarge { size, limit }] => {
       assert!(*size > MAX_MANIFEST_BYTES);
@@ -346,6 +346,22 @@ fn refuses_to_render_text_over_the_size_bound() {
     }
     other => panic!("expected a size error, got {other:?}"),
   }
+}
+
+#[test]
+fn reads_and_fingerprints_compact_text_whose_pretty_form_is_past_the_size_bound() {
+  let fields: Vec<Value> = (0..80_000)
+    .map(|index| json!({ "name": format!("f{index:05}"), "type": "u8" }))
+    .collect();
+  let document = json!({ "pavia": 1, "name": "app", "types": { "Wide": { "struct": { "fields": fields } } } });
+  let compact = document.to_string();
+  assert!(compact.len() < MAX_MANIFEST_BYTES);
+  let manifest = Manifest::read(&compact).unwrap();
+  assert!(manifest.fingerprint().is_ok());
+  assert!(matches!(
+    manifest.render().unwrap_err().as_slice(),
+    [ManifestError::TooLarge { .. }]
+  ));
 }
 
 #[test]

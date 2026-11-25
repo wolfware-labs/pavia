@@ -203,10 +203,10 @@ impl Manifest {
   ///
   /// # Errors
   ///
-  /// The errors of [`Manifest::render`]: a contract has a fingerprint only when its manifest can be
-  /// written and read back.
+  /// The errors of [`Manifest::validate`]. The size bound is not checked: it is a bound on text, and a
+  /// manifest read from compact text has a fingerprint even when its pretty form is past the bound.
   pub fn fingerprint(&self) -> Result<[u8; 32], Vec<ManifestError>> {
-    self.render()?;
+    self.validate()?;
     Ok(crate::fingerprint::fingerprint(&self.to_json()).expect("the writer's output is in canonical form"))
   }
 

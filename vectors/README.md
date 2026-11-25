@@ -78,7 +78,7 @@ Each case gives a manifest ([spec 12.2](../spec/pavia-protocol.md#122-manifest-f
 
 ## Manifest vectors (`manifests/`)
 
-Each case gives a manifest ([spec 12.2](../spec/pavia-protocol.md#122-manifest-format)) as a JSON value that a reader either takes or refuses. They cover the limits of 12.2: a type at the depth limit, and one level past it, for each form that adds depth and each place a type starts.
+Each case gives a manifest ([spec 12.2](../spec/pavia-protocol.md#122-manifest-format)) as a JSON value that a reader either takes or refuses. They cover the limits of 12.2: a type at the depth limit, and one level past it, for each form (`list`, `map`, `option`, `tuple`, inline `struct`, and the 1-deep `ref`, empty `tuple` and fieldless `struct`) and each place a type starts. Every vector nests less than 64 JSON levels, the depth below which 12.2 lets no reader refuse while parsing.
 
 | Field | Required | Meaning |
 |---|---|---|
