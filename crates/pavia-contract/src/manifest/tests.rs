@@ -468,6 +468,14 @@ fn writes_control_characters_of_a_quoted_name_as_escapes() {
 }
 
 #[test]
+fn writes_line_separators_and_direction_marks_of_a_quoted_name_as_escapes() {
+  let name = "a\u{2028}b\u{2029}c\u{202e}d\u{2066}e\u{200f}f";
+  let found = errors(&Manifest::new("app").service(Service::new(name)));
+  let text = found[0].to_string();
+  assert!(text.contains(r"`a\u{2028}b\u{2029}c\u{202e}d\u{2066}e\u{200f}f`"), "{text:?}");
+}
+
+#[test]
 fn stops_collecting_errors_after_100() {
   let mut method = Method::notify("n");
   for index in 0..500 {

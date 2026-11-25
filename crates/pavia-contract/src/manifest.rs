@@ -993,8 +993,9 @@ impl Check<'_> {
 }
 
 /// Text from a manifest as an error quotes it: its first [`MAX_NAME_BYTES`], then `…` when it is
-/// longer, with control characters written as escapes (`\u{1b}`, `\n`), so the error stays one short
-/// line of plain text.
+/// longer, with control characters, line and paragraph separators and direction marks written as
+/// escapes (`\u{1b}`, `\n`, `\u{2028}`, `\u{202e}`), so the error stays one short line of text that
+/// shows in the order it was written.
 struct Shown<'a>(&'a str);
 
 fn shown(text: &str) -> Shown<'_> {
@@ -1007,6 +1008,8 @@ impl fmt::Display for Shown<'_> {
     for character in self.0[..end].chars() {
       if character.is_control() {
         write!(formatter, "{}", character.escape_debug())?;
+      } else if moves_text(character) {
+        write!(formatter, "{}", character.escape_unicode())?;
       } else {
         write!(formatter, "{character}")?;
       }
@@ -1016,6 +1019,15 @@ impl fmt::Display for Shown<'_> {
     }
     Ok(())
   }
+}
+
+/// Whether `character` breaks a line or changes the direction text shows in: U+2028 and U+2029, and
+/// the bidirectional marks, embeddings, overrides and isolates.
+fn moves_text(character: char) -> bool {
+  matches!(
+    character,
+    '\u{2028}' | '\u{2029}' | '\u{200e}' | '\u{200f}' | '\u{061c}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+  )
 }
 
 fn sorted<T>(items: &[T], name: impl Fn(&T) -> &String) -> impl Iterator<Item = &T> {
