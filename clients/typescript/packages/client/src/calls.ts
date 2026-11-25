@@ -31,6 +31,11 @@ export interface NotifySignature {
 export interface CallSignature extends NotifySignature {
   readonly returns: ContractType;
   readonly error?: ContractType | undefined;
+  /**
+   * Whether the method is `idempotent` in the manifest (spec 12.2): a client may retry it after a
+   * failure whose outcome is unknown. Read by the retry policy; a call is sent the same either way.
+   */
+  readonly idempotent?: boolean | undefined;
 }
 
 /** Call metadata as the caller writes it: a map or a plain object of names to text or bytes. */
