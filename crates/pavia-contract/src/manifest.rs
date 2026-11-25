@@ -9,7 +9,8 @@
 //! [`Manifest::validate`] reports: a name outside the grammar,
 //! a `ref` to no named type, an `Option` of `unit` (directly or through aliases), an `optional` field whose
 //! type is not an `option`, an open enum with a variant named `Unknown`, an alias that leads back to itself,
-//! and two entries of one list with one name.
+//! and two entries of one list with one name. It also refuses a type nested deeper than [`MAX_TYPE_DEPTH`],
+//! and [`Manifest::render`] text longer than [`MAX_MANIFEST_BYTES`]: [`Manifest::read`] would refuse both.
 //!
 //! The output depends only on the manifest's content: services, methods, channels and datagram topics
 //! are sorted by name in byte order, while params, struct fields and enum variants keep the order they
@@ -123,7 +124,7 @@ impl Manifest {
     self
   }
 
-  /// Checks what the model can hold but §12.2 forbids.
+  /// Checks what the model can hold but §12.1 and §12.2 forbid, and a type deeper than [`MAX_TYPE_DEPTH`].
   ///
   /// # Errors
   ///
@@ -775,14 +776,16 @@ pub enum ManifestError {
     at: String,
   },
   /// A type that nests deeper than [`MAX_TYPE_DEPTH`], which [`Manifest::read`] would refuse.
-  #[error("{at} nests types more than {} deep", MAX_TYPE_DEPTH)]
+  #[error("{at} nests types more than {limit} deep")]
   TooDeep {
     /// Where the type is.
     at: String,
+    /// [`MAX_TYPE_DEPTH`].
+    limit: usize,
   },
   /// Text longer than [`MAX_MANIFEST_BYTES`], which [`Manifest::read`] would refuse; only
   /// [`Manifest::render`] reports it.
-  #[error("the manifest is {size} bytes, more than the {limit} a reader takes")]
+  #[error("the manifest is {size} bytes, more than the {limit} a manifest may have")]
   TooLarge {
     /// The length of the text, in bytes.
     size: usize,
@@ -895,7 +898,10 @@ impl Check<'_> {
   /// and not entered.
   fn ty(&mut self, ty: &Type, at: &str, depth: usize) {
     if depth > MAX_TYPE_DEPTH {
-      let error = ManifestError::TooDeep { at: at.to_owned() };
+      let error = ManifestError::TooDeep {
+        at: at.to_owned(),
+        limit: MAX_TYPE_DEPTH,
+      };
       if !self.errors.contains(&error) {
         self.errors.push(error);
       }

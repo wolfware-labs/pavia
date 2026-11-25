@@ -1,10 +1,12 @@
+use std::collections::BTreeMap;
+
 use serde::de;
 use serde_json::{Value, json};
 
 use super::{MAX_MANIFEST_BYTES, MAX_TYPE_DEPTH, ReadError, StrictVisitor};
 use crate::manifest::tests::spec_example;
-use crate::manifest::{Call, Datagram, Direction, Manifest, ManifestError, Method, Mode, Service, Shape};
-use crate::schema::{Field, Primitive, Struct, Type};
+use crate::manifest::{Call, Channel, Datagram, Direction, Manifest, ManifestError, Method, Mode, Param, Service, Shape};
+use crate::schema::{Definition, Enum, Field, Primitive, Struct, Type, Variant};
 
 fn written() -> Value {
   serde_json::from_str(&spec_example().render().unwrap()).unwrap()
@@ -271,7 +273,65 @@ fn reads_back_every_type_the_writer_writes_and_both_refuse_one_deeper() {
     let manifest = |ty: Type| Manifest::new("app").service(Service::new("s").server_method(Method::call("m", Call::unary(ty))));
     let text = manifest(fits).render().unwrap();
     assert_eq!(Manifest::read(&text).unwrap().render().unwrap(), text);
-    assert_eq!(manifest(deeper).render().unwrap_err(), [ManifestError::TooDeep { at }]);
+    assert_eq!(
+      manifest(deeper).render().unwrap_err(),
+      [ManifestError::TooDeep {
+        at,
+        limit: MAX_TYPE_DEPTH
+      }]
+    );
+  }
+}
+
+/// A manifest with `ty` in each place that names a type, and where that place is.
+fn every_place(ty: &Type) -> [(Manifest, &'static str); 7] {
+  let named = |definition: Definition| Manifest::new("app").types(BTreeMap::from([("Deep".into(), definition)]));
+  let method = |method: Method| Manifest::new("app").service(Service::new("s").server_method(method));
+  let unary = || Call::unary(Primitive::Unit.into());
+  [
+    (named(Definition::Alias(ty.clone())), "type `Deep`"),
+    (
+      named(Definition::Struct(Struct::new(vec![Field::new("f", ty.clone())]))),
+      "field `f` of type `Deep`",
+    ),
+    (
+      named(Definition::Enum(Enum::new(vec![Variant::new("V", ty.clone())]))),
+      "variant `V` of type `Deep`",
+    ),
+    (
+      method(Method::call("m", unary()).param(Param::new("p", ty.clone()))),
+      "param `p` of server method `s/m`",
+    ),
+    (
+      method(Method::call("m", unary().error(ty.clone()))),
+      "`error` of server method `s/m`",
+    ),
+    (
+      Manifest::new("app").channel(Channel::new("c", ty.clone())),
+      "`publication` of channel namespace `c`",
+    ),
+    (
+      Manifest::new("app").datagram(Datagram::new("d", Direction::Both, Mode::All, ty.clone())),
+      "datagram topic `d`",
+    ),
+  ]
+}
+
+#[test]
+fn both_count_every_type_a_manifest_names_from_one() {
+  let lists = |depth: usize| around_u8(depth - 1, |ty| Type::List(Box::new(ty)));
+  let deeper = every_place(&lists(MAX_TYPE_DEPTH + 1));
+  for ((fits, at), (deeper, _)) in every_place(&lists(MAX_TYPE_DEPTH)).into_iter().zip(deeper) {
+    let text = fits.render().unwrap();
+    assert_eq!(Manifest::read(&text).unwrap().render().unwrap(), text, "{at}");
+    assert_eq!(
+      deeper.render().unwrap_err(),
+      [ManifestError::TooDeep {
+        at: at.to_owned(),
+        limit: MAX_TYPE_DEPTH
+      }],
+      "{at}"
+    );
   }
 }
 
