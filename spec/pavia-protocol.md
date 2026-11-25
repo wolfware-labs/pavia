@@ -1,6 +1,6 @@
 # Pavia Wire Protocol Specification
 
-**Version:** 1 (draft 0.9; see the Changelog at the end)
+**Version:** 1 (draft 0.10; see the Changelog at the end)
 **Status:** Working draft. Nothing here is frozen until the 1.0 milestone.
 
 ---
@@ -904,6 +904,7 @@ Field rules:
 - `error`: optional typed error detail (§8.4).
 - `idempotent`: executing the call more than once has the same effect as executing it once. Clients may retry it automatically after a failure whose outcome is unknown (§8.4), on the same session or a new one; which failures they retry is client policy (by default UNAVAILABLE and transport loss).
 - `direction` for datagrams: `to_server`, `to_client`, `both`.
+- **Limits:** a manifest is at most 4 MiB of JSON text, and its types nest at most 32 deep. Depth counts the JSON levels of a type's form: a primitive such as `"u8"` is 1 deep, an `option`, `list` or `map` is 1 deeper than its inner type, a `tuple` 2 deeper than its deepest item, and an inline `struct` 4 deeper than its deepest field type (`{"struct": {"fields": [{"type": t}]}}`). Each type the manifest names starts at depth 1: a `params` type, `accepts`, `yields`, `returns`, `error`, a channel's or datagram topic's types, an alias, and the field and variant types of a named struct or enum. Exporters MUST NOT write a manifest past either limit. Readers MUST refuse one, checking the size before parsing and the depth while descending, so a hostile manifest cannot make a reader recurse or allocate without bound. Both limits are fixed protocol values (§16).
 
 ### 12.3 Codec mapping
 
@@ -1055,7 +1056,7 @@ A message sent to many sessions SHOULD be encoded once per codec, with only the 
 - **Origin validation:** servers MUST check `Origin` on WebSocket upgrades and WebTransport CONNECT requests to prevent cross-site hijacking, especially when cookies authenticate. A request without `Origin` comes from a non-browser client and is not subject to the allow-list (§4.1); refusals use the statuses of §4.1.
 - **Credentials:** only in HELLO/AUTH_REFRESH or cookies; never in URLs, never logged. Resume tokens are secrets with the same handling.
 - **Unauthenticated exposure:** before WELCOME the server sends nothing but WELCOME, REJECT or CLOSE. The handshake timeout, which runs until WELCOME or REJECT (§7.1), bounds resource use.
-- **Resource limits:** servers MUST bound header size, header nesting depth, frame size (`max_frame`), concurrent calls, lanes, datagram bindings, subscriptions, replay buffers and outbound queues, and MUST check lengths before allocating.
+- **Resource limits:** servers MUST bound header size, header nesting depth, frame size (`max_frame`), concurrent calls, lanes, datagram bindings, subscriptions, replay buffers and outbound queues, and MUST check lengths before allocating. Manifest readers, such as code generators reading a published manifest, MUST enforce the manifest's size and type depth limits (§12.2).
 - **Parsers:** varint, frame, CBOR and JSON decoders MUST be fuzzed (§17).
 - **Channel and method authorization** is per request; authorization at connect time alone is insufficient for channels and methods with finer-grained rules.
 - **Error disclosure:** internal error details are not sent to clients by default (§8.4).
@@ -1132,6 +1133,8 @@ Used by ERROR, REQUEST_ERROR and AUTH_RESULT. Values and meanings follow gRPC st
 | `max_frame` | 1 MiB (minimum 64 KiB, binds both peers) | §5, §7.1, §7.2, §4.1 |
 | Header size limit | 16 KiB | §5.4.1 |
 | Header nesting depth | 16 | §5.4.1 |
+| Manifest size | 4 MiB (fixed protocol value) | §12.2 |
+| Manifest type depth | 32 (fixed protocol value) | §12.2 |
 | Initial stream credit `window` (WS) | 256 KiB (minimum 64 KiB, binds both peers) | §6.4, §7.1, §4.1 |
 | `max_calls` (each direction) | 100 | §6.5 |
 | `max_subs` | 256 | §10.2 |
@@ -1191,6 +1194,7 @@ Levels describe features; bindings (§4) and codecs (§5.5) are separate axes. A
 The project maintains machine-readable test vectors (`vectors/`):
 - **Frame vectors:** hex bytes ↔ decoded frame (type, flags, header in diagnostic notation, data in diagnostic notation), for both bindings. Includes invalid vectors with the expected error.
 - **Codec vectors:** contract type + value ↔ `cbor` hex ↔ `json` text.
+- **Manifest vectors:** manifests at and past the limits of §12.2, and whether a reader takes them.
 - **Scripts:** ordered exchanges (`send`/`expect`/`expect_nothing_within`/`wait`/`close_transport`, where `wait` advances time, with captures and wildcards for values the peer chooses, as defined by the vector format) describing a scenario from the client's perspective. A server conformance runner replays scripts against a server under test; a client conformance runner plays the server side against a client under test.
 
 - **Abuse scripts:** scripts that exercise every limit in §16 (rapid reset, ping flood, handshake flood, slow HELLO, oversized varints, CBOR depth bombs, datagram floods) and assert the specified close code within a bounded time.
@@ -1244,6 +1248,9 @@ S→C  sid=0  PUBLICATION {9: "room:general", 11: 45, 12: 5}  data: {...}   ← 
 ---
 
 ## Changelog
+
+### draft 0.10
+- Manifest limits: at most 4 MiB of text and types at most 32 deep, depth counted in JSON levels; exporters do not write past them and readers refuse past them (§12.2, §14, §16, §17.2).
 
 ### draft 0.9
 - Data sections have one encoding per value: struct fields in declaration order, `map` keys sorted, shortest integer and float forms, compact `json` with RFC 8785 strings and numbers; decoders accept any order (§5.5, §12.3).

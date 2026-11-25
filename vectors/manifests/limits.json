@@ -1,0 +1,783 @@
+{
+  "$schema": "../schema/manifests.schema.json",
+  "group": "limits",
+  "note": "Manifests at and past the type depth limit of spec 12.2. The size limit has no vector: a case would be a 4 MiB file.",
+  "cases": [
+    {
+      "id": "alias-at-the-depth-limit",
+      "spec": [
+        "12.2"
+      ],
+      "note": "An alias of `u8` inside 31 lists: 32 deep, the most a type may nest.",
+      "manifest": {
+        "channels": [],
+        "datagrams": [],
+        "name": "limits",
+        "pavia": 1,
+        "services": [],
+        "types": {
+          "Deep": {
+            "alias": {
+              "list": {
+                "list": {
+                  "list": {
+                    "list": {
+                      "list": {
+                        "list": {
+                          "list": {
+                            "list": {
+                              "list": {
+                                "list": {
+                                  "list": {
+                                    "list": {
+                                      "list": {
+                                        "list": {
+                                          "list": {
+                                            "list": {
+                                              "list": {
+                                                "list": {
+                                                  "list": {
+                                                    "list": {
+                                                      "list": {
+                                                        "list": {
+                                                          "list": {
+                                                            "list": {
+                                                              "list": {
+                                                                "list": {
+                                                                  "list": {
+                                                                    "list": {
+                                                                      "list": {
+                                                                        "list": {
+                                                                          "list": "u8"
+                                                                        }
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "alias-past-the-depth-limit",
+      "spec": [
+        "12.2"
+      ],
+      "note": "An alias of `u8` inside 32 lists: 33 deep.",
+      "manifest": {
+        "channels": [],
+        "datagrams": [],
+        "name": "limits",
+        "pavia": 1,
+        "services": [],
+        "types": {
+          "Deep": {
+            "alias": {
+              "list": {
+                "list": {
+                  "list": {
+                    "list": {
+                      "list": {
+                        "list": {
+                          "list": {
+                            "list": {
+                              "list": {
+                                "list": {
+                                  "list": {
+                                    "list": {
+                                      "list": {
+                                        "list": {
+                                          "list": {
+                                            "list": {
+                                              "list": {
+                                                "list": {
+                                                  "list": {
+                                                    "list": {
+                                                      "list": {
+                                                        "list": {
+                                                          "list": {
+                                                            "list": {
+                                                              "list": {
+                                                                "list": {
+                                                                  "list": {
+                                                                    "list": {
+                                                                      "list": {
+                                                                        "list": {
+                                                                          "list": {
+                                                                            "list": "u8"
+                                                                          }
+                                                                        }
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "error": "too_deep"
+    },
+    {
+      "id": "inline-struct-at-the-depth-limit",
+      "spec": [
+        "12.2"
+      ],
+      "note": "A param of 3 lists around 7 nested inline structs around `u8`: each struct adds 4, so 3 + 28 + 1 = 32 deep.",
+      "manifest": {
+        "channels": [],
+        "datagrams": [],
+        "name": "limits",
+        "pavia": 1,
+        "services": [
+          {
+            "name": "s",
+            "server_methods": [
+              {
+                "name": "m",
+                "kind": "call",
+                "shape": "unary",
+                "params": [
+                  {
+                    "name": "p",
+                    "type": {
+                      "list": {
+                        "list": {
+                          "list": {
+                            "struct": {
+                              "fields": [
+                                {
+                                  "name": "f",
+                                  "type": {
+                                    "struct": {
+                                      "fields": [
+                                        {
+                                          "name": "f",
+                                          "type": {
+                                            "struct": {
+                                              "fields": [
+                                                {
+                                                  "name": "f",
+                                                  "type": {
+                                                    "struct": {
+                                                      "fields": [
+                                                        {
+                                                          "name": "f",
+                                                          "type": {
+                                                            "struct": {
+                                                              "fields": [
+                                                                {
+                                                                  "name": "f",
+                                                                  "type": {
+                                                                    "struct": {
+                                                                      "fields": [
+                                                                        {
+                                                                          "name": "f",
+                                                                          "type": {
+                                                                            "struct": {
+                                                                              "fields": [
+                                                                                {
+                                                                                  "name": "f",
+                                                                                  "type": "u8"
+                                                                                }
+                                                                              ]
+                                                                            }
+                                                                          }
+                                                                        }
+                                                                      ]
+                                                                    }
+                                                                  }
+                                                                }
+                                                              ]
+                                                            }
+                                                          }
+                                                        }
+                                                      ]
+                                                    }
+                                                  }
+                                                }
+                                              ]
+                                            }
+                                          }
+                                        }
+                                      ]
+                                    }
+                                  }
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            ],
+            "client_methods": []
+          }
+        ],
+        "types": {}
+      }
+    },
+    {
+      "id": "inline-struct-past-the-depth-limit",
+      "spec": [
+        "12.2"
+      ],
+      "note": "A param of 8 nested inline structs around `u8`: 32 + 1 = 33 deep.",
+      "manifest": {
+        "channels": [],
+        "datagrams": [],
+        "name": "limits",
+        "pavia": 1,
+        "services": [
+          {
+            "name": "s",
+            "server_methods": [
+              {
+                "name": "m",
+                "kind": "call",
+                "shape": "unary",
+                "params": [
+                  {
+                    "name": "p",
+                    "type": {
+                      "struct": {
+                        "fields": [
+                          {
+                            "name": "f",
+                            "type": {
+                              "struct": {
+                                "fields": [
+                                  {
+                                    "name": "f",
+                                    "type": {
+                                      "struct": {
+                                        "fields": [
+                                          {
+                                            "name": "f",
+                                            "type": {
+                                              "struct": {
+                                                "fields": [
+                                                  {
+                                                    "name": "f",
+                                                    "type": {
+                                                      "struct": {
+                                                        "fields": [
+                                                          {
+                                                            "name": "f",
+                                                            "type": {
+                                                              "struct": {
+                                                                "fields": [
+                                                                  {
+                                                                    "name": "f",
+                                                                    "type": {
+                                                                      "struct": {
+                                                                        "fields": [
+                                                                          {
+                                                                            "name": "f",
+                                                                            "type": {
+                                                                              "struct": {
+                                                                                "fields": [
+                                                                                  {
+                                                                                    "name": "f",
+                                                                                    "type": "u8"
+                                                                                  }
+                                                                                ]
+                                                                              }
+                                                                            }
+                                                                          }
+                                                                        ]
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                ]
+                                                              }
+                                                            }
+                                                          }
+                                                        ]
+                                                      }
+                                                    }
+                                                  }
+                                                ]
+                                              }
+                                            }
+                                          }
+                                        ]
+                                      }
+                                    }
+                                  }
+                                ]
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            ],
+            "client_methods": []
+          }
+        ],
+        "types": {}
+      },
+      "error": "too_deep"
+    },
+    {
+      "id": "tuple-at-the-depth-limit",
+      "spec": [
+        "12.2"
+      ],
+      "note": "A param of a list around 15 nested tuples around `u8`: each tuple adds 2, so 1 + 30 + 1 = 32 deep.",
+      "manifest": {
+        "channels": [],
+        "datagrams": [],
+        "name": "limits",
+        "pavia": 1,
+        "services": [
+          {
+            "name": "s",
+            "server_methods": [
+              {
+                "name": "m",
+                "kind": "call",
+                "shape": "unary",
+                "params": [
+                  {
+                    "name": "p",
+                    "type": {
+                      "list": {
+                        "tuple": [
+                          "u8",
+                          {
+                            "tuple": [
+                              "u8",
+                              {
+                                "tuple": [
+                                  "u8",
+                                  {
+                                    "tuple": [
+                                      "u8",
+                                      {
+                                        "tuple": [
+                                          "u8",
+                                          {
+                                            "tuple": [
+                                              "u8",
+                                              {
+                                                "tuple": [
+                                                  "u8",
+                                                  {
+                                                    "tuple": [
+                                                      "u8",
+                                                      {
+                                                        "tuple": [
+                                                          "u8",
+                                                          {
+                                                            "tuple": [
+                                                              "u8",
+                                                              {
+                                                                "tuple": [
+                                                                  "u8",
+                                                                  {
+                                                                    "tuple": [
+                                                                      "u8",
+                                                                      {
+                                                                        "tuple": [
+                                                                          "u8",
+                                                                          {
+                                                                            "tuple": [
+                                                                              "u8",
+                                                                              {
+                                                                                "tuple": [
+                                                                                  "u8",
+                                                                                  "u8"
+                                                                                ]
+                                                                              }
+                                                                            ]
+                                                                          }
+                                                                        ]
+                                                                      }
+                                                                    ]
+                                                                  }
+                                                                ]
+                                                              }
+                                                            ]
+                                                          }
+                                                        ]
+                                                      }
+                                                    ]
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            ],
+            "client_methods": []
+          }
+        ],
+        "types": {}
+      }
+    },
+    {
+      "id": "tuple-past-the-depth-limit",
+      "spec": [
+        "12.2"
+      ],
+      "note": "A param of 16 nested tuples around `u8`: 32 + 1 = 33 deep.",
+      "manifest": {
+        "channels": [],
+        "datagrams": [],
+        "name": "limits",
+        "pavia": 1,
+        "services": [
+          {
+            "name": "s",
+            "server_methods": [
+              {
+                "name": "m",
+                "kind": "call",
+                "shape": "unary",
+                "params": [
+                  {
+                    "name": "p",
+                    "type": {
+                      "tuple": [
+                        "u8",
+                        {
+                          "tuple": [
+                            "u8",
+                            {
+                              "tuple": [
+                                "u8",
+                                {
+                                  "tuple": [
+                                    "u8",
+                                    {
+                                      "tuple": [
+                                        "u8",
+                                        {
+                                          "tuple": [
+                                            "u8",
+                                            {
+                                              "tuple": [
+                                                "u8",
+                                                {
+                                                  "tuple": [
+                                                    "u8",
+                                                    {
+                                                      "tuple": [
+                                                        "u8",
+                                                        {
+                                                          "tuple": [
+                                                            "u8",
+                                                            {
+                                                              "tuple": [
+                                                                "u8",
+                                                                {
+                                                                  "tuple": [
+                                                                    "u8",
+                                                                    {
+                                                                      "tuple": [
+                                                                        "u8",
+                                                                        {
+                                                                          "tuple": [
+                                                                            "u8",
+                                                                            {
+                                                                              "tuple": [
+                                                                                "u8",
+                                                                                {
+                                                                                  "tuple": [
+                                                                                    "u8",
+                                                                                    "u8"
+                                                                                  ]
+                                                                                }
+                                                                              ]
+                                                                            }
+                                                                          ]
+                                                                        }
+                                                                      ]
+                                                                    }
+                                                                  ]
+                                                                }
+                                                              ]
+                                                            }
+                                                          ]
+                                                        }
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            ],
+            "client_methods": []
+          }
+        ],
+        "types": {}
+      },
+      "error": "too_deep"
+    },
+    {
+      "id": "named-struct-field-at-the-depth-limit",
+      "spec": [
+        "12.2"
+      ],
+      "note": "A field of a named struct starts at 1, like any type the manifest names: `u8` inside 31 lists is 32 deep.",
+      "manifest": {
+        "channels": [],
+        "datagrams": [],
+        "name": "limits",
+        "pavia": 1,
+        "services": [],
+        "types": {
+          "Deep": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "f",
+                  "type": {
+                    "list": {
+                      "list": {
+                        "list": {
+                          "list": {
+                            "list": {
+                              "list": {
+                                "list": {
+                                  "list": {
+                                    "list": {
+                                      "list": {
+                                        "list": {
+                                          "list": {
+                                            "list": {
+                                              "list": {
+                                                "list": {
+                                                  "list": {
+                                                    "list": {
+                                                      "list": {
+                                                        "list": {
+                                                          "list": {
+                                                            "list": {
+                                                              "list": {
+                                                                "list": {
+                                                                  "list": {
+                                                                    "list": {
+                                                                      "list": {
+                                                                        "list": {
+                                                                          "list": {
+                                                                            "list": {
+                                                                              "list": {
+                                                                                "list": "u8"
+                                                                              }
+                                                                            }
+                                                                          }
+                                                                        }
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "named-enum-variant-past-the-depth-limit",
+      "spec": [
+        "12.2"
+      ],
+      "note": "A variant type of a named enum starts at 1: `u8` inside 32 lists is 33 deep.",
+      "manifest": {
+        "channels": [],
+        "datagrams": [],
+        "name": "limits",
+        "pavia": 1,
+        "services": [],
+        "types": {
+          "Deep": {
+            "enum": {
+              "variants": [
+                {
+                  "name": "V",
+                  "type": {
+                    "list": {
+                      "list": {
+                        "list": {
+                          "list": {
+                            "list": {
+                              "list": {
+                                "list": {
+                                  "list": {
+                                    "list": {
+                                      "list": {
+                                        "list": {
+                                          "list": {
+                                            "list": {
+                                              "list": {
+                                                "list": {
+                                                  "list": {
+                                                    "list": {
+                                                      "list": {
+                                                        "list": {
+                                                          "list": {
+                                                            "list": {
+                                                              "list": {
+                                                                "list": {
+                                                                  "list": {
+                                                                    "list": {
+                                                                      "list": {
+                                                                        "list": {
+                                                                          "list": {
+                                                                            "list": {
+                                                                              "list": {
+                                                                                "list": {
+                                                                                  "list": "u8"
+                                                                                }
+                                                                              }
+                                                                            }
+                                                                          }
+                                                                        }
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "error": "too_deep"
+    }
+  ]
+}
