@@ -62,7 +62,8 @@ pub enum ReadError {
   /// The top-level `pavia` is not [`FORMAT_VERSION`].
   #[error("the manifest is format version {found}, and this reader reads version {FORMAT_VERSION}")]
   Version {
-    /// The `pavia` value as serde_json writes it back: `1.5`, `"1"`.
+    /// The `pavia` value as serde_json writes it back (`1.5`, `"1"`), cut and escaped as
+    /// [`MAX_NAME_BYTES`](super::MAX_NAME_BYTES) says.
     found: String,
   },
   /// The document has the form §12.2 gives it, but [`Manifest::validate`] refuses what it says.

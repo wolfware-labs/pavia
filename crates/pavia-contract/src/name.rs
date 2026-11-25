@@ -1,7 +1,7 @@
 //! The name grammar every manifest name follows (§12.2): `[A-Za-z_][A-Za-z0-9_]*`.
 
-/// Whether `name` matches `[A-Za-z_][A-Za-z0-9_]*`, the grammar of type, field, variant, service, method
-/// and datagram topic names (§12.2).
+/// Whether `name` matches `[A-Za-z_][A-Za-z0-9_]*`, the grammar of type, field, variant, service, method,
+/// param and datagram topic names (§12.2).
 ///
 /// ```
 /// use pavia_contract::name::is_valid;

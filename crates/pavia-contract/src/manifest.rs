@@ -6,11 +6,12 @@
 //! checking for it: a notification has no shape or result types, an absent optional field has no `null` to
 //! write, and a field equal to its default (`"returns": "unit"`, `"idempotent": false`, `"history": false`,
 //! an empty `params`) is never written. What the model can hold but §12.1 and §12.2 forbid,
-//! [`Manifest::validate`] reports: a name outside the grammar,
+//! [`Manifest::validate`] reports: a name outside the grammar or longer than [`MAX_NAME_BYTES`],
 //! a `ref` to no named type, an `Option` of `unit` (directly or through aliases), an `optional` field whose
 //! type is not an `option`, an open enum with a variant named `Unknown`, an alias that leads back to itself,
 //! and two entries of one list with one name. It also refuses a type nested deeper than [`MAX_TYPE_DEPTH`],
 //! and [`Manifest::render`] text longer than [`MAX_MANIFEST_BYTES`]: [`Manifest::read`] would refuse both.
+//! It reports at most [`MAX_ERRORS`] errors, and quotes at most [`MAX_NAME_BYTES`] of any manifest text.
 //!
 //! The output depends only on the manifest's content: services, methods, channels and datagram topics
 //! are sorted by name in byte order, while params, struct fields and enum variants keep the order they
@@ -741,12 +742,13 @@ impl Datagram {
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[non_exhaustive]
 pub enum ManifestError {
-  /// A service, method, type, field, variant or datagram topic name outside `[A-Za-z_][A-Za-z0-9_]*`.
+  /// A service, method, param, type, field, variant or datagram topic name outside
+  /// `[A-Za-z_][A-Za-z0-9_]*`.
   #[error("{what} name `{name}` is not a contract name: names match [A-Za-z_][A-Za-z0-9_]* (spec 12.2)")]
   InvalidName {
     /// What the name names: `"service"`, `"field of type `Message`"`.
     what: String,
-    /// The name.
+    /// The name, cut and escaped as [`MAX_NAME_BYTES`] says.
     name: String,
   },
   /// A service, method, param, type, field, variant or datagram topic name longer than
@@ -755,7 +757,7 @@ pub enum ManifestError {
   NameTooLong {
     /// What the name names: `"service"`, `"field of type `Message`"`.
     what: String,
-    /// The name's first [`MAX_NAME_BYTES`], then `…`.
+    /// The name, cut and escaped as [`MAX_NAME_BYTES`] says.
     name: String,
     /// The name's length in bytes.
     size: usize,
@@ -765,7 +767,7 @@ pub enum ManifestError {
   /// A channel namespace outside the channel name characters of §10.1, or with a `:`.
   #[error("channel namespace `{namespace}` is not a namespace: 1 to 255 of [A-Za-z0-9_-./@], no `:` (spec 10.1, 12.2)")]
   InvalidNamespace {
-    /// The namespace.
+    /// The namespace, cut and escaped as [`MAX_NAME_BYTES`] says.
     namespace: String,
   },
   /// Two entries of one list with one name.
@@ -773,13 +775,13 @@ pub enum ManifestError {
   Duplicate {
     /// The list: `"service"`, `"server method of service `chat`"`.
     what: String,
-    /// The name both entries have.
+    /// The name both entries have, cut and escaped as [`MAX_NAME_BYTES`] says.
     name: String,
   },
   /// A `{"ref": name}` to a name the `types` table does not have.
   #[error("{at} refers to `{name}`, which is not in `types`")]
   UnknownType {
-    /// The missing name.
+    /// The missing name, cut and escaped as [`MAX_NAME_BYTES`] says.
     name: String,
     /// Where the reference is: `"param `room` of server method `chat/send`"`.
     at: String,
@@ -823,7 +825,7 @@ pub enum ManifestError {
   /// A named type that leads back to itself through aliases only, so it never reaches a type.
   #[error("type `{name}` leads back to itself through aliases only, so it never reaches a type")]
   AliasCycle {
-    /// The name of an alias on the cycle, or leading to it.
+    /// The name of an alias on the cycle, or leading to it, cut and escaped as [`MAX_NAME_BYTES`] says.
     name: String,
   },
 }
@@ -1001,10 +1003,7 @@ fn shown(text: &str) -> Shown<'_> {
 
 impl fmt::Display for Shown<'_> {
   fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-    let end = (0..=MAX_NAME_BYTES.min(self.0.len()))
-      .rev()
-      .find(|&end| self.0.is_char_boundary(end))
-      .unwrap_or(0);
+    let end = self.0.floor_char_boundary(MAX_NAME_BYTES);
     for character in self.0[..end].chars() {
       if character.is_control() {
         write!(formatter, "{}", character.escape_debug())?;
