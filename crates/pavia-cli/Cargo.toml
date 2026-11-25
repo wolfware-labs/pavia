@@ -10,3 +10,9 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
+pavia-codegen.workspace = true
+pavia-contract.workspace = true
+
+[[bin]]
+name = "pavia"
+path = "src/main.rs"
