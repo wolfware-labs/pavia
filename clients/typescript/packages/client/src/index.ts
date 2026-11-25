@@ -1,5 +1,11 @@
 export { ByteWriter } from "./bytes.js";
-export { type CallOptions, type CallSignature, type MetaInput } from "./calls.js";
+export {
+  type CallOptions,
+  type CallSignature,
+  type MetaInput,
+  type NotifyOptions,
+  type NotifySignature,
+} from "./calls.js";
 export {
   ConnectError,
   type ConnectOptions,

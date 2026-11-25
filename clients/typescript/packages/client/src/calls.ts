@@ -1,20 +1,36 @@
 import { type Codec, decodeData, encodeData } from "./data.js";
 import { DataError, EncodeError, StatusCode, StatusError, statusCodeFromWire } from "./errors.js";
-import { type Call, type CallError, type CallResult, type Frame, isMetaName, type Meta } from "./frames.js";
+import {
+  type Call,
+  type CallError,
+  type CallResult,
+  type Frame,
+  isMetaName,
+  type Meta,
+  type Notify,
+} from "./frames.js";
 import { isBytes, isMap } from "./realm.js";
 import type { ContractType, Types } from "./types.js";
 
 /**
- * What the runtime needs to know about a server method to call it: generated code holds one per
- * method. `params` are the parameter types in contract order, `returns` the return type, `error`
- * the declared error type, if any, and `types` the manifest's named types they refer to.
+ * What the runtime needs to know about a server method to notify it: generated code holds one per
+ * notification method. `params` are the parameter types in contract order and `types` the
+ * manifest's named types they refer to.
  */
-export interface CallSignature {
+export interface NotifySignature {
   readonly method: string;
   readonly params: readonly ContractType[];
+  readonly types: Types;
+}
+
+/**
+ * What the runtime needs to know about a server method to call it: generated code holds one per
+ * method. Beside the parameters, `returns` is the return type and `error` the declared error type,
+ * if any.
+ */
+export interface CallSignature extends NotifySignature {
   readonly returns: ContractType;
   readonly error?: ContractType | undefined;
-  readonly types: Types;
 }
 
 /** Call metadata as the caller writes it: a map or a plain object of names to text or bytes. */
@@ -35,6 +51,12 @@ export interface CallOptions {
   readonly onTrailers?: ((meta: Meta) => void) | undefined;
 }
 
+/** Options of one notification (spec 9.1). */
+export interface NotifyOptions {
+  /** Notification metadata (spec 8.7). Names are `[a-z0-9-]`. */
+  readonly meta?: MetaInput | undefined;
+}
+
 /** What {@link Calls} needs from the session it runs on. */
 export interface CallHost {
   /** The codec WELCOME chose. */
@@ -47,7 +69,7 @@ export interface CallHost {
   readonly ended: boolean;
   /** Opens the next client stream with `frame` and returns its ID; a refused frame takes none. */
   open(frame: Frame): number;
-  /** Sends `frame` on the open client stream `stream`. */
+  /** Sends `frame` on `stream`: an open client stream, or 0 for a NOTIFY. */
   send(stream: number, frame: Frame): void;
   /** The monotonic clock, in milliseconds. */
   now(): number;
@@ -57,6 +79,7 @@ export interface CallHost {
 export type Delivery = "handled" | "ignored" | "protocol_error";
 
 const UNARY = 0n;
+const CONTROL_STREAM = 0;
 
 interface Pending {
   readonly signature: CallSignature;
@@ -99,6 +122,46 @@ export class Calls {
   }
 
   /**
+   * Sends NOTIFY on stream 0 for `signature.method` with `args` (spec 9.1). Nothing answers it.
+   *
+   * @throws {@link StatusError} with `nx`, sending nothing: UNAVAILABLE once the session has ended,
+   * INVALID_ARGUMENT for a metadata name outside `[a-z0-9-]`, arguments of the wrong count or type,
+   * or a NOTIFY that does not encode.
+   */
+  notify(signature: NotifySignature, args: readonly unknown[], options: NotifyOptions = {}): void {
+    if (this.host.ended) throw refusal(StatusCode.UNAVAILABLE, "the session has ended");
+    const meta = metaOf(options.meta);
+    if (typeof meta === "string") throw refusal(StatusCode.INVALID_ARGUMENT, meta);
+    const data = this.encodeArgs(signature, args);
+    if (data instanceof StatusError) throw data;
+    const frame: Notify = {
+      type: "NOTIFY",
+      method: signature.method,
+      ...(meta === undefined ? {} : { meta }),
+      data,
+    };
+    try {
+      this.host.send(CONTROL_STREAM, frame);
+    } catch (error) {
+      if (!(error instanceof EncodeError)) throw error;
+      throw refusal(StatusCode.INVALID_ARGUMENT, `the NOTIFY does not encode: ${error.message}`, error);
+    }
+  }
+
+  private encodeArgs(signature: NotifySignature, args: readonly unknown[]): Uint8Array | StatusError {
+    if (args.length !== signature.params.length) {
+      const count = signature.params.length;
+      return refusal(StatusCode.INVALID_ARGUMENT, `${signature.method} takes ${count} arguments, not ${args.length}`);
+    }
+    try {
+      return encodeData({ tuple: signature.params }, signature.types, args, this.host.codec);
+    } catch (error) {
+      if (!(error instanceof EncodeError)) throw error;
+      return refusal(StatusCode.INVALID_ARGUMENT, `the arguments do not encode: ${error.message}`, error);
+    }
+  }
+
+  /**
    * Calls `signature.method` with `args`. The promise resolves with the decoded return value and
    * rejects with a {@link StatusError}; `nx` is true when nothing was sent. It rejects with a
    * RangeError for a `deadline` that is not a positive number of milliseconds up to 2^53 - 1.
@@ -116,17 +179,8 @@ export class Calls {
       }
       const meta = metaOf(options.meta);
       if (typeof meta === "string") return refuse(StatusCode.INVALID_ARGUMENT, meta);
-      if (args.length !== signature.params.length) {
-        const count = signature.params.length;
-        return refuse(StatusCode.INVALID_ARGUMENT, `${signature.method} takes ${count} arguments, not ${args.length}`);
-      }
-      let data: Uint8Array;
-      try {
-        data = encodeData({ tuple: signature.params }, signature.types, args, this.host.codec);
-      } catch (error) {
-        if (!(error instanceof EncodeError)) throw error;
-        return refuse(StatusCode.INVALID_ARGUMENT, `the arguments do not encode: ${error.message}`, error);
-      }
+      const data = this.encodeArgs(signature, args);
+      if (data instanceof StatusError) return reject(data);
       if (BigInt(this.pending.size) >= this.host.maxCalls) {
         return refuse(StatusCode.RESOURCE_EXHAUSTED, `${this.pending.size} calls are open, the server's max_calls`);
       }
@@ -265,6 +319,10 @@ function nameText(name: unknown): string {
 }
 
 /** `input` as a {@link Meta}, `undefined` when absent, or why it is not metadata. */
+function refusal(code: StatusCode, message: string, cause?: unknown): StatusError {
+  return new StatusError(code, message, { nx: true, cause });
+}
+
 function metaOf(input: MetaInput | undefined): Meta | undefined | string {
   if (input === undefined) return undefined;
   const entries = isMap(input) ? [...input.entries()] : Object.entries(input);

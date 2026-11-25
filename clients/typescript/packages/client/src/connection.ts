@@ -1,5 +1,5 @@
 import { toHex } from "./bytes.js";
-import { type CallOptions, Calls, type CallSignature } from "./calls.js";
+import { type CallOptions, Calls, type CallSignature, type NotifyOptions, type NotifySignature } from "./calls.js";
 import type { Codec } from "./data.js";
 import { CloseCode } from "./errors.js";
 import type { Frame, Welcome } from "./frames.js";
@@ -168,6 +168,18 @@ export class Connection extends EventTarget {
     const pending = this.calls.call(signature, args, options);
     this.arm();
     return pending as Promise<R>;
+  }
+
+  /**
+   * Sends a notification to a server method (spec 9.1): NOTIFY with the arguments encoded as
+   * `signature` says. Nothing answers it, so it returns nothing.
+   *
+   * @throws {@link StatusError} with `nx`, sending nothing: UNAVAILABLE once the session has ended,
+   * INVALID_ARGUMENT for a metadata name outside `[a-z0-9-]`, arguments that do not encode, or a
+   * NOTIFY that does not encode.
+   */
+  notify(signature: NotifySignature, args: readonly unknown[], options?: NotifyOptions): void {
+    this.calls.notify(signature, args, options);
   }
 
   private open(frame: Frame): number {
