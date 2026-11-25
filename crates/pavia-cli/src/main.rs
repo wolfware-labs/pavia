@@ -40,15 +40,11 @@ fn main() -> ExitCode {
 /// The most of a message [`printable`] keeps, in bytes: room for every error a manifest can report.
 const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 
-/// `message` as the terminal may show it: a message quotes text from the manifest, so control
-/// characters are written as escapes (`\u{1b}`, `\n`), and the text after [`MAX_MESSAGE_BYTES`] is
-/// cut.
+/// `message` as the terminal may show it: control characters written as escapes (`\u{1b}`, `\n`),
+/// and the text after [`MAX_MESSAGE_BYTES`] cut. Manifest errors already arrive that way; this also
+/// covers the paths and system errors a message carries.
 fn printable(message: &str) -> String {
-  let mut cut = MAX_MESSAGE_BYTES.min(message.len());
-  while !message.is_char_boundary(cut) {
-    cut -= 1;
-  }
-  let (kept, rest) = message.split_at(cut);
+  let (kept, rest) = message.split_at(message.floor_char_boundary(MAX_MESSAGE_BYTES));
   let mut shown = String::with_capacity(kept.len());
   for character in kept.chars() {
     if character.is_control() {
@@ -112,3 +108,6 @@ fn read_bounded(path: &Path) -> io::Result<String> {
   }
   String::from_utf8(bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
+
+#[cfg(test)]
+mod tests;

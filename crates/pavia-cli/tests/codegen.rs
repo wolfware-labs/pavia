@@ -113,24 +113,18 @@ fn writes_control_characters_from_a_manifest_as_escapes() {
 }
 
 #[test]
-fn cuts_a_long_message_short_even_inside_a_character() {
+fn quotes_a_short_part_of_a_long_value() {
   let dir = scratch("long");
   fs::create_dir_all(&dir).unwrap();
   let out = dir.join("out");
-  for pad in ["", "v"] {
-    let manifest = dir.join("long.json");
-    fs::write(
-      &manifest,
-      format!(r#"{{"pavia": "{pad}{}", "name": "app"}}"#, "é".repeat(1 << 19)),
-    )
-    .unwrap();
-    let output = pavia(&["codegen", "ts", manifest.to_str().unwrap(), "--out", out.to_str().unwrap()]);
-    assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8(output.stderr).expect("the message stays UTF-8");
-    assert!(stderr.contains("format version"), "{}", &stderr[..200]);
-    assert!(stderr.len() < 70_000, "{} bytes", stderr.len());
-    assert!(stderr.trim_end().ends_with("more bytes)"), "{pad:?}");
-  }
+  let manifest = dir.join("long.json");
+  fs::write(&manifest, format!(r#"{{"pavia": "{}", "name": "app"}}"#, "é".repeat(1 << 19))).unwrap();
+  let output = pavia(&["codegen", "ts", manifest.to_str().unwrap(), "--out", out.to_str().unwrap()]);
+  assert_eq!(output.status.code(), Some(1));
+  let stderr = String::from_utf8(output.stderr).expect("the message stays UTF-8");
+  assert!(stderr.contains("format version"), "{stderr}");
+  assert!(stderr.contains('…'), "{stderr}");
+  assert!(stderr.len() < 1_000, "{} bytes", stderr.len());
   fs::remove_dir_all(&dir).unwrap();
 }
 
