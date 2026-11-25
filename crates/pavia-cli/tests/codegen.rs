@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::{env, fs};
 
-use pavia_contract::manifest::Manifest;
+use pavia_contract::manifest::{MAX_MANIFEST_BYTES, Manifest};
 
 fn example() -> PathBuf {
   Path::new(env!("CARGO_MANIFEST_DIR")).join("../pavia-server/tests/manifest/example.json")
@@ -91,4 +91,45 @@ fn says_why_a_manifest_cannot_be_read_or_generated() {
     assert!(!out.exists());
   }
   fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn refuses_a_manifest_over_the_bound_even_when_the_bound_cuts_a_character() {
+  let dir = scratch("large");
+  fs::create_dir_all(&dir).unwrap();
+  let start = r#"{"pavia": 1, "name": "x"#;
+  for pad in [0, 1] {
+    let large = dir.join(format!("large-{pad}.json"));
+    let fill = "é".repeat((MAX_MANIFEST_BYTES - start.len()) / 2 + 2);
+    fs::write(&large, format!("{start}{}{fill}", " ".repeat(pad))).unwrap();
+    let output = pavia(&[
+      "codegen",
+      "ts",
+      large.to_str().unwrap(),
+      "--out",
+      dir.join("out").to_str().unwrap(),
+    ]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+      stderr(&output).contains("more than the 4194304 a manifest may have"),
+      "{}",
+      stderr(&output)
+    );
+  }
+  fs::remove_dir_all(&dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn reports_a_manifest_path_that_is_not_utf8_as_a_file_it_cannot_read() {
+  use std::ffi::OsStr;
+  use std::os::unix::ffi::OsStrExt as _;
+
+  let output = Command::new(env!("CARGO_BIN_EXE_pavia"))
+    .args([OsStr::new("codegen"), OsStr::new("ts"), OsStr::from_bytes(b"bad\xff.json")])
+    .args(["--out", scratch("not-utf8").to_str().unwrap()])
+    .output()
+    .expect("the pavia binary runs");
+  assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+  assert!(stderr(&output).contains("cannot read bad"), "{}", stderr(&output));
 }

@@ -3,8 +3,9 @@
 //! `pavia codegen ts <manifest.json> --out <dir>` reads a manifest file (§12.2) and writes the
 //! TypeScript module for it to `<dir>/contract.ts`, creating `<dir>` when it is missing.
 
+use std::ffi::OsString;
 use std::fs::{self, File};
-use std::io::Read as _;
+use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -19,7 +20,7 @@ enum Failure {
 }
 
 fn main() -> ExitCode {
-  let args: Vec<String> = std::env::args().skip(1).collect();
+  let args: Vec<OsString> = std::env::args_os().skip(1).collect();
   match run(&args) {
     Ok(written) => {
       println!("pavia: wrote {}", written.display());
@@ -36,7 +37,7 @@ fn main() -> ExitCode {
   }
 }
 
-fn run(args: &[String]) -> Result<PathBuf, Failure> {
+fn run(args: &[OsString]) -> Result<PathBuf, Failure> {
   match args {
     [command, target, rest @ ..] if command == "codegen" && target == "ts" => {
       let (manifest, out) = codegen_args(rest).ok_or(Failure::Usage)?;
@@ -47,7 +48,7 @@ fn run(args: &[String]) -> Result<PathBuf, Failure> {
 }
 
 /// The manifest path and the `--out` folder, each given exactly once and nothing else.
-fn codegen_args(args: &[String]) -> Option<(PathBuf, PathBuf)> {
+fn codegen_args(args: &[OsString]) -> Option<(PathBuf, PathBuf)> {
   let mut manifest = None;
   let mut out = None;
   let mut args = args.iter();
@@ -56,7 +57,7 @@ fn codegen_args(args: &[String]) -> Option<(PathBuf, PathBuf)> {
       if out.replace(PathBuf::from(args.next()?)).is_some() {
         return None;
       }
-    } else if arg.starts_with("--") || manifest.replace(PathBuf::from(arg)).is_some() {
+    } else if arg.as_encoded_bytes().starts_with(b"--") || manifest.replace(PathBuf::from(arg)).is_some() {
       return None;
     }
   }
@@ -74,10 +75,14 @@ fn codegen(manifest: &Path, out: &Path) -> Result<PathBuf, String> {
 }
 
 /// The file's text, reading at most one byte past [`MAX_MANIFEST_BYTES`]: enough for
-/// [`Manifest::read`] to refuse a file that is too long without reading all of it.
-fn read_bounded(path: &Path) -> std::io::Result<String> {
+/// [`Manifest::read`] to refuse a file that is too long without reading all of it. Bytes past the
+/// bound are read with lossy UTF-8, since the bound may cut a character, and stay past it.
+fn read_bounded(path: &Path) -> io::Result<String> {
   let limit = u64::try_from(MAX_MANIFEST_BYTES).expect("the bound fits a u64") + 1;
-  let mut text = String::new();
-  File::open(path)?.take(limit).read_to_string(&mut text)?;
-  Ok(text)
+  let mut bytes = Vec::new();
+  File::open(path)?.take(limit).read_to_end(&mut bytes)?;
+  if bytes.len() > MAX_MANIFEST_BYTES {
+    return Ok(String::from_utf8_lossy(&bytes).into_owned());
+  }
+  String::from_utf8(bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
