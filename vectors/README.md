@@ -87,6 +87,8 @@ Each case gives a manifest ([spec 12.2](../spec/pavia-protocol.md#122-manifest-f
 
 The size limit has no vector, since a case past it would be a file over 4 MiB.
 
+The cases in `limits.json` come in pairs built from one template: the at-limit case wraps the type in enough of its form (or in `list`s, for a place) to reach depth 32, and the past-limit case adds one more. Each case's `note` gives the count, so a new pair follows the same pattern by hand.
+
 ## Varint vectors (`varints/`)
 
 QUIC variable-length integers ([spec 5.1](../spec/pavia-protocol.md#51-variable-length-integers)), the prefix encoding inside frames and the WebSocket envelope. Values are decimal strings, because the largest ones do not fit a JSON number that every parser reads exactly. Each case is one of:
