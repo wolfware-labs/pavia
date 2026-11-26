@@ -642,14 +642,17 @@ impl<'f, 'm> Writer<'f, 'm> {
     if unary.is_empty() && notifications.is_empty() {
       return;
     }
-    let table: serde_json::Map<String, Value> = self
+    let entries: Vec<String> = self
       .manifest()
       .type_table()
       .iter()
-      .map(|(name, definition)| (name.clone(), definition.to_json()))
+      .map(|(name, definition)| format!("  {}: {},\n", quoted(name), json(&definition.to_json())))
       .collect();
-    let table = serde_json::to_string_pretty(&Value::Object(table)).expect("a JSON value serializes");
-    emit!(self.out, "\nconst TYPES: Types = {table};");
+    if entries.is_empty() {
+      self.out.push_str("\nconst TYPES: Types = {};\n");
+    } else {
+      emit!(self.out, "\nconst TYPES: Types = {{\n{}}};", entries.concat());
+    }
     if !unary.is_empty() {
       self.out.push_str("\nconst CALLS = {\n");
       for (service, method, call) in unary {

@@ -28,58 +28,10 @@ export type RoomId = string;
 export type SendError = { kind: "RoomNotFound" } | { kind: "TooLong"; value: { max: number } };
 
 const TYPES: Types = {
-  "Message": {
-    "struct": {
-      "fields": [
-        {
-          "name": "id",
-          "type": {
-            "ref": "MessageId"
-          }
-        },
-        {
-          "name": "author",
-          "type": "string"
-        },
-        {
-          "name": "text",
-          "type": "string"
-        },
-        {
-          "name": "sent_at",
-          "type": "timestamp"
-        }
-      ]
-    }
-  },
-  "MessageId": {
-    "alias": "uuid"
-  },
-  "RoomId": {
-    "alias": "string"
-  },
-  "SendError": {
-    "enum": {
-      "variants": [
-        {
-          "name": "RoomNotFound"
-        },
-        {
-          "name": "TooLong",
-          "type": {
-            "struct": {
-              "fields": [
-                {
-                  "name": "max",
-                  "type": "u32"
-                }
-              ]
-            }
-          }
-        }
-      ]
-    }
-  }
+  "Message": {"struct":{"fields":[{"name":"id","type":{"ref":"MessageId"}},{"name":"author","type":"string"},{"name":"text","type":"string"},{"name":"sent_at","type":"timestamp"}]}},
+  "MessageId": {"alias":"uuid"},
+  "RoomId": {"alias":"string"},
+  "SendError": {"enum":{"variants":[{"name":"RoomNotFound"},{"name":"TooLong","type":{"struct":{"fields":[{"name":"max","type":"u32"}]}}}]}},
 };
 
 const CALLS = {

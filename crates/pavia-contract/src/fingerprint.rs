@@ -55,9 +55,7 @@ pub fn canonical(manifest: &Value) -> Result<String, FingerprintError> {
       }
     }
   }
-  let mut out = String::new();
-  jcs(&normative(top), &mut out);
-  Ok(out)
+  Ok(canonical_json(&normative(top)))
 }
 
 /// Why a manifest has no fingerprint (§12.5).
@@ -206,6 +204,23 @@ fn strip_docs(value: &Value) -> Value {
     ),
     other => other.clone(),
   }
+}
+
+/// `value` written with RFC 8785, as [`jcs`] writes it: the same text whatever order serde_json's map
+/// keeps its members in, so code generated from a manifest does not change with serde_json's
+/// features. A number is written through its `f64`.
+///
+/// ```
+/// use pavia_contract::fingerprint::canonical_json;
+///
+/// let value = serde_json::json!({"type": "u8", "name": "id", "optional": true});
+/// assert_eq!(canonical_json(&value), r#"{"name":"id","optional":true,"type":"u8"}"#);
+/// ```
+#[must_use]
+pub fn canonical_json(value: &Value) -> String {
+  let mut out = String::new();
+  jcs(value, &mut out);
+  out
 }
 
 /// Writes `value` as RFC 8785 serializes it: object members sorted by the UTF-16 code units of their

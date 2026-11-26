@@ -148,9 +148,7 @@ pub(crate) fn walk<'t>(
 }
 
 /// `value` as compact JSON text.
-pub(crate) fn json(value: &serde_json::Value) -> String {
-  serde_json::to_string(value).expect("a JSON value serializes")
-}
+pub(crate) use pavia_contract::fingerprint::canonical_json as json;
 
 pub(crate) fn unsupported(value: &serde_json::Value) -> GenerateError {
   GenerateError::Unsupported { form: json(value) }
