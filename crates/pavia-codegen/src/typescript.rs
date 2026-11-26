@@ -239,10 +239,7 @@ fn check_option_cycles(manifest: &Manifest) -> Result<(), GenerateError> {
           target: TARGET,
         });
       }
-      current = match table.get(name) {
-        Some(definition) => optional_alias_of(definition)?,
-        None => None,
-      };
+      current = table.get(name).map(optional_alias_of).transpose()?.flatten();
     }
     done.extend(path);
   }
@@ -565,18 +562,14 @@ impl<'f, 'm> Writer<'f, 'm> {
   }
 
   fn variants(&self, variants: &Enum, input: bool) -> Result<String, GenerateError> {
-    let mut members = variants
-      .variants()
-      .iter()
-      .map(|variant| match variant.ty() {
-        None => Ok(format!("{{ kind: {} }}", quoted(variant.name()))),
-        Some(ty) => Ok(format!(
-          "{{ kind: {}; value: {} }}",
-          quoted(variant.name()),
-          self.ty(ty, input)?
-        )),
-      })
-      .collect::<Result<Vec<String>, GenerateError>>()?;
+    let mut members = Vec::new();
+    for variant in variants.variants() {
+      let kind = quoted(variant.name());
+      members.push(match variant.ty() {
+        None => format!("{{ kind: {kind} }}"),
+        Some(ty) => format!("{{ kind: {kind}; value: {} }}", self.ty(ty, input)?),
+      });
+    }
     if variants.is_open() && !input {
       members.push("{ kind: \"Unknown\"; name: string }".to_owned());
     }
@@ -606,11 +599,11 @@ impl<'f, 'm> Writer<'f, 'm> {
       }
       Form::Map(inner) => format!("Map<string, {}>", self.ty(inner, input)?),
       Form::Tuple(items) => {
-        let items = items
-          .iter()
-          .map(|item| self.ty(item, input))
-          .collect::<Result<Vec<String>, GenerateError>>()?;
-        format!("[{}]", items.join(", "))
+        let mut written = Vec::new();
+        for item in items {
+          written.push(self.ty(item, input)?);
+        }
+        format!("[{}]", written.join(", "))
       }
       Form::Struct(fields) => self.inline_struct(fields, input)?,
       Form::Ref(name) if input && self.front.has_input_form(name) => input_name(name),
@@ -622,12 +615,11 @@ impl<'f, 'm> Writer<'f, 'm> {
     if fields.fields().is_empty() {
       return Ok(EMPTY.to_owned());
     }
-    let fields = fields
-      .fields()
-      .iter()
-      .map(|field| self.field(field, input))
-      .collect::<Result<Vec<String>, GenerateError>>()?;
-    Ok(format!("{{ {} }}", fields.join("; ")))
+    let mut written = Vec::new();
+    for field in fields.fields() {
+      written.push(self.field(field, input)?);
+    }
+    Ok(format!("{{ {} }}", written.join("; ")))
   }
 
   /// The type of a value a callee answers with: `void` for `unit`, and the form `input` asks for.
