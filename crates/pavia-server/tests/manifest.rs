@@ -197,3 +197,35 @@ fn fingerprints_the_committed_manifest() {
   assert_eq!(manifest::fingerprint(NAME, &methods).unwrap().bytes(), expected);
   assert_eq!(manifest::fingerprint("another-name", &methods).unwrap().bytes(), expected);
 }
+
+#[test]
+fn reads_the_committed_manifest_back_as_the_same_contract() {
+  let text = fs::read_to_string(committed()).unwrap();
+  let read = pavia_contract::manifest::Manifest::read(&text).unwrap();
+  assert_eq!(read.render().unwrap(), text);
+  let methods = registry(server_methods(), client_methods());
+  assert_eq!(
+    read.fingerprint().unwrap(),
+    manifest::fingerprint(NAME, &methods).unwrap().bytes()
+  );
+}
+
+#[test]
+fn fingerprints_no_contract_whose_manifest_it_cannot_write() {
+  let names: Vec<String> = (0..20_000)
+    .map(|index| format!("chat/{}{index:05}", "a".repeat(200)))
+    .collect();
+  let methods = registry(names.iter().map(|name| (name.as_str(), send())).collect(), Vec::new());
+  for result in [
+    manifest::fingerprint(NAME, &methods).map(|_| ()),
+    manifest::render(NAME, &methods).map(|_| ()),
+  ] {
+    match result {
+      Err(manifest::ExportError::Manifest(errors)) => assert!(
+        matches!(errors.as_slice(), [pavia_contract::manifest::ManifestError::TooLarge { .. }]),
+        "{errors:?}"
+      ),
+      other => panic!("expected a size error, got {other:?}"),
+    }
+  }
+}

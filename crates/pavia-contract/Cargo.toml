@@ -12,9 +12,15 @@ license.workspace = true
 [dependencies]
 pavia-contract-derive.workspace = true
 ryu-js.workspace = true
+serde.workspace = true
 serde_json = { workspace = true, features = ["float_roundtrip"] }
 sha2.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
 pavia-vectors = { path = "../pavia-vectors" }
+
+[[bench]]
+name = "manifest"
+harness = false

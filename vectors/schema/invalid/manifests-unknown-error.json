@@ -1,0 +1,16 @@
+{
+  "$schema": "../manifests.schema.json",
+  "group": "broken",
+  "note": "Deliberately invalid fixture: an error the format does not define. CI checks that schema validation rejects it.",
+  "cases": [
+    {
+      "id": "unknown-error",
+      "spec": [
+        "12.2"
+      ],
+      "note": "an error outside the list",
+      "manifest": {},
+      "error": "too_wide"
+    }
+  ]
+}

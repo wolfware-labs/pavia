@@ -12,6 +12,7 @@ vectors/
   headers/<group>.json header section vectors
   scripts/<group>.json scripts and abuse scripts
   fingerprints/<group>.json  contract fingerprint vectors
+  manifests/<group>.json     manifest reading vectors
 ```
 
 ## Common rules
@@ -74,6 +75,19 @@ Each case gives a manifest ([spec 12.2](../spec/pavia-protocol.md#122-manifest-f
 | `canonical` | one of | The manifest without its `docs` fields and its top-level `name`, written with RFC 8785, compared byte for byte |
 | `fingerprint` | with `canonical` | The SHA-256 of `canonical`, as 64 lowercase hex digits |
 | `error` | one of | Why the manifest has no fingerprint: `null` (a `null` anywhere), `default` (an optional field equal to its default), `unsorted` (named entries out of byte order by name, or a name twice), `not_an_array` (a named list that is not an array), `not_an_object`, `not_a_double` (a number that is not a finite IEEE-754 double, which RFC 8785 cannot write; no vector carries one yet, since many JSON parsers, serde_json among them, refuse a number such as `1e400` before canonicalization starts) |
+
+## Manifest vectors (`manifests/`)
+
+Each case gives a manifest ([spec 12.2](../spec/pavia-protocol.md#122-manifest-format)) as a JSON value that a reader either takes or refuses. They cover the limits of 12.2: a type at the depth limit, and one level past it, for each form (`list`, `map`, `option`, `tuple`, inline `struct`, and the 1-deep `ref`, empty `tuple` and fieldless `struct`) and each place a type starts; and a name at the length limit of 255 bytes, and one byte past it, for each kind of name. Every vector nests less than 64 JSON levels, the depth below which 12.2 lets no reader refuse while parsing.
+
+| Field | Required | Meaning |
+|---|---|---|
+| `manifest` | yes | The manifest, as JSON |
+| `error` | no | Why a reader refuses the manifest: `too_deep` (a type nests more than 32 deep, counted as 12.2 says) or `name_too_long` (a name is longer than 255 bytes). Absent means a reader takes it, and an exporter writes it back as the same JSON value |
+
+The size limit has no vector, since a case past it would be a file over 4 MiB.
+
+The depth cases in `limits.json` come in pairs built from one template: the at-limit case wraps the type in enough of its form (or in `list`s, for a place) to reach depth 32, and the past-limit case reaches 33 with the same form. Each case's `note` gives the count, so a new pair follows the same pattern by hand.
 
 ## Varint vectors (`varints/`)
 
@@ -153,7 +167,10 @@ CI validates every file against its schema and checks that the fixtures in `sche
 uvx check-jsonschema --schemafile vectors/schema/frames.schema.json vectors/frames/*.json
 uvx check-jsonschema --schemafile vectors/schema/codecs.schema.json vectors/codecs/*.json
 uvx check-jsonschema --schemafile vectors/schema/varints.schema.json vectors/varints/*.json
+uvx check-jsonschema --schemafile vectors/schema/headers.schema.json vectors/headers/*.json
 uvx check-jsonschema --schemafile vectors/schema/scripts.schema.json vectors/scripts/*.json
+uvx check-jsonschema --schemafile vectors/schema/fingerprints.schema.json vectors/fingerprints/*.json
+uvx check-jsonschema --schemafile vectors/schema/manifests.schema.json vectors/manifests/*.json
 ```
 
 Schema validation checks structure only. The content is checked twice, by independent implementations in each language: `crates/pavia-vectors` (Rust) and `clients/typescript/packages/vectors` (TypeScript) each parse the diagnostic notation, lay the decoded form out as a frame and compare it with `hex`, encode or decode every codec value, encode or decode every varint, and check that scripts parse and capture every `$name` before using it. Both run with the normal test commands:

@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 
-use super::{Call, Channel, Datagram, Direction, Manifest, ManifestError, Method, Mode, Param, Service, Shape};
+use super::{
+  Call, Channel, Datagram, Direction, MAX_ERRORS, MAX_NAME_BYTES, Manifest, ManifestError, Method, Mode, Param, Service, Shape,
+};
 use crate::fingerprint::tests::{SPEC_EXAMPLE, hex};
 use crate::schema::{Definition, Enum, Field, Primitive, Struct, Type, Types, Variant};
 
@@ -78,7 +80,7 @@ fn chat() -> Service {
     .client_method(Method::call("confirm", Call::unary(Primitive::Bool.into())).param(Param::new("prompt", string())))
 }
 
-fn spec_example() -> Manifest {
+pub(super) fn spec_example() -> Manifest {
   Manifest::new("example-app")
     .service(chat())
     .channel(
@@ -292,13 +294,33 @@ fn writes_every_shape_with_its_types() {
     ])
   );
   assert_eq!(Call::bidi(string(), string()).shape(), Shape::Bidi);
-  for (shape, name) in [
+  let names = [
     (Shape::Unary, "unary"),
     (Shape::ServerStream, "server_stream"),
     (Shape::ClientStream, "client_stream"),
     (Shape::Bidi, "bidi"),
-  ] {
+  ];
+  assert_eq!(names.map(|(shape, _)| shape), Shape::ALL);
+  for (shape, name) in names {
     assert_eq!(shape.name(), name);
+  }
+}
+
+#[test]
+fn names_every_direction_and_mode() {
+  let directions = [
+    (Direction::ToServer, "to_server"),
+    (Direction::ToClient, "to_client"),
+    (Direction::Both, "both"),
+  ];
+  assert_eq!(directions.map(|(direction, _)| direction), Direction::ALL);
+  for (direction, name) in directions {
+    assert_eq!(direction.name(), name);
+  }
+  let modes = [(Mode::Latest, "latest"), (Mode::All, "all")];
+  assert_eq!(modes.map(|(mode, _)| mode), Mode::ALL);
+  for (mode, name) in modes {
+    assert_eq!(mode.name(), name);
   }
 }
 
@@ -362,6 +384,105 @@ fn refuses_names_outside_the_grammar() {
     ]
     .map(|(what, name)| (what.to_owned(), name.to_owned()))
   );
+}
+
+#[test]
+fn refuses_a_name_longer_than_255_bytes_wherever_it_names() {
+  let long = "a".repeat(MAX_NAME_BYTES + 1);
+  let manifest = |name: &str| {
+    Manifest::new("app")
+      .service(Service::new(name).server_method(Method::notify(name).param(Param::new(name, string()))))
+      .datagram(Datagram::new(name, Direction::Both, Mode::All, string()))
+      .types(BTreeMap::from([
+        (
+          name.to_owned(),
+          Definition::Struct(Struct::new(vec![Field::new(name, string())])),
+        ),
+        (
+          format!("E{}", &name[1..]),
+          Definition::Enum(Enum::new(vec![Variant::unit(name)])),
+        ),
+      ]))
+  };
+  assert!(errors(&manifest(&long)).iter().all(|error| matches!(
+    error,
+    ManifestError::NameTooLong {
+      size: 256,
+      limit: 255,
+      ..
+    }
+  )));
+  assert_eq!(errors(&manifest(&long)).len(), 8);
+  assert!(manifest(&long[1..]).render().is_ok());
+}
+
+#[test]
+fn quotes_at_most_255_bytes_of_a_name_in_an_error() {
+  let long = "a".repeat(100_000);
+  let mut method = Method::notify("n");
+  for _ in 0..50 {
+    method = method.param(Param::new("-", reference("Missing")));
+  }
+  let manifest = Manifest::new("app").service(Service::new(&long).server_method(method));
+  let found = errors(&manifest);
+  assert!(found.len() > 50);
+  for error in &found {
+    assert!(error.to_string().len() < 1_000, "{error}");
+  }
+  assert!(found[0].to_string().contains(&format!("`{}…`", "a".repeat(255))));
+}
+
+#[test]
+fn cuts_a_quoted_name_on_a_character_boundary() {
+  let long = "é".repeat(200);
+  let found = errors(&Manifest::new("app").service(Service::new(&long)));
+  assert!(
+    matches!(found.as_slice(), [ManifestError::NameTooLong { size: 400, .. }]),
+    "{found:?}"
+  );
+  assert!(
+    found[0].to_string().contains(&format!("`{}…`", "é".repeat(127))),
+    "{}",
+    found[0]
+  );
+}
+
+#[test]
+fn refuses_a_long_name_outside_the_grammar_for_its_length() {
+  let long = "-".repeat(256);
+  let found = errors(&Manifest::new("app").service(Service::new(&long)));
+  assert!(
+    matches!(found.as_slice(), [ManifestError::NameTooLong { size: 256, .. }]),
+    "{found:?}"
+  );
+  assert!(found[0].to_string().len() < 400, "{}", found[0]);
+}
+
+#[test]
+fn writes_control_characters_of_a_quoted_name_as_escapes() {
+  let found = errors(&Manifest::new("app").service(Service::new("a\u{1b}[2J\nb")));
+  assert!(matches!(found.as_slice(), [ManifestError::InvalidName { .. }]), "{found:?}");
+  let text = found[0].to_string();
+  assert!(!text.chars().any(char::is_control), "{text:?}");
+  assert!(text.contains(r"`a\u{1b}[2J\nb`"), "{text}");
+}
+
+#[test]
+fn writes_line_separators_and_direction_marks_of_a_quoted_name_as_escapes() {
+  let name = "a\u{2028}b\u{2029}c\u{202e}d\u{2066}e\u{200f}f";
+  let found = errors(&Manifest::new("app").service(Service::new(name)));
+  let text = found[0].to_string();
+  assert!(text.contains(r"`a\u{2028}b\u{2029}c\u{202e}d\u{2066}e\u{200f}f`"), "{text:?}");
+}
+
+#[test]
+fn stops_collecting_errors_after_100() {
+  let mut method = Method::notify("n");
+  for index in 0..500 {
+    method = method.param(Param::new(format!("-{index}"), string()));
+  }
+  let manifest = Manifest::new("app").service(Service::new("s").server_method(method));
+  assert_eq!(errors(&manifest).len(), MAX_ERRORS);
 }
 
 #[test]
@@ -523,6 +644,22 @@ fn refuses_params_fields_and_variants_with_one_name_or_outside_the_grammar() {
       "more than one field of type `Pair` is named `x`",
     ]
   );
+}
+
+#[test]
+fn refuses_an_open_enum_with_a_variant_named_unknown_and_takes_it_in_a_closed_one() {
+  let variants = || vec![Variant::unit("Idle"), Variant::unit("Unknown")];
+  let manifest =
+    |definition: Enum| Manifest::new("app").types(BTreeMap::from([("Status".into(), Definition::Enum(definition))]));
+  assert_eq!(
+    errors(&manifest(Enum::new(variants()).open())),
+    [ManifestError::UnknownInOpenEnum {
+      at: "type `Status`".into()
+    }]
+  );
+  assert!(manifest(Enum::new(variants())).render().is_ok());
+  let declared = vec![Variant::unit("Idle"), Variant::unit("Busy")];
+  assert!(manifest(Enum::new(declared).open()).render().is_ok());
 }
 
 #[test]

@@ -1,13 +1,17 @@
 //! The contract manifest (§12.2): the services, channels, datagram topics and named types of an endpoint,
 //! as the JSON document client generators read.
 //!
-//! A [`Manifest`] is built from its parts, then [`Manifest::render`] checks it and writes its JSON. The
-//! model leaves out what §12.2 forbids instead of checking for it: a notification has no shape or result
-//! types, an absent optional field has no `null` to write, and a field equal to its default (`"returns":
-//! "unit"`, `"idempotent": false`, `"history": false`, an empty `params`) is never written. What the
-//! model can hold but §12.1 and §12.2 forbid, [`Manifest::validate`] reports: a name outside the grammar,
+//! A [`Manifest`] is built from its parts, or read back from its JSON with [`Manifest::read`], then
+//! [`Manifest::render`] checks it and writes its JSON. The model leaves out what §12.2 forbids instead of
+//! checking for it: a notification has no shape or result types, an absent optional field has no `null` to
+//! write, and a field equal to its default (`"returns": "unit"`, `"idempotent": false`, `"history": false`,
+//! an empty `params`) is never written. What the model can hold but §12.1 and §12.2 forbid,
+//! [`Manifest::validate`] reports: a name outside the grammar or longer than [`MAX_NAME_BYTES`],
 //! a `ref` to no named type, an `Option` of `unit` (directly or through aliases), an `optional` field whose
-//! type is not an `option`, an alias that leads back to itself, and two entries of one list with one name.
+//! type is not an `option`, an open enum with a variant named `Unknown`, an alias that leads back to itself,
+//! and two entries of one list with one name. It also refuses a type nested deeper than [`MAX_TYPE_DEPTH`],
+//! and [`Manifest::render`] text longer than [`MAX_MANIFEST_BYTES`]: [`Manifest::read`] would refuse both.
+//! It reports at most [`MAX_ERRORS`] errors, and quotes at most [`MAX_NAME_BYTES`] of any manifest text.
 //!
 //! The output depends only on the manifest's content: services, methods, channels and datagram topics
 //! are sorted by name in byte order, while params, struct fields and enum variants keep the order they
@@ -27,13 +31,46 @@
 //! ```
 
 use std::collections::BTreeSet;
+use std::fmt;
 
 use serde_json::{Map, Value};
 use thiserror::Error;
 
 use crate::name;
 use crate::schema::{Definition, Primitive, Struct, Type, Types};
-use crate::table::{Chain, follow};
+use crate::table::{Chain, Chains};
+
+mod read;
+
+pub use read::ReadError;
+
+/// The largest manifest text [`Manifest::read`] takes, and [`Manifest::render`] writes, in bytes (§12.2,
+/// §16).
+pub const MAX_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
+
+/// How deep a type may nest (§12.2, §16), counted form by form: a primitive such as `"u8"` and a `ref` are
+/// 1 deep, so `{"list": {"list": "u8"}}` is 3; a tuple's items sit 2 deeper than the tuple and an inline
+/// struct's field types 4 deeper (the JSON levels between them), while a tuple with no items and a struct
+/// with no fields are 1 deep. Each type a manifest names (a param, an `accepts`, `yields`, `returns` or
+/// `error` type, a channel or datagram type, an alias, and a field or variant type of a named type) starts
+/// at 1. [`Manifest::validate`] refuses a deeper type and [`Manifest::read`] stops at one, so every
+/// manifest one writes the other reads.
+pub const MAX_TYPE_DEPTH: usize = 32;
+
+/// The longest service, method, param, type, field, variant or datagram topic name, in bytes (§12.2, §16).
+/// Errors from [`Manifest::validate`] and [`Manifest::read`] quote at most this much of any name, key
+/// or string from the manifest, with control characters escaped, so their text stays bounded.
+pub const MAX_NAME_BYTES: usize = 255;
+
+/// How many errors [`Manifest::validate`] collects: a manifest with more gets the first this many.
+pub const MAX_ERRORS: usize = 100;
+
+/// How much deeper than an `option`, `list` or `map` its inner type sits.
+const INNER_STEP: usize = 1;
+/// How much deeper than a `tuple` its items sit: `{"tuple": [item]}`.
+const ITEM_STEP: usize = 2;
+/// How much deeper than an inline struct its field types sit: `{"struct": {"fields": [{"type": t}]}}`.
+const FIELD_STEP: usize = 4;
 
 /// The manifest format version this crate writes, the top-level `pavia` key.
 pub const FORMAT_VERSION: u64 = 1;
@@ -100,14 +137,16 @@ impl Manifest {
     self
   }
 
-  /// Checks what the model can hold but §12.2 forbids.
+  /// Checks what the model can hold but §12.1 and §12.2 forbid, a type deeper than [`MAX_TYPE_DEPTH`] and
+  /// a name longer than [`MAX_NAME_BYTES`].
   ///
   /// # Errors
   ///
-  /// Every [`ManifestError`] found, in the order of the output.
+  /// The [`ManifestError`]s found, in the order of the output: the first [`MAX_ERRORS`] of them.
   pub fn validate(&self) -> Result<(), Vec<ManifestError>> {
     let mut check = Check {
       types: &self.types,
+      chains: Chains::new(&self.types, &BTreeSet::new()),
       errors: Vec::new(),
     };
     check.unique("service", self.services.iter().map(|service| service.name.as_str()));
@@ -115,7 +154,7 @@ impl Manifest {
       check.name("service", &service.name);
       for (side, methods) in [("server", &service.server_methods), ("client", &service.client_methods)] {
         check.unique(
-          &format!("{side} method of service `{}`", service.name),
+          &format!("{side} method of service `{}`", shown(&service.name)),
           methods.iter().map(|method| method.name.as_str()),
         );
         for method in sorted(methods, |method| &method.name) {
@@ -136,15 +175,17 @@ impl Manifest {
     );
     for datagram in sorted(&self.datagrams, |datagram| &datagram.topic) {
       check.name("datagram topic", &datagram.topic);
-      check.ty(&datagram.payload, &format!("datagram topic `{}`", datagram.topic));
+      check.ty(&datagram.payload, &format!("datagram topic `{}`", shown(&datagram.topic)), 1);
     }
     for (name, definition) in &self.types {
       check.name("type", name);
       check.definition(name, definition);
     }
     for name in self.types.keys() {
-      if matches!(follow(&self.types, name, &BTreeSet::new()), Chain::Loops) {
-        check.errors.push(ManifestError::AliasCycle { name: name.clone() });
+      if matches!(check.chains.from(name), Chain::Loops) {
+        check.report(ManifestError::AliasCycle {
+          name: shown(name).to_string(),
+        });
       }
     }
     if check.errors.is_empty() { Ok(()) } else { Err(check.errors) }
@@ -155,13 +196,20 @@ impl Manifest {
   ///
   /// # Errors
   ///
-  /// The errors of [`Manifest::validate`]; nothing is written.
+  /// The errors of [`Manifest::validate`], or [`ManifestError::TooLarge`] for text over
+  /// [`MAX_MANIFEST_BYTES`]; nothing is written.
   pub fn render(&self) -> Result<String, Vec<ManifestError>> {
     self.validate()?;
     let mut json = self.to_json();
     json.sort_all_objects();
     let mut text = serde_json::to_string_pretty(&json).expect("a JSON value with text keys serializes");
     text.push('\n');
+    if text.len() > MAX_MANIFEST_BYTES {
+      return Err(vec![ManifestError::TooLarge {
+        size: text.len(),
+        limit: MAX_MANIFEST_BYTES,
+      }]);
+    }
     Ok(text)
   }
 
@@ -170,7 +218,8 @@ impl Manifest {
   ///
   /// # Errors
   ///
-  /// The errors of [`Manifest::validate`].
+  /// The errors of [`Manifest::validate`]. The size bound is not checked: it is a bound on text, and a
+  /// manifest read from compact text has a fingerprint even when its pretty form is past the bound.
   pub fn fingerprint(&self) -> Result<[u8; 32], Vec<ManifestError>> {
     self.validate()?;
     Ok(crate::fingerprint::fingerprint(&self.to_json()).expect("the writer's output is in canonical form"))
@@ -390,6 +439,9 @@ pub enum Shape {
 }
 
 impl Shape {
+  /// Every shape, in wire order (§8.1).
+  pub const ALL: [Self; 4] = [Self::Unary, Self::ServerStream, Self::ClientStream, Self::Bidi];
+
   /// The name in the manifest: `"unary"`, `"server_stream"`, `"client_stream"` or `"bidi"`.
   #[must_use]
   pub const fn name(self) -> &'static str {
@@ -608,6 +660,9 @@ pub enum Direction {
 }
 
 impl Direction {
+  /// Every direction, in the order of §12.2.
+  pub const ALL: [Self; 3] = [Self::ToServer, Self::ToClient, Self::Both];
+
   /// The name in the manifest.
   #[must_use]
   pub const fn name(self) -> &'static str {
@@ -629,6 +684,9 @@ pub enum Mode {
 }
 
 impl Mode {
+  /// Every mode.
+  pub const ALL: [Self; 2] = [Self::Latest, Self::All];
+
   /// The name in the manifest.
   #[must_use]
   pub const fn name(self) -> &'static str {
@@ -684,18 +742,32 @@ impl Datagram {
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[non_exhaustive]
 pub enum ManifestError {
-  /// A service, method, type, field, variant or datagram topic name outside `[A-Za-z_][A-Za-z0-9_]*`.
+  /// A service, method, param, type, field, variant or datagram topic name outside
+  /// `[A-Za-z_][A-Za-z0-9_]*`.
   #[error("{what} name `{name}` is not a contract name: names match [A-Za-z_][A-Za-z0-9_]* (spec 12.2)")]
   InvalidName {
     /// What the name names: `"service"`, `"field of type `Message`"`.
     what: String,
-    /// The name.
+    /// The name, cut and escaped as [`MAX_NAME_BYTES`] says.
     name: String,
+  },
+  /// A service, method, param, type, field, variant or datagram topic name longer than
+  /// [`MAX_NAME_BYTES`].
+  #[error("{what} name `{name}` is {size} bytes, more than the {limit} a name may have (spec 12.2)")]
+  NameTooLong {
+    /// What the name names: `"service"`, `"field of type `Message`"`.
+    what: String,
+    /// The name, cut and escaped as [`MAX_NAME_BYTES`] says.
+    name: String,
+    /// The name's length in bytes.
+    size: usize,
+    /// [`MAX_NAME_BYTES`].
+    limit: usize,
   },
   /// A channel namespace outside the channel name characters of §10.1, or with a `:`.
   #[error("channel namespace `{namespace}` is not a namespace: 1 to 255 of [A-Za-z0-9_-./@], no `:` (spec 10.1, 12.2)")]
   InvalidNamespace {
-    /// The namespace.
+    /// The namespace, cut and escaped as [`MAX_NAME_BYTES`] says.
     namespace: String,
   },
   /// Two entries of one list with one name.
@@ -703,13 +775,13 @@ pub enum ManifestError {
   Duplicate {
     /// The list: `"service"`, `"server method of service `chat`"`.
     what: String,
-    /// The name both entries have.
+    /// The name both entries have, cut and escaped as [`MAX_NAME_BYTES`] says.
     name: String,
   },
   /// A `{"ref": name}` to a name the `types` table does not have.
   #[error("{at} refers to `{name}`, which is not in `types`")]
   UnknownType {
-    /// The missing name.
+    /// The missing name, cut and escaped as [`MAX_NAME_BYTES`] says.
     name: String,
     /// Where the reference is: `"param `room` of server method `chat/send`"`.
     at: String,
@@ -726,25 +798,64 @@ pub enum ManifestError {
     /// Where the field is.
     at: String,
   },
+  /// An open enum that declares a variant named `Unknown`, the name of its decode-only catch-all
+  /// (§12.1).
+  #[error("{at} is an open enum with a variant named `Unknown`, the name of its catch-all (spec 12.1)")]
+  UnknownInOpenEnum {
+    /// Where the enum is: "type `Status`".
+    at: String,
+  },
+  /// A type that nests deeper than [`MAX_TYPE_DEPTH`], which [`Manifest::read`] would refuse.
+  #[error("{at} nests types more than {limit} deep")]
+  TooDeep {
+    /// Where the type is.
+    at: String,
+    /// [`MAX_TYPE_DEPTH`].
+    limit: usize,
+  },
+  /// Text longer than [`MAX_MANIFEST_BYTES`], which [`Manifest::read`] would refuse; only
+  /// [`Manifest::render`] reports it.
+  #[error("the manifest is {size} bytes, more than the {limit} a manifest may have")]
+  TooLarge {
+    /// The length of the text, in bytes.
+    size: usize,
+    /// [`MAX_MANIFEST_BYTES`].
+    limit: usize,
+  },
   /// A named type that leads back to itself through aliases only, so it never reaches a type.
   #[error("type `{name}` leads back to itself through aliases only, so it never reaches a type")]
   AliasCycle {
-    /// The name of an alias on the cycle, or leading to it.
+    /// The name of an alias on the cycle, or leading to it, cut and escaped as [`MAX_NAME_BYTES`] says.
     name: String,
   },
 }
 
 struct Check<'a> {
   types: &'a Types,
+  chains: Chains<'a>,
   errors: Vec<ManifestError>,
 }
 
 impl Check<'_> {
+  /// Keeps `error`, unless [`MAX_ERRORS`] are kept already.
+  fn report(&mut self, error: ManifestError) {
+    if self.errors.len() < MAX_ERRORS {
+      self.errors.push(error);
+    }
+  }
+
   fn name(&mut self, what: &str, name: &str) {
-    if !name::is_valid(name) {
-      self.errors.push(ManifestError::InvalidName {
+    if name.len() > MAX_NAME_BYTES {
+      self.report(ManifestError::NameTooLong {
         what: what.to_owned(),
-        name: name.to_owned(),
+        name: shown(name).to_string(),
+        size: name.len(),
+        limit: MAX_NAME_BYTES,
+      });
+    } else if !name::is_valid(name) {
+      self.report(ManifestError::InvalidName {
+        what: what.to_owned(),
+        name: shown(name).to_string(),
       });
     }
   }
@@ -754,48 +865,56 @@ impl Check<'_> {
     let mut reported = BTreeSet::new();
     for name in names {
       if !seen.insert(name) && reported.insert(name) {
-        self.errors.push(ManifestError::Duplicate {
+        self.report(ManifestError::Duplicate {
           what: what.to_owned(),
-          name: name.to_owned(),
+          name: shown(name).to_string(),
         });
       }
     }
   }
 
   fn method(&mut self, service: &str, side: &str, method: &Method) {
+    let service = shown(service);
     self.name(&format!("{side} method of service `{service}`"), &method.name);
-    let at = format!("{side} method `{service}/{}`", method.name);
+    let at = format!("{side} method `{service}/{}`", shown(&method.name));
     self.unique(
       &format!("param of {at}"),
       method.params.iter().map(|param| param.name.as_str()),
     );
     for param in &method.params {
       self.name(&format!("param of {at}"), &param.name);
-      self.ty(&param.ty, &format!("param `{}` of {at}", param.name));
+      self.ty(&param.ty, &format!("param `{}` of {at}", shown(&param.name)), 1);
     }
     if let Some(call) = &method.call {
       for (key, ty) in call.types() {
-        self.ty(ty, &format!("`{key}` of {at}"));
+        self.ty(ty, &format!("`{key}` of {at}"), 1);
       }
     }
   }
 
   fn channel(&mut self, channel: &Channel) {
     if !name::is_valid_namespace(&channel.namespace) {
-      self.errors.push(ManifestError::InvalidNamespace {
-        namespace: channel.namespace.clone(),
+      self.report(ManifestError::InvalidNamespace {
+        namespace: shown(&channel.namespace).to_string(),
       });
     }
     for (key, ty) in channel.types() {
-      self.ty(ty, &format!("`{key}` of channel namespace `{}`", channel.namespace));
+      self.ty(
+        ty,
+        &format!("`{key}` of channel namespace `{}`", shown(&channel.namespace)),
+        1,
+      );
     }
   }
 
   fn definition(&mut self, name: &str, definition: &Definition) {
-    let at = format!("type `{name}`");
+    let at = format!("type `{}`", shown(name));
     match definition {
-      Definition::Struct(fields) => self.fields(fields, &at),
+      Definition::Struct(fields) => self.fields(fields, &at, 1),
       Definition::Enum(variants) => {
+        if variants.is_open() && variants.variants().iter().any(|variant| variant.name() == "Unknown") {
+          self.report(ManifestError::UnknownInOpenEnum { at: at.clone() });
+        }
         self.unique(
           &format!("variant of {at}"),
           variants.variants().iter().map(|variant| variant.name()),
@@ -803,46 +922,59 @@ impl Check<'_> {
         for variant in variants.variants() {
           self.name(&format!("variant of {at}"), variant.name());
           if let Some(ty) = variant.ty() {
-            self.ty(ty, &format!("variant `{}` of {at}", variant.name()));
+            self.ty(ty, &format!("variant `{}` of {at}", shown(variant.name())), 1);
           }
         }
       }
-      Definition::Alias(target) => self.ty(target, &at),
+      Definition::Alias(target) => self.ty(target, &at, 1),
     }
   }
 
-  fn fields(&mut self, fields: &Struct, at: &str) {
+  /// Checks the fields of a struct, whose types sit at nesting `depth` ([`MAX_TYPE_DEPTH`]).
+  fn fields(&mut self, fields: &Struct, at: &str, depth: usize) {
     self.unique(&format!("field of {at}"), fields.fields().iter().map(|field| field.name()));
     for field in fields.fields() {
-      let place = format!("field `{}` of {at}", field.name());
+      let place = format!("field `{}` of {at}", shown(field.name()));
       self.name(&format!("field of {at}"), field.name());
       if field.is_optional() && !matches!(field.ty(), Type::Option(_)) {
-        self.errors.push(ManifestError::OptionalNotOption { at: place.clone() });
+        self.report(ManifestError::OptionalNotOption { at: place.clone() });
       }
-      self.ty(field.ty(), &place);
+      self.ty(field.ty(), &place, depth);
     }
   }
 
-  fn ty(&mut self, ty: &Type, at: &str) {
+  /// Checks `ty`, which sits at nesting `depth` ([`MAX_TYPE_DEPTH`]); a type too deep is reported once
+  /// and not entered.
+  fn ty(&mut self, ty: &Type, at: &str, depth: usize) {
+    if depth > MAX_TYPE_DEPTH {
+      let error = ManifestError::TooDeep {
+        at: at.to_owned(),
+        limit: MAX_TYPE_DEPTH,
+      };
+      if !self.errors.contains(&error) {
+        self.report(error);
+      }
+      return;
+    }
     match ty {
       Type::Primitive(_) => {}
       Type::Option(inner) => {
         if self.is_unit(inner) {
-          self.errors.push(ManifestError::OptionOfUnit { at: at.to_owned() });
+          self.report(ManifestError::OptionOfUnit { at: at.to_owned() });
         }
-        self.ty(inner, at);
+        self.ty(inner, at, depth + INNER_STEP);
       }
-      Type::List(inner) | Type::Map(inner) => self.ty(inner, at),
+      Type::List(inner) | Type::Map(inner) => self.ty(inner, at, depth + INNER_STEP),
       Type::Tuple(items) => {
         for item in items {
-          self.ty(item, at);
+          self.ty(item, at, depth + ITEM_STEP);
         }
       }
-      Type::Struct(fields) => self.fields(fields, at),
+      Type::Struct(fields) => self.fields(fields, at, depth + FIELD_STEP),
       Type::Ref(name) => {
         if !self.types.contains_key(name) {
-          self.errors.push(ManifestError::UnknownType {
-            name: name.clone(),
+          self.report(ManifestError::UnknownType {
+            name: shown(name).to_string(),
             at: at.to_owned(),
           });
         }
@@ -854,10 +986,48 @@ impl Check<'_> {
   fn is_unit(&self, ty: &Type) -> bool {
     match ty {
       Type::Primitive(Primitive::Unit) => true,
-      Type::Ref(name) => follow(self.types, name, &BTreeSet::new()).ends_in_unit(),
+      Type::Ref(name) => self.chains.from(name).ends_in_unit(),
       _ => false,
     }
   }
+}
+
+/// Text from a manifest as an error quotes it: its first [`MAX_NAME_BYTES`], then `…` when it is
+/// longer, with control characters, line and paragraph separators and direction marks written as
+/// escapes (`\u{1b}`, `\n`, `\u{2028}`, `\u{202e}`), so the error stays one short line of text that
+/// shows in the order it was written.
+struct Shown<'a>(&'a str);
+
+fn shown(text: &str) -> Shown<'_> {
+  Shown(text)
+}
+
+impl fmt::Display for Shown<'_> {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    let end = self.0.floor_char_boundary(MAX_NAME_BYTES);
+    for character in self.0[..end].chars() {
+      if character.is_control() {
+        write!(formatter, "{}", character.escape_debug())?;
+      } else if moves_text(character) {
+        write!(formatter, "{}", character.escape_unicode())?;
+      } else {
+        write!(formatter, "{character}")?;
+      }
+    }
+    if end < self.0.len() {
+      formatter.write_str("…")?;
+    }
+    Ok(())
+  }
+}
+
+/// Whether `character` breaks a line or changes the direction text shows in: U+2028 and U+2029, and
+/// the bidirectional marks, embeddings, overrides and isolates.
+fn moves_text(character: char) -> bool {
+  matches!(
+    character,
+    '\u{2028}' | '\u{2029}' | '\u{200e}' | '\u{200f}' | '\u{061c}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+  )
 }
 
 fn sorted<T>(items: &[T], name: impl Fn(&T) -> &String) -> impl Iterator<Item = &T> {
