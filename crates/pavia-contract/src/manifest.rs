@@ -11,7 +11,8 @@
 //! type is not an `option`, an open enum with a variant named `Unknown`, an alias that leads back to itself,
 //! and two entries of one list with one name. It also refuses a type nested deeper than [`MAX_TYPE_DEPTH`],
 //! and [`Manifest::render`] text longer than [`MAX_MANIFEST_BYTES`]: [`Manifest::read`] would refuse both.
-//! It reports at most [`MAX_ERRORS`] errors, and quotes at most [`MAX_NAME_BYTES`] of any manifest text.
+//! It reports at most [`MAX_ERRORS`] errors, and quotes at most [`MAX_NAME_BYTES`] of any manifest text,
+//! [`escaped`].
 //!
 //! The output depends only on the manifest's content: services, methods, channels and datagram topics
 //! are sorted by name in byte order, while params, struct fields and enum variants keep the order they
@@ -135,6 +136,30 @@ impl Manifest {
   pub fn types(mut self, types: Types) -> Self {
     self.types = types;
     self
+  }
+
+  /// The application's name, outside the fingerprint (§12.5).
+  #[must_use]
+  pub fn name(&self) -> &str {
+    &self.name
+  }
+
+  /// The manifest's `docs`, if any.
+  #[must_use]
+  pub fn documentation(&self) -> Option<&str> {
+    self.docs.as_deref()
+  }
+
+  /// The services, in the order they were added.
+  #[must_use]
+  pub fn services(&self) -> &[Service] {
+    &self.services
+  }
+
+  /// The named types by name.
+  #[must_use]
+  pub const fn type_table(&self) -> &Types {
+    &self.types
   }
 
   /// Checks what the model can hold but §12.1 and §12.2 forbid, a type deeper than [`MAX_TYPE_DEPTH`] and
@@ -303,6 +328,30 @@ impl Service {
     self
   }
 
+  /// The service's name.
+  #[must_use]
+  pub fn name(&self) -> &str {
+    &self.name
+  }
+
+  /// The service's `docs`, if any.
+  #[must_use]
+  pub fn documentation(&self) -> Option<&str> {
+    self.docs.as_deref()
+  }
+
+  /// The methods clients call, in the order they were added.
+  #[must_use]
+  pub fn server_methods(&self) -> &[Method] {
+    &self.server_methods
+  }
+
+  /// The methods the server calls on clients, in the order they were added.
+  #[must_use]
+  pub fn client_methods(&self) -> &[Method] {
+    &self.client_methods
+  }
+
   fn to_json(&self) -> Value {
     let mut service = Map::new();
     service.insert("name".into(), Value::from(self.name.as_str()));
@@ -370,6 +419,30 @@ impl Method {
     self
   }
 
+  /// The method's name within its service.
+  #[must_use]
+  pub fn name(&self) -> &str {
+    &self.name
+  }
+
+  /// The method's `docs`, if any.
+  #[must_use]
+  pub fn documentation(&self) -> Option<&str> {
+    self.docs.as_deref()
+  }
+
+  /// The parameters, in declaration order.
+  #[must_use]
+  pub fn params(&self) -> &[Param] {
+    &self.params
+  }
+
+  /// The call's shape and types, or `None` for a notification.
+  #[must_use]
+  pub const fn as_call(&self) -> Option<&Call> {
+    self.call.as_ref()
+  }
+
   fn to_json(&self) -> Value {
     let mut method = Map::new();
     method.insert("name".into(), Value::from(self.name.as_str()));
@@ -414,6 +487,24 @@ impl Param {
   pub fn docs(mut self, docs: impl Into<String>) -> Self {
     self.docs = Some(docs.into());
     self
+  }
+
+  /// The parameter's name.
+  #[must_use]
+  pub fn name(&self) -> &str {
+    &self.name
+  }
+
+  /// The parameter's type.
+  #[must_use]
+  pub const fn ty(&self) -> &Type {
+    &self.ty
+  }
+
+  /// The parameter's `docs`, if any.
+  #[must_use]
+  pub fn documentation(&self) -> Option<&str> {
+    self.docs.as_deref()
   }
 
   fn to_json(&self) -> Value {
@@ -530,19 +621,52 @@ impl Call {
     }
   }
 
+  /// The type of the items the caller streams: `client_stream` and `bidi` only.
+  #[must_use]
+  pub const fn accepts(&self) -> Option<&Type> {
+    match &self.streams {
+      Streams::ClientStream { accepts, .. } | Streams::Bidi { accepts, .. } => Some(accepts),
+      Streams::Unary { .. } | Streams::ServerStream { .. } => None,
+    }
+  }
+
+  /// The type of the items the callee streams: `server_stream` and `bidi` only.
+  #[must_use]
+  pub const fn yields(&self) -> Option<&Type> {
+    match &self.streams {
+      Streams::ServerStream { yields } | Streams::Bidi { yields, .. } => Some(yields),
+      Streams::Unary { .. } | Streams::ClientStream { .. } => None,
+    }
+  }
+
+  /// The result type: `unary` and `client_stream` only, `unit` for a call that returns nothing.
+  #[must_use]
+  pub const fn returns(&self) -> Option<&Type> {
+    match &self.streams {
+      Streams::Unary { returns } | Streams::ClientStream { returns, .. } => Some(returns),
+      Streams::ServerStream { .. } | Streams::Bidi { .. } => None,
+    }
+  }
+
+  /// The type of the error detail, if the call has one (§8.4).
+  #[must_use]
+  pub const fn error_type(&self) -> Option<&Type> {
+    self.error.as_ref()
+  }
+
+  /// Whether a client may retry the call after a failure whose outcome is unknown (§12.2).
+  #[must_use]
+  pub const fn is_idempotent(&self) -> bool {
+    self.idempotent
+  }
+
   fn types(&self) -> impl Iterator<Item = (&'static str, &Type)> {
-    let (accepts, yields, returns) = match &self.streams {
-      Streams::Unary { returns } => (None, None, Some(returns)),
-      Streams::ServerStream { yields } => (None, Some(yields), None),
-      Streams::ClientStream { accepts, returns } => (Some(accepts), None, Some(returns)),
-      Streams::Bidi { accepts, yields } => (Some(accepts), Some(yields), None),
-    };
     [
-      ("accepts", accepts),
-      ("yields", yields),
+      ("accepts", self.accepts()),
+      ("yields", self.yields()),
       (
         "returns",
-        returns.filter(|returns| **returns != Type::Primitive(Primitive::Unit)),
+        self.returns().filter(|returns| **returns != Type::Primitive(Primitive::Unit)),
       ),
       ("error", self.error.as_ref()),
     ]
@@ -993,9 +1117,8 @@ impl Check<'_> {
 }
 
 /// Text from a manifest as an error quotes it: its first [`MAX_NAME_BYTES`], then `…` when it is
-/// longer, with control characters, line and paragraph separators and direction marks written as
-/// escapes (`\u{1b}`, `\n`, `\u{2028}`, `\u{202e}`), so the error stays one short line of text that
-/// shows in the order it was written.
+/// longer, [`escaped`], so the error stays one short line of text that shows in the order it was
+/// written.
 struct Shown<'a>(&'a str);
 
 fn shown(text: &str) -> Shown<'_> {
@@ -1005,7 +1128,28 @@ fn shown(text: &str) -> Shown<'_> {
 impl fmt::Display for Shown<'_> {
   fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
     let end = self.0.floor_char_boundary(MAX_NAME_BYTES);
-    for character in self.0[..end].chars() {
+    write!(formatter, "{}", escaped(&self.0[..end]))?;
+    if end < self.0.len() {
+      formatter.write_str("…")?;
+    }
+    Ok(())
+  }
+}
+
+/// `text` whole, with control characters, line and paragraph separators and direction marks written
+/// as escapes (`\u{1b}`, `\n`, `\u{2028}`, `\u{202e}`), so a terminal shows it on the lines and in the
+/// order it was written. The errors of this module quote manifest text this way; a tool that prints
+/// other outside text, such as a path, writes it the same way with this.
+#[must_use]
+pub fn escaped(text: &str) -> impl fmt::Display + '_ {
+  Escaped(text)
+}
+
+struct Escaped<'a>(&'a str);
+
+impl fmt::Display for Escaped<'_> {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    for character in self.0.chars() {
       if character.is_control() {
         write!(formatter, "{}", character.escape_debug())?;
       } else if moves_text(character) {
@@ -1013,9 +1157,6 @@ impl fmt::Display for Shown<'_> {
       } else {
         write!(formatter, "{character}")?;
       }
-    }
-    if end < self.0.len() {
-      formatter.write_str("…")?;
     }
     Ok(())
   }

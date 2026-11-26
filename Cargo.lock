@@ -765,6 +765,10 @@ version = "0.1.0-alpha.0"
 [[package]]
 name = "pavia-cli"
 version = "0.1.0-alpha.0"
+dependencies = [
+ "pavia-codegen",
+ "pavia-contract",
+]
 
 [[package]]
 name = "pavia-client"
@@ -787,6 +791,11 @@ dependencies = [
 [[package]]
 name = "pavia-codegen"
 version = "0.1.0-alpha.0"
+dependencies = [
+ "pavia-contract",
+ "serde_json",
+ "thiserror",
+]
 
 [[package]]
 name = "pavia-contract"

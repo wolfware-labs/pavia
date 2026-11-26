@@ -85,7 +85,7 @@ export interface StatusErrorFields {
  * provably never ran.
  */
 export class StatusError extends Error {
-  override readonly name = "StatusError";
+  override readonly name: string = "StatusError";
 
   /** The typed error detail, when the ERROR carried one. */
   readonly detail: unknown;

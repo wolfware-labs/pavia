@@ -13,6 +13,7 @@ import {
   encodeMessages,
   type Frame,
   ProtocolError,
+  StatusError,
   toRawFrame,
   type Welcome,
 } from "../src/index.js";
@@ -98,6 +99,22 @@ export function dataError(f: () => unknown): DataError {
   const error = thrown(f);
   expect(error).toBeInstanceOf(DataError);
   return error as DataError;
+}
+
+export function statusError(f: () => unknown): StatusError {
+  const error = thrown(f);
+  expect(error).toBeInstanceOf(StatusError);
+  return error as StatusError;
+}
+
+/** The error `promise` rejects with, asserted to be a {@link StatusError}. */
+export async function failure(promise: Promise<unknown>): Promise<StatusError> {
+  const outcome = await promise.then(
+    () => undefined,
+    (e: unknown) => e,
+  );
+  expect(outcome).toBeInstanceOf(StatusError);
+  return outcome as StatusError;
 }
 
 export function concat(parts: readonly Uint8Array[]): Uint8Array {

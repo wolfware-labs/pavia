@@ -55,9 +55,7 @@ pub fn canonical(manifest: &Value) -> Result<String, FingerprintError> {
       }
     }
   }
-  let mut out = String::new();
-  jcs(&normative(top), &mut out);
-  Ok(out)
+  Ok(jcs(&normative(top)))
 }
 
 /// Why a manifest has no fingerprint (§12.5).
@@ -208,9 +206,28 @@ fn strip_docs(value: &Value) -> Value {
   }
 }
 
+/// `value` written with the JSON Canonicalization Scheme (RFC 8785): the same text whatever order
+/// serde_json's map keeps its members in, so code generated from a manifest does not change with
+/// serde_json's features. Unlike [`canonical`], it keeps every member and refuses nothing: a number
+/// is written through its `f64`, and one with no finite `f64` (only serde_json's
+/// `arbitrary_precision` builds one) is written as `0`.
+///
+/// ```
+/// use pavia_contract::fingerprint::jcs;
+///
+/// let value = serde_json::json!({"type": "u8", "name": "id", "optional": true});
+/// assert_eq!(jcs(&value), r#"{"name":"id","optional":true,"type":"u8"}"#);
+/// ```
+#[must_use]
+pub fn jcs(value: &Value) -> String {
+  let mut out = String::new();
+  write_jcs(value, &mut out);
+  out
+}
+
 /// Writes `value` as RFC 8785 serializes it: object members sorted by the UTF-16 code units of their
 /// keys, no whitespace, strings and numbers as ECMAScript's `JSON.stringify` writes them.
-fn jcs(value: &Value, out: &mut String) {
+fn write_jcs(value: &Value, out: &mut String) {
   match value {
     Value::Null => out.push_str("null"),
     Value::Bool(flag) => out.push_str(if *flag { "true" } else { "false" }),
@@ -222,7 +239,7 @@ fn jcs(value: &Value, out: &mut String) {
         if index > 0 {
           out.push(',');
         }
-        jcs(item, out);
+        write_jcs(item, out);
       }
       out.push(']');
     }
@@ -236,7 +253,7 @@ fn jcs(value: &Value, out: &mut String) {
         }
         string(key, out);
         out.push(':');
-        jcs(member, out);
+        write_jcs(member, out);
       }
       out.push('}');
     }
@@ -244,9 +261,9 @@ fn jcs(value: &Value, out: &mut String) {
 }
 
 /// A number as ECMAScript writes it, through its `f64`: an integer beyond 2^53 reads as the nearest
-/// `f64`, as it does in ECMAScript. A number with no `f64` (only with serde_json's
-/// `arbitrary_precision`, which an application may turn on) keeps its own text.
-/// A number as ECMAScript writes it. [`check`] has refused every number that is not a finite double.
+/// `f64`, as it does in ECMAScript. A number with no finite `f64` (only serde_json's
+/// `arbitrary_precision`, which an application may turn on, builds one) is written as `0`: [`check`]
+/// refuses such a number before [`canonical`] writes, and [`jcs`] says so to its callers.
 fn number_text(number: &Number, out: &mut String) {
   out.push_str(ryu_js::Buffer::new().format_finite(number.as_f64().unwrap_or_default()));
 }

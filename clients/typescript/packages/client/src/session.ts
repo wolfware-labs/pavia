@@ -15,7 +15,7 @@ import {
   type Welcome,
 } from "./frames.js";
 import { textOfUtf8, utf8Of } from "./utf8.js";
-import { decodeMessage, encodeMessages, MAX_FRAME_FLOOR, type RawFrame } from "./wire.js";
+import { CONTROL_STREAM, decodeMessage, encodeMessages, MAX_FRAME_FLOOR, type RawFrame } from "./wire.js";
 
 /** The `max_frame` this runtime accepts when the options set none (spec 16). */
 export const DEFAULT_MAX_FRAME = 1_048_576;
@@ -93,8 +93,6 @@ type State =
       idleAt: number;
     }
   | { readonly kind: "ended" };
-
-const CONTROL_STREAM = 0;
 
 /** Frame types that travel on stream 0 only (spec 5.6). */
 const CONTROL_ONLY: ReadonlySet<Frame["type"]> = new Set<Frame["type"]>([

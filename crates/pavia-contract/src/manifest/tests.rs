@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 
 use super::{
   Call, Channel, Datagram, Direction, MAX_ERRORS, MAX_NAME_BYTES, Manifest, ManifestError, Method, Mode, Param, Service, Shape,
+  escaped,
 };
 use crate::fingerprint::tests::{SPEC_EXAMPLE, hex};
 use crate::schema::{Definition, Enum, Field, Primitive, Struct, Type, Types, Variant};
@@ -476,6 +477,15 @@ fn writes_line_separators_and_direction_marks_of_a_quoted_name_as_escapes() {
 }
 
 #[test]
+fn escapes_text_of_any_length_without_cutting_it() {
+  let long = "é".repeat(MAX_NAME_BYTES);
+  assert_eq!(
+    escaped(&format!("a\u{1b}\n\u{2029}\u{2067}{long}")).to_string(),
+    format!(r"a\u{{1b}}\n\u{{2029}}\u{{2067}}{long}")
+  );
+}
+
+#[test]
 fn stops_collecting_errors_after_100() {
   let mut method = Method::notify("n");
   for index in 0..500 {
@@ -715,4 +725,63 @@ fn fingerprints_only_a_valid_manifest_and_leaves_out_its_name_and_docs() {
       .fingerprint()
       .is_err()
   );
+}
+
+#[test]
+fn gives_back_every_part_through_its_accessors() {
+  let byte = || Type::from(Primitive::U8);
+  let send = Method::call("send", Call::unary(byte()).error(Type::from(Primitive::String)).idempotent())
+    .param(Param::new("room", Type::from(Primitive::String)).docs("The room."))
+    .docs("Sends.");
+  let upload = Method::call("upload", Call::client_stream(byte(), Type::from(Primitive::U64)));
+  let watch = Method::call("watch", Call::bidi(byte(), Type::from(Primitive::Bool)));
+  let feed = Method::call("feed", Call::server_stream(byte()));
+  let service = Service::new("chat")
+    .docs("Chat rooms.")
+    .server_method(send)
+    .server_method(upload)
+    .server_method(watch)
+    .client_method(Method::notify("ping").param(Param::new("at", byte())))
+    .client_method(feed);
+  let manifest = Manifest::new("app")
+    .docs("The app.")
+    .service(service)
+    .types(spec_example().type_table().clone());
+  assert_eq!(manifest.name(), "app");
+  assert_eq!(manifest.documentation(), Some("The app."));
+  assert_eq!(manifest.type_table(), spec_example().type_table());
+  let [service] = manifest.services() else {
+    panic!("one service")
+  };
+  assert_eq!((service.name(), service.documentation()), ("chat", Some("Chat rooms.")));
+  let [send, upload, watch] = service.server_methods() else {
+    panic!("three server methods")
+  };
+  assert_eq!((send.name(), send.documentation()), ("send", Some("Sends.")));
+  let [room] = send.params() else { panic!("one param") };
+  assert_eq!(
+    (room.name(), room.ty(), room.documentation()),
+    ("room", &Type::from(Primitive::String), Some("The room."))
+  );
+  let call = send.as_call().unwrap();
+  assert_eq!((call.shape(), call.is_idempotent()), (Shape::Unary, true));
+  assert_eq!((call.accepts(), call.yields(), call.returns()), (None, None, Some(&byte())));
+  assert_eq!(call.error_type(), Some(&Type::from(Primitive::String)));
+  let upload = upload.as_call().unwrap();
+  assert_eq!(
+    (upload.accepts(), upload.yields(), upload.returns(), upload.is_idempotent()),
+    (Some(&byte()), None, Some(&Type::from(Primitive::U64)), false)
+  );
+  let watch = watch.as_call().unwrap();
+  assert_eq!(
+    (watch.accepts(), watch.yields(), watch.returns(), watch.error_type()),
+    (Some(&byte()), Some(&Type::from(Primitive::Bool)), None, None)
+  );
+  let [ping, feed] = service.client_methods() else {
+    panic!("two client methods")
+  };
+  assert!(ping.as_call().is_none());
+  assert_eq!(ping.documentation(), None);
+  let feed = feed.as_call().unwrap();
+  assert_eq!((feed.accepts(), feed.yields(), feed.returns()), (None, Some(&byte()), None));
 }
