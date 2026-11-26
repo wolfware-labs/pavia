@@ -13,7 +13,8 @@ fn keeps_a_short_message_as_it_is() {
 fn keeps_a_message_of_64_kib_whole_and_cuts_one_byte_more() {
   let whole = "x".repeat(65_536);
   assert_eq!(printable(&whole), whole);
-  assert_eq!(printable(&format!("{whole}y")), format!("{whole}… (1 more bytes)"));
+  assert_eq!(printable(&format!("{whole}y")), format!("{whole}… (1 more byte)"));
+  assert_eq!(printable(&format!("{whole}yz")), format!("{whole}… (2 more bytes)"));
 }
 
 #[test]

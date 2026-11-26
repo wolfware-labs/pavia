@@ -46,10 +46,10 @@ const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 /// and system errors a message carries.
 fn printable(message: &str) -> String {
   let (kept, rest) = message.split_at(message.floor_char_boundary(MAX_MESSAGE_BYTES));
-  if rest.is_empty() {
-    escaped(kept).to_string()
-  } else {
-    format!("{}… ({} more bytes)", escaped(kept), rest.len())
+  match rest.len() {
+    0 => escaped(kept).to_string(),
+    1 => format!("{}… (1 more byte)", escaped(kept)),
+    left => format!("{}… ({left} more bytes)", escaped(kept)),
   }
 }
 
