@@ -18,12 +18,6 @@ pub(crate) fn hex(bytes: [u8; 32]) -> String {
   bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn written(value: &Value) -> String {
-  let mut out = String::new();
-  jcs(value, &mut out);
-  out
-}
-
 #[test]
 fn fingerprints_the_example_of_spec_12_2() {
   assert_eq!(hex(fingerprint(&spec_example()).unwrap()), SPEC_EXAMPLE);
@@ -38,7 +32,7 @@ fn writes_the_rfc_8785_example() {
   )
   .unwrap();
   assert_eq!(
-    written(&input),
+    jcs(&input),
     r#"{"literals":[null,true,false],"numbers":[333333333.3333333,1e+30,4.5,0.002,1e-27],"string":"€$\u000f\nA'B\"\\\\\"/"}"#
   );
 }
@@ -51,7 +45,7 @@ fn sorts_members_by_utf16_code_units() {
   )
   .unwrap();
   assert_eq!(
-    written(&input),
+    jcs(&input),
     concat!(
       "{\"\\r\":\"Carriage Return\",\"1\":\"One\",\"\u{80}\":\"Control\",",
       "\"\u{f6}\":\"Latin Small Letter O With Diaeresis\",\"\u{20ac}\":\"Euro Sign\",",
@@ -77,7 +71,7 @@ fn writes_numbers_as_ecmascript_does() {
     (json!(5e-324), "5e-324"),
     (json!(1.797_693_134_862_315_7e308), "1.7976931348623157e+308"),
   ] {
-    assert_eq!(written(&number), text, "{number}");
+    assert_eq!(jcs(&number), text, "{number}");
   }
 }
 
@@ -191,7 +185,7 @@ fn refuses_named_entries_out_of_byte_order_and_keeps_params_in_theirs() {
 
 #[test]
 fn writes_control_characters_with_their_short_escapes() {
-  assert_eq!(written(&json!("\u{8}\u{c}\t\n\r\u{1}")), r#""\b\f\t\n\r\u0001""#);
+  assert_eq!(jcs(&json!("\u{8}\u{c}\t\n\r\u{1}")), r#""\b\f\t\n\r\u0001""#);
 }
 
 #[test]

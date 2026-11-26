@@ -4,6 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use pavia_contract::fingerprint::jcs;
 use pavia_contract::manifest::{Manifest, ManifestError};
 use pavia_contract::schema::{Definition, Enum, Field, Primitive, Struct, Type, Variant};
 use thiserror::Error;
@@ -147,11 +148,8 @@ pub(crate) fn walk<'t>(
   }
 }
 
-/// `value` as compact JSON text.
-pub(crate) use pavia_contract::fingerprint::canonical_json as json;
-
 pub(crate) fn unsupported(value: &serde_json::Value) -> GenerateError {
-  GenerateError::Unsupported { form: json(value) }
+  GenerateError::Unsupported { form: jcs(value) }
 }
 
 /// The named types that reach an open enum, the open enums included: a walk back from each open

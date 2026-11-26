@@ -9,12 +9,13 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
+use pavia_contract::fingerprint::jcs;
 use pavia_contract::manifest::{Call, Manifest, Method, Param, Service, Shape};
 use pavia_contract::schema::{Definition, Enum, Field, Primitive, Struct, Type};
 use serde_json::Value;
 
 use crate::GenerateError;
-use crate::front::{Body, Form, Front, Names, body, form, json, pascal, unsupported, walk};
+use crate::front::{Body, Form, Front, Names, body, form, pascal, unsupported, walk};
 
 /// `writeln!` into a `String`, which cannot fail.
 macro_rules! emit {
@@ -168,6 +169,8 @@ const LOCALS: &[&str] = &["arguments", "error", "eval", "items", "options"];
 /// # Errors
 ///
 /// [`GenerateError::Invalid`] for a manifest [`Manifest::validate`] refuses,
+/// [`GenerateError::Unsupported`] for a type or definition in a form this back end does not know,
+/// [`GenerateError::OptionCycle`] for a named type that is an option of itself,
 /// [`GenerateError::Reserved`] for a name TypeScript or the generated code reserves, and
 /// [`GenerateError::Collision`] for two parts that would get one name.
 pub fn generate(manifest: &Manifest) -> Result<String, GenerateError> {
@@ -383,7 +386,7 @@ fn input_name(name: &str) -> String {
 }
 
 fn quoted(text: &str) -> String {
-  json(&Value::from(text))
+  jcs(&Value::from(text))
 }
 
 /// The lines of `text` for a block comment: split at every line terminator JavaScript knows, with
@@ -646,7 +649,7 @@ impl<'f, 'm> Writer<'f, 'm> {
       .manifest()
       .type_table()
       .iter()
-      .map(|(name, definition)| format!("  {}: {},\n", quoted(name), json(&definition.to_json())))
+      .map(|(name, definition)| format!("  {}: {},\n", quoted(name), jcs(&definition.to_json())))
       .collect();
     if entries.is_empty() {
       self.out.push_str("\nconst TYPES: Types = {};\n");
@@ -658,9 +661,9 @@ impl<'f, 'm> Writer<'f, 'm> {
       for (service, method, call) in unary {
         let returns = call.returns().expect("a unary call has a result type");
         self.signature_start(service, method);
-        emit!(self.out, "    returns: {},", json(&returns.to_json()));
+        emit!(self.out, "    returns: {},", jcs(&returns.to_json()));
         if let Some(error) = call.error_type() {
-          emit!(self.out, "    error: {},", json(&error.to_json()));
+          emit!(self.out, "    error: {},", jcs(&error.to_json()));
         }
         if call.is_idempotent() {
           self.out.push_str("    idempotent: true,\n");
@@ -685,7 +688,7 @@ impl<'f, 'm> Writer<'f, 'm> {
     emit!(
       self.out,
       "  {key}: {{\n    method: {key},\n    params: {},",
-      json(&Value::Array(params))
+      jcs(&Value::Array(params))
     );
   }
 
