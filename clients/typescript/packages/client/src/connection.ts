@@ -178,8 +178,9 @@ export class Connection extends EventTarget {
    * `signature` says. Nothing answers it, so it returns nothing.
    *
    * @throws {@link StatusError} with `nx`, sending nothing: UNAVAILABLE once the session has ended,
-   * INVALID_ARGUMENT for a metadata name outside `[a-z0-9-]`, arguments that do not encode, or a
-   * NOTIFY that does not encode.
+   * UNIMPLEMENTED while `resume` is granted, since NOTIFY is sequenced then and this client does not
+   * number frames yet, INVALID_ARGUMENT for a metadata name outside `[a-z0-9-]`, arguments of the
+   * wrong count or type, or a NOTIFY that does not encode.
    */
   notify(signature: NotifySignature, args: readonly unknown[], options?: NotifyOptions): void {
     this.calls.notify(signature, args, options);

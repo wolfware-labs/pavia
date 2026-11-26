@@ -202,10 +202,10 @@ fn claim_names(front: &Front<'_>) -> Result<Names, GenerateError> {
     names.claim(&input_name(name), format!("the input form of type `{name}`"))?;
   }
   for service in front.manifest.services() {
-    if !service.server_methods().is_empty() {
+    if has_client_class(service) {
       names.claim(&client_class(service), format!("the client of service `{}`", service.name()))?;
     }
-    if !service.client_methods().is_empty() {
+    if has_handlers_interface(service) {
       names.claim(
         &handlers_interface(service),
         format!("the handlers of service `{}`", service.name()),
@@ -376,6 +376,16 @@ fn method_path(service: &Service, method: &Method) -> String {
   format!("{}/{}", service.name(), method.name())
 }
 
+/// Whether `service` gets a client class: it has server methods, so the class reads its connection.
+fn has_client_class(service: &Service) -> bool {
+  !service.server_methods().is_empty()
+}
+
+/// Whether `service` gets a handler interface: it has client methods.
+fn has_handlers_interface(service: &Service) -> bool {
+  !service.client_methods().is_empty()
+}
+
 /// The client class of `service`: `chat` gives `ChatClient`.
 fn client_class(service: &Service) -> String {
   identifier(format!("{}Client", pascal(service.name())))
@@ -507,11 +517,11 @@ impl<'f, 'm> Writer<'f, 'm> {
       }
     }
     for service in self.manifest().services() {
-      if !service.server_methods().is_empty() {
+      if has_client_class(service) {
         self.out.push('\n');
         self.client(service);
       }
-      if !service.client_methods().is_empty() {
+      if has_handlers_interface(service) {
         self.out.push('\n');
         self.handlers(service);
       }
@@ -532,10 +542,7 @@ impl<'f, 'm> Writer<'f, 'm> {
     let used = [
       ("type CallOptions", calls),
       ("type CallSignature", unary),
-      (
-        "type Connection",
-        services.iter().any(|service| !service.server_methods().is_empty()),
-      ),
+      ("type Connection", services.iter().any(has_client_class)),
       ("type NotifyOptions", notifications),
       ("type NotifySignature", notifications),
       ("StatusError", errors),
