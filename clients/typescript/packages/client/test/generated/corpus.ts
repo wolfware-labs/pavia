@@ -10,8 +10,8 @@ import {
 } from "@pavia/client";
 
 export const CONTRACT: Uint8Array = Uint8Array.from([
-  144, 22, 226, 53, 76, 16, 161, 59, 131, 121, 41, 56, 67, 98, 46, 42,
-  10, 40, 11, 102, 67, 247, 159, 241, 192, 185, 93, 137, 17, 30, 222, 53,
+  239, 24, 210, 13, 181, 200, 8, 81, 244, 138, 90, 61, 109, 35, 168, 164,
+  232, 51, 132, 33, 2, 84, 186, 145, 78, 11, 226, 19, 75, 226, 226, 161,
 ]);
 
 export type Chain = Holder;
@@ -371,17 +371,17 @@ export class _2faClient {
   }
 
   upload(items: AsyncIterable<StatusInput>, options?: CallOptions): Promise<Status> {
-    void [items, options];
+    void [this.#connection, items, options];
     return Promise.reject(new Error("_2fa/upload: streaming is not implemented until M5"));
   }
 
   watch(holder: HolderInput, options?: CallOptions): AsyncIterable<Status> {
-    void [holder, options];
+    void [this.#connection, holder, options];
     throw new Error("_2fa/watch: streaming is not implemented until M5");
   }
 
   relay(items: AsyncIterable<ShapesInput>, options?: CallOptions): AsyncIterable<Shapes> {
-    void [items, options];
+    void [this.#connection, items, options];
     throw new Error("_2fa/relay: streaming is not implemented until M5");
   }
 
@@ -401,4 +401,22 @@ export interface _2faHandlers {
   delete(): void | Promise<void>;
   static(): void | Promise<void>;
   feed(items: AsyncIterable<Status>): AsyncIterable<StatusInput>;
+}
+
+export class FeedClient {
+  readonly #connection: Connection;
+
+  constructor(connection: Connection) {
+    this.#connection = connection;
+  }
+
+  follow(options?: CallOptions): AsyncIterable<string> {
+    void [this.#connection, options];
+    throw new Error("feed/follow: streaming is not implemented until M5");
+  }
+}
+
+/** The client methods of service `prompts`: what the server may call on this client. */
+export interface PromptsHandlers {
+  show(): void | Promise<void>;
 }

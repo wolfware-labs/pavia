@@ -372,7 +372,9 @@ fn refuses_two_parts_that_would_get_one_name() {
     Err(GenerateError::Collision { name, .. }) => name,
     other => panic!("expected a collision, got {other:?}"),
   };
-  let services = Manifest::new("app").service(Service::new("a_b")).service(Service::new("aB"));
+  let services = Manifest::new("app")
+    .service(Service::new("a_b").server_method(Method::notify("n")))
+    .service(Service::new("aB").server_method(Method::notify("n")));
   assert_eq!(collision(services), "ABClient");
   let input = with_types(vec![
     ("Status", Definition::Enum(Enum::new(vec![Variant::unit("Idle")]).open())),
@@ -531,4 +533,19 @@ fn names_a_form_it_does_not_know_by_its_manifest_json() {
     }
   );
   assert_eq!(error.to_string(), r#"{"set":"u8"} is in a form this generator does not know"#);
+}
+
+#[test]
+fn writes_no_client_class_for_a_service_without_server_methods() {
+  let code = code(&Manifest::new("app").service(Service::new("s").client_method(Method::notify("show"))));
+  assert!(!code.contains("class SClient"), "{code}");
+  assert!(!code.contains("Connection"), "{code}");
+  has(&code, "export interface SHandlers {");
+}
+
+#[test]
+fn reads_the_connection_in_a_streaming_stub() {
+  let service = Service::new("s").server_method(Method::call("follow", Call::server_stream(prim(Primitive::String))));
+  let code = code(&Manifest::new("app").service(service));
+  has(&code, "    void [this.#connection, options];");
 }

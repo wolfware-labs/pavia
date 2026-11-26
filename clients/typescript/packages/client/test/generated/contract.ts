@@ -123,7 +123,7 @@ export class ChatClient {
   }
 
   history(room: RoomId, options?: CallOptions): AsyncIterable<Message> {
-    void [room, options];
+    void [this.#connection, room, options];
     throw new Error("chat/history: streaming is not implemented until M5");
   }
 
@@ -141,7 +141,7 @@ export class ChatClient {
   }
 
   upload(items: AsyncIterable<Uint8Array>, options?: CallOptions): Promise<bigint> {
-    void [items, options];
+    void [this.#connection, items, options];
     return Promise.reject(new Error("chat/upload: streaming is not implemented until M5"));
   }
 }

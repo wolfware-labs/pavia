@@ -96,6 +96,24 @@
           "yields": { "ref": "Status" }
         }
       ]
+    },
+    {
+      "name": "feed",
+      "server_methods": [
+        {
+          "kind": "call",
+          "name": "follow",
+          "params": [],
+          "shape": "server_stream",
+          "yields": "string"
+        }
+      ],
+      "client_methods": []
+    },
+    {
+      "name": "prompts",
+      "server_methods": [],
+      "client_methods": [{ "kind": "notify", "name": "show", "params": [] }]
     }
   ],
   "types": {
