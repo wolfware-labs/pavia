@@ -520,3 +520,15 @@ fn gives_input_forms_along_a_long_chain_of_aliases_in_one_walk() {
   has(&code, "export type A00000Input = A00001Input;");
   has(&code, &format!("export type A{:05}Input = {{ kind: \"Idle\" }};", count - 1));
 }
+
+#[test]
+fn names_a_form_it_does_not_know_by_its_manifest_json() {
+  let error = crate::front::unsupported(&serde_json::json!({"set": "u8"}));
+  assert_eq!(
+    error,
+    GenerateError::Unsupported {
+      form: r#"{"set":"u8"}"#.into()
+    }
+  );
+  assert_eq!(error.to_string(), r#"{"set":"u8"} is in a form this generator does not know"#);
+}
