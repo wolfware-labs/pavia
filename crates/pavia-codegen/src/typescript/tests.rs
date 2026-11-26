@@ -261,6 +261,40 @@ fn writes_signatures_with_the_contract_types_and_the_idempotent_flag() {
 }
 
 #[test]
+fn writes_the_signatures_of_a_module_with_only_calls_or_only_notifications() {
+  let calls = code(&Manifest::new("app").service(
+    Service::new("s").server_method(Method::call("get", Call::unary(prim(Primitive::U8)))),
+  ));
+  assert!(calls.contains("const TYPES: Types = {};"), "{calls}");
+  assert!(calls.contains("const CALLS = {"), "{calls}");
+  assert!(!calls.contains("const NOTIFICATIONS"), "{calls}");
+  let notifications = code(&Manifest::new("app").service(Service::new("s").server_method(Method::notify("n"))));
+  assert!(notifications.contains("const TYPES: Types = {};"), "{notifications}");
+  assert!(notifications.contains("const NOTIFICATIONS = {"), "{notifications}");
+  assert!(!notifications.contains("const CALLS"), "{notifications}");
+}
+
+#[test]
+fn gives_an_error_class_only_to_a_unary_call_with_an_error_type() {
+  let manifest = Manifest::new("app")
+    .service(
+      Service::new("chat")
+        .server_method(Method::notify("typing"))
+        .server_method(Method::call(
+          "upload",
+          Call::client_stream(prim(Primitive::Bytes), prim(Primitive::U64)).error(reference("Failure")),
+        )),
+    )
+    .types(BTreeMap::from([
+      ("Failure".into(), Definition::Alias(prim(Primitive::String))),
+      ("ChatTypingError".into(), Definition::Alias(prim(Primitive::U8))),
+      ("ChatUploadError".into(), Definition::Alias(prim(Primitive::U8))),
+    ]));
+  let code = code(&manifest);
+  assert!(!code.contains("class ChatUploadError"), "{code}");
+}
+
+#[test]
 fn types_the_client_methods_as_handlers() {
   let code = code(&chat());
   has(&code, "export interface ChatHandlers {");
