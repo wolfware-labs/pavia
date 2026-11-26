@@ -23,7 +23,7 @@ fn main() -> ExitCode {
   let args: Vec<OsString> = std::env::args_os().skip(1).collect();
   match run(&args) {
     Ok(written) => {
-      println!("pavia: wrote {}", written.display());
+      println!("pavia: wrote {}", printable(&written.display().to_string()));
       ExitCode::SUCCESS
     }
     Err(Failure::Usage) => {

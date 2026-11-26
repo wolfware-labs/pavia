@@ -41,6 +41,17 @@ fn writes_the_module_of_a_manifest_file_into_a_new_folder() {
 }
 
 #[test]
+fn writes_control_characters_in_the_written_path_as_escapes() {
+  let out = scratch("written").join("a\nb");
+  let output = pavia(&["codegen", "ts", example().to_str().unwrap(), "--out", out.to_str().unwrap()]);
+  assert!(output.status.success(), "{}", stderr(&output));
+  let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+  assert_eq!(stdout.lines().count(), 1, "{stdout:?}");
+  assert!(stdout.contains(r"a\nb/contract.ts"), "{stdout:?}");
+  fs::remove_dir_all(out.parent().unwrap()).unwrap();
+}
+
+#[test]
 fn refuses_a_command_line_it_does_not_know_with_the_usage() {
   for args in [
     &[][..],
