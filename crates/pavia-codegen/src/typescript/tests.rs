@@ -337,6 +337,7 @@ fn refuses_names_typescript_reserves_or_the_generated_code_uses() {
     "TYPES",
     "string",
     "class",
+    "intrinsic",
     "__proto__",
     "constructor",
     "then",

@@ -66,6 +66,7 @@ const KEYWORDS: &[&str] = &[
   "infer",
   "instanceof",
   "interface",
+  "intrinsic",
   "is",
   "keyof",
   "let",
