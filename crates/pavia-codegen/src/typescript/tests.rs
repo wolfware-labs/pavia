@@ -262,9 +262,8 @@ fn writes_signatures_with_the_contract_types_and_the_idempotent_flag() {
 
 #[test]
 fn writes_the_signatures_of_a_module_with_only_calls_or_only_notifications() {
-  let calls = code(&Manifest::new("app").service(
-    Service::new("s").server_method(Method::call("get", Call::unary(prim(Primitive::U8)))),
-  ));
+  let calls =
+    code(&Manifest::new("app").service(Service::new("s").server_method(Method::call("get", Call::unary(prim(Primitive::U8))))));
   assert!(calls.contains("const TYPES: Types = {};"), "{calls}");
   assert!(calls.contains("const CALLS = {"), "{calls}");
   assert!(!calls.contains("const NOTIFICATIONS"), "{calls}");
