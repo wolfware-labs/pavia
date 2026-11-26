@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { encodeData, type NotifySignature, StatusCode } from "../src/index.js";
 import { establishedQuietly, FakeSocket } from "./fake-socket.js";
-import { statusError } from "./support.js";
+import { statusError, welcome } from "./support.js";
 
 const TYPING: NotifySignature = { method: "chat/typing", params: ["string", "u8"], types: {} };
 
@@ -56,6 +56,21 @@ describe("notify", () => {
       true,
       sent,
     ]);
+  });
+
+  it("throws INVALID_ARGUMENT nx, sending nothing, for a NOTIFY above the server's max_frame", async () => {
+    const { connection, ws } = await establishedQuietly({ limits: { ...welcome().limits, maxFrame: 65_536n } });
+    const sent = ws.sent.length;
+    const error = statusError(() => connection.notify(TYPING, ["x".repeat(70_000), 3]));
+    expect([error.code, error.nx, ws.sent.length]).toEqual([StatusCode.INVALID_ARGUMENT, true, sent]);
+  });
+
+  it("throws UNIMPLEMENTED nx, sending nothing, while resume is granted", async () => {
+    const resume = { caps: ["resume"], token: new Uint8Array(16).fill(1), resumeWindow: 30_000n };
+    const { connection, ws } = await establishedQuietly(resume, { caps: ["resume"] });
+    const sent = ws.sent.length;
+    const error = statusError(() => connection.notify(TYPING, ["lobby", 3]));
+    expect([error.code, error.nx, ws.sent.length]).toEqual([StatusCode.UNIMPLEMENTED, true, sent]);
   });
 
   it("throws UNAVAILABLE nx once the session has ended", async () => {

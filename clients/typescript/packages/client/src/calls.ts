@@ -74,6 +74,8 @@ export interface CallHost {
   readonly lastStream: number;
   /** Whether the session has ended. */
   readonly ended: boolean;
+  /** Whether WELCOME granted `resume`, so every sequenced frame needs `seq` (spec 7.8). */
+  readonly sequenced: boolean;
   /** Opens the next client stream with `frame` and returns its ID; a refused frame takes none. */
   open(frame: Frame): number;
   /** Sends `frame` on `stream`: an open client stream, or 0 for a NOTIFY. */
@@ -131,11 +133,15 @@ export class Calls {
    * Sends NOTIFY on stream 0 for `signature.method` with `args` (spec 9.1). Nothing answers it.
    *
    * @throws {@link StatusError} with `nx`, sending nothing: UNAVAILABLE once the session has ended,
-   * INVALID_ARGUMENT for a metadata name outside `[a-z0-9-]`, arguments of the wrong count or type,
-   * or a NOTIFY that does not encode.
+   * UNIMPLEMENTED while `resume` is granted, since NOTIFY is sequenced then and this client does not
+   * number frames yet, INVALID_ARGUMENT for a metadata name outside `[a-z0-9-]`, arguments of the
+   * wrong count or type, or a NOTIFY that does not encode.
    */
   notify(signature: NotifySignature, args: readonly unknown[], options: NotifyOptions = {}): void {
     if (this.host.ended) throw refusal(StatusCode.UNAVAILABLE, "the session has ended");
+    if (this.host.sequenced) {
+      throw refusal(StatusCode.UNIMPLEMENTED, "NOTIFY needs seq while resume is granted; this client sends none");
+    }
     const meta = metaOf(options.meta);
     if (typeof meta === "string") throw refusal(StatusCode.INVALID_ARGUMENT, meta);
     const data = this.encodeArgs(signature, args);

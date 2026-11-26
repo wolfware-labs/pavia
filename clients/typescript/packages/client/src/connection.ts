@@ -122,6 +122,9 @@ export class Connection extends EventTarget {
       get ended() {
         return session.ended;
       },
+      get sequenced() {
+        return welcome().caps.includes("resume");
+      },
       open: (frame) => this.open(frame),
       send: (stream, frame) => this.send(stream, frame),
       now,
