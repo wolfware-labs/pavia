@@ -65,7 +65,7 @@ done
 restore() {
   for file in "${touched[@]}"; do
     if [ -e "$saved/$file" ]; then
-      cp -p "$saved/$file" "$file"
+      cp "$saved/$file" "$file"
     else
       rm -f "$file"
     fi
