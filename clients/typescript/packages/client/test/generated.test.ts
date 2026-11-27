@@ -1,7 +1,8 @@
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { encodeData, StatusCode, StatusError, type Types } from "../src/index.js";
 import { establishedQuietly, FakeSocket } from "./fake-socket.js";
-import { failure } from "./support.js";
+import { type Case, cases, failure, hexToBytes } from "./support.js";
 import { ChatClient, ChatSendError, CONTRACT, type SendError } from "./generated/contract.js";
 
 const SEND_ERROR: Types = {
@@ -95,8 +96,12 @@ describe("the generated client of the example app", () => {
     await expect(chat.upload(none())).rejects.toThrow("chat/upload: streaming is not implemented until M5");
   });
 
-  it("holds the 32-byte contract fingerprint", () => {
-    expect(CONTRACT).toBeInstanceOf(Uint8Array);
-    expect(CONTRACT.length).toBe(32);
+  it("holds the fingerprint of the example manifest's vector", () => {
+    const vector = cases("fingerprints").find(({ c }) => c["id"] === "example-app");
+    expect(vector, "fingerprints vector example-app").toBeDefined();
+    const { c } = vector as Case;
+    const manifest = new URL("../../../../../crates/pavia-server/tests/manifest/example.json", import.meta.url);
+    expect(c["manifest"]).toEqual(JSON.parse(readFileSync(manifest, "utf8")));
+    expect(CONTRACT).toEqual(hexToBytes(c["fingerprint"] as string));
   });
 });
