@@ -82,7 +82,8 @@ crates/               Rust workspace members
   pavia-vectors/        test support: checks the files under vectors/ (not published)
 clients/              one directory per client platform, each with its own tooling
   rust/                 the `pavia-client` crate (a workspace member)
-  typescript/           pnpm workspace with `@pavia/client` and the test-only `@pavia/vectors`
+  typescript/           pnpm workspace with `@pavia/client`, the test-only `@pavia/vectors` and the
+                        private example app `@pavia/example-chat`
 examples/             runnable example applications (from M7)
 scripts/              repository checks used by CI
 ```

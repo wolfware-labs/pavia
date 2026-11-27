@@ -1,8 +1,8 @@
 diff --git a/crates/pavia-server/tests/manifest.rs b/crates/pavia-server/tests/manifest.rs
-index 7b6aca2..20f75f2 100644
+index e591de5..ca5dcd6 100644
 --- a/crates/pavia-server/tests/manifest.rs
 +++ b/crates/pavia-server/tests/manifest.rs
-@@ -43,9 +43,10 @@ fn handler(params: usize) -> Handler {
+@@ -46,9 +46,10 @@ fn handler(params: usize) -> Handler {
  }
  
  fn send() -> MethodEntry<Handler> {
