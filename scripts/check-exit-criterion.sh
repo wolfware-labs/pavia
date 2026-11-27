@@ -20,12 +20,20 @@ example app fail to typecheck at the call site.
 Run it from a clean tree after `pnpm install` in clients/typescript. It refuses a dirty tree,
 changes the manifest, the generated module and the files the patch touches while it runs, and
 restores them on exit.
+
+Exit status: 0 when the check holds; 3 when the app still typechecks after the patch; 2 for
+wrong arguments; 1 for any other failure.
 EOF
 }
 
 fail() {
   echo "check-exit-criterion: $*" >&2
   exit 1
+}
+
+still_typechecks() {
+  echo "check-exit-criterion: the example app still typechecks after the change" >&2
+  exit 3
 }
 
 case "${1:-}" in
@@ -99,7 +107,7 @@ calls=$(grep -n 'chat\.send(' "$app" | cut -d: -f1 || true)
 
 echo "check-exit-criterion: typecheck again, expecting TS2554 at ${app#"$package/"}:$calls"
 if output=$(typecheck 2>&1); then
-  fail "the example app still typechecks after the change"
+  still_typechecks
 fi
 errors=$(printf '%s\n' "$output" | grep 'error TS' || true)
 printf '%s\n' "$errors"
