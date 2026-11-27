@@ -222,6 +222,11 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: A changed Rust signature breaks the example app's call site
         run: bash scripts/check-exit-criterion.sh
+      - name: A change that keeps every signature fails the check
+        run: |
+          status=0
+          bash scripts/check-exit-criterion.sh scripts/exit-criterion/unchanged-signature.patch || status=$?
+          if [ "$status" != 1 ]; then echo "expected exit 1, got $status"; exit 1; fi
 
   vectors:
     name: vectors
