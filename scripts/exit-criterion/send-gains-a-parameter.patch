@@ -1,0 +1,16 @@
+diff --git a/crates/pavia-server/tests/manifest.rs b/crates/pavia-server/tests/manifest.rs
+index 7b6aca2..20f75f2 100644
+--- a/crates/pavia-server/tests/manifest.rs
++++ b/crates/pavia-server/tests/manifest.rs
+@@ -43,9 +43,10 @@ fn handler(params: usize) -> Handler {
+ }
+ 
+ fn send() -> MethodEntry<Handler> {
+-  MethodEntry::call(handler(2))
++  MethodEntry::call(handler(3))
+     .param::<RoomId>("room")
+     .param::<String>("text")
++    .param::<u32>("priority")
+     .returns::<MessageId>()
+     .error::<SendError>()
+ }
