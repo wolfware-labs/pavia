@@ -1,0 +1,23 @@
+diff --git a/crates/pavia-server/tests/manifest.rs b/crates/pavia-server/tests/manifest.rs
+index e591de5..556636f 100644
+--- a/crates/pavia-server/tests/manifest.rs
++++ b/crates/pavia-server/tests/manifest.rs
+@@ -85,14 +85,14 @@ fn client_methods() -> Vec<(&'static str, MethodEntry<Handler>)> {
+ }
+ 
+ fn registry(server: Vec<(&str, MethodEntry<Handler>)>, client: Vec<(&str, MethodEntry<Handler>)>) -> MethodRegistry<Handler> {
+-  let mut methods = MethodRegistry::new();
++  let mut entries = MethodRegistry::new();
+   for (name, method) in server {
+-    methods.register_server_method(name, method).unwrap();
++    entries.register_server_method(name, method).unwrap();
+   }
+   for (name, method) in client {
+-    methods.register_client_method(name, method).unwrap();
++    entries.register_client_method(name, method).unwrap();
+   }
+-  methods
++  entries
+ }
+ 
+ fn committed() -> PathBuf {

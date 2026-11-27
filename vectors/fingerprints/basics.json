@@ -488,6 +488,164 @@
       "fingerprint": "5fd01a27b12b03aeed734f2d10ba9fbbfbd0a30c7488e24493483ce79403abe5"
     },
     {
+      "id": "example-app",
+      "spec": [
+        "12.5"
+      ],
+      "note": "The example app's manifest, as pavia-server exports it: the services and types of the spec 12.2 example, without channels or datagrams. The TypeScript client compares its generated fingerprint constant with this one.",
+      "manifest": {
+        "channels": [],
+        "datagrams": [],
+        "name": "example-app",
+        "pavia": 1,
+        "services": [
+          {
+            "client_methods": [
+              {
+                "kind": "call",
+                "name": "confirm",
+                "params": [
+                  {
+                    "name": "prompt",
+                    "type": "string"
+                  }
+                ],
+                "returns": "bool",
+                "shape": "unary"
+              },
+              {
+                "kind": "notify",
+                "name": "systemNotice",
+                "params": [
+                  {
+                    "name": "text",
+                    "type": "string"
+                  }
+                ]
+              }
+            ],
+            "name": "chat",
+            "server_methods": [
+              {
+                "kind": "call",
+                "name": "history",
+                "params": [
+                  {
+                    "name": "room",
+                    "type": {
+                      "ref": "RoomId"
+                    }
+                  }
+                ],
+                "shape": "server_stream",
+                "yields": {
+                  "ref": "Message"
+                }
+              },
+              {
+                "error": {
+                  "ref": "SendError"
+                },
+                "kind": "call",
+                "name": "send",
+                "params": [
+                  {
+                    "name": "room",
+                    "type": {
+                      "ref": "RoomId"
+                    }
+                  },
+                  {
+                    "name": "text",
+                    "type": "string"
+                  }
+                ],
+                "returns": {
+                  "ref": "MessageId"
+                },
+                "shape": "unary"
+              },
+              {
+                "kind": "notify",
+                "name": "typing",
+                "params": [
+                  {
+                    "name": "room",
+                    "type": {
+                      "ref": "RoomId"
+                    }
+                  }
+                ]
+              },
+              {
+                "accepts": "bytes",
+                "kind": "call",
+                "name": "upload",
+                "returns": "u64",
+                "shape": "client_stream"
+              }
+            ]
+          }
+        ],
+        "types": {
+          "Message": {
+            "struct": {
+              "fields": [
+                {
+                  "name": "id",
+                  "type": {
+                    "ref": "MessageId"
+                  }
+                },
+                {
+                  "name": "author",
+                  "type": "string"
+                },
+                {
+                  "name": "text",
+                  "type": "string"
+                },
+                {
+                  "name": "sent_at",
+                  "type": "timestamp"
+                }
+              ]
+            }
+          },
+          "MessageId": {
+            "alias": "uuid"
+          },
+          "RoomId": {
+            "alias": "string"
+          },
+          "SendError": {
+            "enum": {
+              "variants": [
+                {
+                  "name": "RoomNotFound"
+                },
+                {
+                  "name": "TooLong",
+                  "type": {
+                    "struct": {
+                      "fields": [
+                        {
+                          "name": "max",
+                          "type": "u32"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "canonical": "{\"channels\":[],\"datagrams\":[],\"pavia\":1,\"services\":[{\"client_methods\":[{\"kind\":\"call\",\"name\":\"confirm\",\"params\":[{\"name\":\"prompt\",\"type\":\"string\"}],\"returns\":\"bool\",\"shape\":\"unary\"},{\"kind\":\"notify\",\"name\":\"systemNotice\",\"params\":[{\"name\":\"text\",\"type\":\"string\"}]}],\"name\":\"chat\",\"server_methods\":[{\"kind\":\"call\",\"name\":\"history\",\"params\":[{\"name\":\"room\",\"type\":{\"ref\":\"RoomId\"}}],\"shape\":\"server_stream\",\"yields\":{\"ref\":\"Message\"}},{\"error\":{\"ref\":\"SendError\"},\"kind\":\"call\",\"name\":\"send\",\"params\":[{\"name\":\"room\",\"type\":{\"ref\":\"RoomId\"}},{\"name\":\"text\",\"type\":\"string\"}],\"returns\":{\"ref\":\"MessageId\"},\"shape\":\"unary\"},{\"kind\":\"notify\",\"name\":\"typing\",\"params\":[{\"name\":\"room\",\"type\":{\"ref\":\"RoomId\"}}]},{\"accepts\":\"bytes\",\"kind\":\"call\",\"name\":\"upload\",\"returns\":\"u64\",\"shape\":\"client_stream\"}]}],\"types\":{\"Message\":{\"struct\":{\"fields\":[{\"name\":\"id\",\"type\":{\"ref\":\"MessageId\"}},{\"name\":\"author\",\"type\":\"string\"},{\"name\":\"text\",\"type\":\"string\"},{\"name\":\"sent_at\",\"type\":\"timestamp\"}]}},\"MessageId\":{\"alias\":\"uuid\"},\"RoomId\":{\"alias\":\"string\"},\"SendError\":{\"enum\":{\"variants\":[{\"name\":\"RoomNotFound\"},{\"name\":\"TooLong\",\"type\":{\"struct\":{\"fields\":[{\"name\":\"max\",\"type\":\"u32\"}]}}}]}}}}",
+      "fingerprint": "a5d77c48b0ef7f07027fbb6c3e5149e2d07b931af1148a24c19eabbd87ebd135"
+    },
+    {
       "id": "idempotent-false",
       "spec": [
         "12.2",

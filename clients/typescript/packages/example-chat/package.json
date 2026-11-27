@@ -1,0 +1,15 @@
+{
+  "name": "@pavia/example-chat",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Example app: calls the chat service through the client generated from the example manifest",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@pavia/client": "workspace:*"
+  }
+}

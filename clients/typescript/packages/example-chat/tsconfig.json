@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "paths": { "@pavia/client": ["../client/src/index.ts"] }
+  },
+  "include": ["src", "test"]
+}

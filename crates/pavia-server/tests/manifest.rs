@@ -3,6 +3,9 @@
 //!
 //! After a deliberate contract change, regenerate the file with
 //! `PAVIA_UPDATE_MANIFEST=1 cargo test -p pavia-server --test manifest`.
+//!
+//! `scripts/check-exit-criterion.sh` applies `scripts/exit-criterion/send-gains-a-parameter.patch`,
+//! which gives `send` a third parameter; a change to `send` needs that patch made again.
 #![expect(dead_code, reason = "the types exist for their derived impls, which never read a field")]
 
 use std::env;

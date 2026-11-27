@@ -39,6 +39,12 @@ importers:
         specifier: ^26.6.6
         version: 26.6.6
 
+  packages/example-chat:
+    dependencies:
+      '@pavia/client':
+        specifier: workspace:*
+        version: link:../client
+
   packages/vectors:
     devDependencies:
       '@types/node':
