@@ -1,17 +1,21 @@
 //! The `pavia` command-line tool.
 //!
-//! `pavia codegen ts <manifest.json> --out <dir>` reads a manifest file (§12.2) and writes the
-//! TypeScript module for it to `<dir>/contract.ts`, creating `<dir>` when it is missing.
+//! `pavia codegen ts <manifest.json> --out <dir> [--names identity|camel]` reads a manifest file
+//! (§12.2) and writes the TypeScript module for it to `<dir>/contract.ts`, creating `<dir>` when it
+//! is missing. `--names` picks the naming policy for fields, params and methods: the manifest's
+//! names as they are (`identity`, the default), or their camelCase form (`camel`), which the module
+//! maps back to the manifest's names on the wire (§12.3).
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
 use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use pavia_codegen::typescript::Naming;
 use pavia_contract::manifest::{MAX_MANIFEST_BYTES, Manifest, escaped};
 
-const USAGE: &str = "usage: pavia codegen ts <manifest.json> --out <dir>";
+const USAGE: &str = "usage: pavia codegen ts <manifest.json> --out <dir> [--names identity|camel]";
 
 /// Why a command did not run: the command line is wrong, or the work failed.
 enum Failure {
@@ -56,34 +60,61 @@ fn printable(message: &str) -> String {
 fn run(args: &[OsString]) -> Result<PathBuf, Failure> {
   match args {
     [command, target, rest @ ..] if command == "codegen" && target == "ts" => {
-      let (manifest, out) = codegen_args(rest).ok_or(Failure::Usage)?;
-      codegen(&manifest, &out).map_err(Failure::Failed)
+      let args = codegen_args(rest).ok_or(Failure::Usage)?;
+      codegen(&args).map_err(Failure::Failed)
     }
     _ => Err(Failure::Usage),
   }
 }
 
-/// The manifest path and the `--out` folder, each given exactly once and nothing else.
-fn codegen_args(args: &[OsString]) -> Option<(PathBuf, PathBuf)> {
+/// What `pavia codegen ts` was asked to do.
+struct CodegenArgs {
+  manifest: PathBuf,
+  out: PathBuf,
+  naming: Naming,
+}
+
+/// The manifest path, the `--out` folder and, at most once, `--names`; the first two exactly once,
+/// and nothing else.
+fn codegen_args(args: &[OsString]) -> Option<CodegenArgs> {
   let mut manifest = None;
   let mut out = None;
+  let mut naming = None;
   let mut args = args.iter();
   while let Some(arg) = args.next() {
     if arg == "--out" {
       if out.replace(PathBuf::from(args.next()?)).is_some() {
         return None;
       }
+    } else if arg == "--names" {
+      if naming.replace(naming_of(args.next()?)?).is_some() {
+        return None;
+      }
     } else if arg.as_encoded_bytes().starts_with(b"--") || manifest.replace(PathBuf::from(arg)).is_some() {
       return None;
     }
   }
-  Some((manifest?, out?))
+  Some(CodegenArgs {
+    manifest: manifest?,
+    out: out?,
+    naming: naming.unwrap_or_default(),
+  })
 }
 
-fn codegen(manifest: &Path, out: &Path) -> Result<PathBuf, String> {
+/// The naming policy a `--names` value names.
+fn naming_of(value: &OsStr) -> Option<Naming> {
+  match value.to_str()? {
+    "identity" => Some(Naming::Identity),
+    "camel" => Some(Naming::Camel),
+    _ => None,
+  }
+}
+
+fn codegen(args: &CodegenArgs) -> Result<PathBuf, String> {
+  let CodegenArgs { manifest, out, naming } = args;
   let text = read_bounded(manifest).map_err(|error| format!("cannot read {}: {error}", manifest.display()))?;
   let manifest = Manifest::read(&text).map_err(|error| format!("{}: {error}", manifest.display()))?;
-  let code = pavia_codegen::typescript::generate(&manifest).map_err(|error| error.to_string())?;
+  let code = pavia_codegen::typescript::generate_with(&manifest, *naming).map_err(|error| error.to_string())?;
   fs::create_dir_all(out).map_err(|error| format!("cannot create {}: {error}", out.display()))?;
   let path = out.join("contract.ts");
   fs::write(&path, code).map_err(|error| format!("cannot write {}: {error}", path.display()))?;

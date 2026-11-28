@@ -73,12 +73,15 @@ const INTEGER_RANGE: Readonly<Partial<Record<Primitive, readonly [bigint, bigint
  * Values are `null` for `unit` and an absent `option`, `number` for 8 to 32-bit integers and
  * floats, `bigint` for `i64` and `u64`, `Uint8Array` for `bytes`, `Date` for `timestamp`, a
  * lowercase hyphenated string for `uuid`, arrays for `list` and `tuple`, `Map` for `map`, objects
- * keyed by field name for structs, {@link EnumValue} for enums and a {@link CborItem} for `any`.
- * `unit` takes `null` only, so a function that returns nothing has its `undefined` mapped to
- * `null` before it is encoded; an `option` alone reads `undefined` as absent.
+ * keyed by each field's `local` name, or its `name` when it has none, for structs,
+ * {@link EnumValue} for enums and a {@link CborItem} for `any`. `unit` takes `null` only, so a
+ * function that returns nothing has its `undefined` mapped to `null` before it is encoded; an
+ * `option` alone reads `undefined` as absent.
  *
  * @throws {@link EncodeError} when `value` does not fit `type` or a receiver within `limits` would
- * refuse it, with the place in `path` (`$.sent_at`, `$[2]`).
+ * refuse it, with the place in `path`. A path names the value it describes: the encoder's path is
+ * in `value`, with each field by the name `value` uses (`$.sentAt`, `$[2]`), and a decoder's path
+ * is in the data section, with each field by its wire name (`$.sent_at`).
  * @throws RangeError when `limits.maxDepth` is not a non-negative integer.
  */
 export function encodeData(
@@ -108,8 +111,10 @@ export function encodeData(
 /**
  * Decodes a data section in `codec` as contract type `type` (spec 12.3), accepting struct fields
  * and map keys in any order and any valid encoding, and returning values in the forms
- * {@link encodeData} takes. Unknown struct fields are ignored; a variant an open enum does not
- * declare becomes `{ kind: "Unknown", name }`.
+ * {@link encodeData} takes. A struct becomes an object with only its declared fields, each under
+ * its `local` name when it has one: keys on the wire that are not declared fields are dropped, so
+ * none of them can name a member of `Object.prototype`. A variant an open enum does not declare
+ * becomes `{ kind: "Unknown", name }`.
  *
  * @throws {@link DataError} for bytes that are not one valid item of `type` within `limits`.
  * @throws RangeError when `limits.maxDepth` is not a non-negative integer.
@@ -353,12 +358,18 @@ function defineField(object: Record<string, unknown>, name: string, value: unkno
   Object.defineProperty(object, name, { value, enumerable: true, writable: true, configurable: true });
 }
 
+/** The name the application's values use for `field`: its `local` name, or its wire name. */
+function localOf(field: Field): string {
+  return field.local ?? field.name;
+}
+
 function presentFields(fields: readonly Field[], object: Readonly<Record<string, unknown>>): Field[] {
   const present: Field[] = [];
   for (const field of fields) {
-    const value = fieldOf(object, field.name);
+    const local = localOf(field);
+    const value = fieldOf(object, local);
     if (field.optional === true && (value === undefined || value === null)) continue;
-    if (value === undefined) throw new EncodeError("missing_field", `missing field ${field.name}`, `$.${field.name}`);
+    if (value === undefined) throw new EncodeError("missing_field", `missing field ${local}`, `$.${local}`);
     present.push(field);
   }
   return present;
@@ -459,10 +470,11 @@ class CborEncoder {
         writeHead(out, MAP, BigInt(fields.length));
         for (const field of fields) {
           writeText(out, field.name);
+          const local = localOf(field);
           try {
-            this.write(out, field.type, fieldOf(object, field.name), inner);
+            this.write(out, field.type, fieldOf(object, local), inner);
           } catch (error) {
-            throw underEncode(error, `.${field.name}`);
+            throw underEncode(error, `.${local}`);
           }
         }
         return;
@@ -632,10 +644,11 @@ class JsonEncoder {
         fields.forEach((field, i) => {
           if (i > 0) out.text += ",";
           out.text += `${jsonString(field.name)}:`;
+          const local = localOf(field);
           try {
-            this.write(out, field.type, fieldOf(object, field.name), inner);
+            this.write(out, field.type, fieldOf(object, local), inner);
           } catch (error) {
-            throw underEncode(error, `.${field.name}`);
+            throw underEncode(error, `.${local}`);
           }
         });
         out.text += "}";
@@ -829,7 +842,7 @@ class CborDecoder {
         }
         const result: Record<string, unknown> = {};
         for (const field of shape.fields) {
-          defineField(result, field.name, this.field(field, given.get(field.name)));
+          defineField(result, localOf(field), this.field(field, given.get(field.name)));
           given.delete(field.name);
         }
         for (const [name, value] of given) {
@@ -1042,7 +1055,7 @@ class JsonDecoder {
         if (json.kind !== "object") throw decodeFailure("json", "wrong_type", "a struct takes an object");
         const given = new Map(json.entries);
         const result: Record<string, unknown> = {};
-        for (const field of shape.fields) defineField(result, field.name, this.field(field, given.get(field.name)));
+        for (const field of shape.fields) defineField(result, localOf(field), this.field(field, given.get(field.name)));
         return result;
       }
       case "enum": {

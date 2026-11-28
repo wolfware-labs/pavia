@@ -608,3 +608,93 @@ describe("typed codec", () => {
     expect([...item.value]).toEqual([1, 2]);
   });
 });
+
+const NAMED: Types = {
+  Local: {
+    struct: {
+      fields: [
+        { name: "id", type: "u8" },
+        { name: "sent_at", local: "sentAt", type: "timestamp" },
+        { name: "reply_to", local: "replyTo", type: { option: "u8" }, optional: true },
+      ],
+    },
+  },
+  Plain: { struct: { fields: [{ name: "id", type: "u8" }, { name: "sent_at", type: "timestamp" }] } },
+  Wide: {
+    struct: {
+      fields: [
+        { name: "id", type: "u8" },
+        { name: "sent_at", type: "timestamp" },
+        { name: "__proto__", type: "u8" },
+        { name: "constructor", type: "u8" },
+        { name: "toString", type: "u8" },
+      ],
+    },
+  },
+};
+
+describe("struct fields with a local name", () => {
+  it("reads and writes each field by its local name and puts the manifest name on the wire", () => {
+    const value = { id: 1, sentAt: new Date(1000), replyTo: 2 };
+    expect(textOf(encodeData({ ref: "Local" }, NAMED, value, "json"))).toBe(
+      '{"id":1,"sent_at":"1970-01-01T00:00:01.000Z","reply_to":2}',
+    );
+    expect(hex(encodeData({ ref: "Local" }, NAMED, value, "cbor"))).toBe(
+      "a3 62 69 64 01 67 73 65 6e 74 5f 61 74 c1 01 68 72 65 70 6c 79 5f 74 6f 02",
+    );
+    for (const codec of ["cbor", "json"] as const) {
+      const decoded = decodeData({ ref: "Local" }, NAMED, encodeData({ ref: "Local" }, NAMED, value, codec), codec);
+      expect(decoded, codec).toEqual(value);
+      expect(Object.keys(decoded as object), codec).toEqual(["id", "sentAt", "replyTo"]);
+    }
+    const wire = encodeData({ ref: "Plain" }, NAMED, { id: 1, sent_at: new Date(1000) }, "json");
+    expect(decodeData({ ref: "Local" }, NAMED, wire, "json")).toEqual({ id: 1, sentAt: new Date(1000), replyTo: null });
+  });
+
+  it("names a field by its local name in an encode error and by its wire name in a decode error", () => {
+    for (const codec of ["cbor", "json"] as const) {
+      const missing = encodeError(() => encodeData({ ref: "Local" }, NAMED, { id: 1, sent_at: new Date(1000) }, codec));
+      expect([missing.kind, missing.message, missing.path], codec).toEqual([
+        "missing_field",
+        "missing field sentAt at $.sentAt",
+        "$.sentAt",
+      ]);
+      const wrong = encodeError(() => encodeData({ ref: "Local" }, NAMED, { id: 1, sentAt: "now" }, codec));
+      expect([wrong.kind, wrong.path], codec).toEqual(["invalid_value", "$.sentAt"]);
+      const nested = encodeError(() =>
+        encodeData({ list: { ref: "Local" } }, NAMED, [{ id: 1, sentAt: new Date(1000), replyTo: 300 }], codec),
+      );
+      expect([nested.kind, nested.path], codec).toEqual(["out_of_range", "$[0].replyTo"]);
+    }
+    const absent = dataError(() => decodeData({ ref: "Local" }, NAMED, json('{"id":1}'), "json"));
+    expect([absent.reason, absent.path]).toEqual(["missing_field", "$.sent_at"]);
+    const untagged = hexToBytes("a2 62 69 64 01 67 73 65 6e 74 5f 61 74 01");
+    const bad = dataError(() => decodeData({ ref: "Local" }, NAMED, untagged, "cbor"));
+    expect([bad.reason, bad.path]).toEqual(["wrong_type", "$.sent_at"]);
+  });
+
+  it("drops wire keys named like Object.prototype members, with and without local names", () => {
+    const extra = Object.fromEntries([
+      ["id", 1],
+      ["sent_at", new Date(1000)],
+      ["__proto__", 2],
+      ["constructor", 3],
+      ["toString", 4],
+    ]);
+    for (const codec of ["cbor", "json"] as const) {
+      const bytes = encodeData({ ref: "Wide" }, NAMED, extra, codec);
+      for (const [ref, keys] of [
+        ["Local", ["id", "sentAt", "replyTo"]],
+        ["Plain", ["id", "sent_at"]],
+      ] as const) {
+        const value = decodeData({ ref }, NAMED, bytes, codec) as Record<string, unknown>;
+        expect(Object.getPrototypeOf(value), `${ref} ${codec}`).toBe(Object.prototype);
+        expect(Object.keys(value), `${ref} ${codec}`).toEqual(keys);
+        for (const name of ["__proto__", "constructor", "toString"]) {
+          expect(Object.hasOwn(value, name), `${ref} ${codec} ${name}`).toBe(false);
+        }
+        expect(value.toString, `${ref} ${codec}`).toBe(Object.prototype.toString);
+      }
+    }
+  });
+});

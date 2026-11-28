@@ -180,8 +180,9 @@ fn inputs(manifest: &Manifest) -> Result<BTreeSet<&str>, GenerateError> {
   Ok(inputs)
 }
 
-/// `name` with each part between underscores capitalized and the underscores dropped: `system_notice`
-/// gives `SystemNotice`, the form a back end derives class names from.
+/// `name` with each part between underscores capitalized and every underscore dropped:
+/// `system_notice` gives `SystemNotice`, the form a back end derives class names from. See [`camel`]
+/// for the form that keeps the outer underscores.
 pub(crate) fn pascal(name: &str) -> String {
   name
     .split('_')
@@ -192,7 +193,37 @@ pub(crate) fn pascal(name: &str) -> String {
     .collect()
 }
 
-/// The top-level names of one generated file and what each names.
+/// `name` in camelCase, the form a naming policy gives fields, params and methods: its leading and
+/// trailing underscores kept, each run of underscores between them dropped and the character after
+/// it upper-cased. `sent_at` gives `sentAt`, `_x` stays `_x`, `x_1` gives `x1`, `a__b` gives `aB`,
+/// `HTTP_status` gives `HTTPStatus`; nothing else changes case. Unlike [`pascal`], which drops every
+/// underscore and capitalizes the first part too, it leaves a name without inner underscores as it
+/// is. Neither is reversible on its own (`a_b` and `aB` give one name), so a back end checks each
+/// scope for two names that meet.
+pub(crate) fn camel(name: &str) -> String {
+  let inner = name.trim_start_matches('_');
+  let lead = &name[..name.len() - inner.len()];
+  let core = inner.trim_end_matches('_');
+  let trail = &inner[core.len()..];
+  let mut out = String::with_capacity(name.len());
+  out.push_str(lead);
+  let mut upper = false;
+  for c in core.chars() {
+    if c == '_' {
+      upper = true;
+    } else if upper {
+      out.push(c.to_ascii_uppercase());
+      upper = false;
+    } else {
+      out.push(c);
+    }
+  }
+  out.push_str(trail);
+  out
+}
+
+/// The names of one scope of a generated file (its top level, the fields of one struct, the methods
+/// of one side of a service, the params of one method) and what each names.
 #[derive(Default)]
 pub(crate) struct Names {
   taken: BTreeMap<String, String>,
@@ -215,8 +246,11 @@ impl Names {
     }
   }
 
-  /// Whether a top-level name is taken.
+  /// Whether a name is taken.
   pub(crate) fn contains(&self, name: &str) -> bool {
     self.taken.contains_key(name)
   }
 }
+
+#[cfg(test)]
+mod tests;

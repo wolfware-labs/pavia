@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::{env, fs};
 
+use pavia_codegen::typescript::{Naming, generate_with};
 use pavia_contract::manifest::{MAX_MANIFEST_BYTES, Manifest};
 
 fn example() -> PathBuf {
@@ -41,6 +42,27 @@ fn writes_the_module_of_a_manifest_file_into_a_new_folder() {
 }
 
 #[test]
+fn writes_the_module_under_the_naming_policy_it_is_given() {
+  let manifest = Manifest::read(&fs::read_to_string(example()).unwrap()).unwrap();
+  for (names, naming) in [("identity", Naming::Identity), ("camel", Naming::Camel)] {
+    let out = scratch(&format!("names-{names}"));
+    let output = pavia(&[
+      "codegen",
+      "ts",
+      "--names",
+      names,
+      example().to_str().unwrap(),
+      "--out",
+      out.to_str().unwrap(),
+    ]);
+    assert!(output.status.success(), "{names}: {}", stderr(&output));
+    let written = fs::read_to_string(out.join("contract.ts")).unwrap();
+    assert_eq!(written, generate_with(&manifest, naming).unwrap(), "{names}");
+    fs::remove_dir_all(&out).unwrap();
+  }
+}
+
+#[test]
 fn writes_control_characters_in_the_written_path_as_escapes() {
   let out = scratch("written").join("a\nb");
   let output = pavia(&["codegen", "ts", example().to_str().unwrap(), "--out", out.to_str().unwrap()]);
@@ -63,11 +85,17 @@ fn refuses_a_command_line_it_does_not_know_with_the_usage() {
     &["codegen", "ts", "a.json", "b.json", "--out", "x"],
     &["codegen", "ts", "m.json", "--out", "x", "--out", "y"],
     &["codegen", "ts", "m.json", "--force", "--out", "x"],
+    &["codegen", "ts", "m.json", "--out", "x", "--names"],
+    &["codegen", "ts", "m.json", "--out", "x", "--names", "snake"],
+    &["codegen", "ts", "m.json", "--out", "x", "--names", "Camel"],
+    &[
+      "codegen", "ts", "m.json", "--out", "x", "--names", "camel", "--names", "camel",
+    ],
   ] {
     let output = pavia(args);
     assert_eq!(output.status.code(), Some(2), "{args:?}");
     assert!(
-      stderr(&output).contains("usage: pavia codegen ts <manifest.json> --out <dir>"),
+      stderr(&output).contains("usage: pavia codegen ts <manifest.json> --out <dir> [--names identity|camel]"),
       "{args:?}"
     );
   }
