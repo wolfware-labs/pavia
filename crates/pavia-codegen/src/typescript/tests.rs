@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use pavia_contract::manifest::{Call, Manifest, Method, Param, Service};
 use pavia_contract::schema::{Definition, Enum, Field, Primitive, Struct, Type, Variant};
 
-use super::generate;
+use super::{Naming, generate, generate_with};
 use crate::GenerateError;
 
 fn prim(primitive: Primitive) -> Type {
@@ -582,4 +582,261 @@ fn reads_the_connection_in_a_streaming_stub() {
   let service = Service::new("s").server_method(Method::call("follow", Call::server_stream(prim(Primitive::String))));
   let code = code(&Manifest::new("app").service(service));
   has(&code, "    void [this.#connection, options];");
+}
+
+fn camel(manifest: &Manifest) -> Result<String, GenerateError> {
+  generate_with(manifest, Naming::Camel)
+}
+
+fn struct_of(names: &[&str]) -> Struct {
+  Struct::new(names.iter().map(|name| Field::new(*name, prim(Primitive::U8))).collect())
+}
+
+fn service_manifest(service: Service) -> Manifest {
+  Manifest::new("app").service(service)
+}
+
+#[test]
+fn refuses_two_names_of_one_scope_that_meet_under_camel_case() {
+  let named = |names: &[&str]| with_types(vec![("Message", Definition::Struct(struct_of(names)))]);
+  let inline = |names: &[&str]| {
+    service_manifest(
+      Service::new("chat").server_method(Method::notify("post").param(Param::new("body", Type::Struct(struct_of(names))))),
+    )
+  };
+  let payload = |names: &[&str]| {
+    with_types(vec![(
+      "Failure",
+      Definition::Enum(Enum::new(vec![Variant::new("TooLong", Type::Struct(struct_of(names)))])),
+    )])
+  };
+  let server = service_manifest(
+    Service::new("chat")
+      .server_method(Method::notify("send_msg"))
+      .server_method(Method::notify("sendMsg")),
+  );
+  let client = service_manifest(
+    Service::new("chat")
+      .client_method(Method::notify("system_notice"))
+      .client_method(Method::notify("systemNotice")),
+  );
+  let params = service_manifest(
+    Service::new("chat").server_method(
+      Method::notify("post")
+        .param(Param::new("room_id", prim(Primitive::String)))
+        .param(Param::new("roomId", prim(Primitive::String))),
+    ),
+  );
+  for (manifest, message) in [
+    (
+      named(&["sent_at", "sentAt"]),
+      "`sentAt` would name both field `sent_at` of type `Message` and field `sentAt` of type `Message`",
+    ),
+    (
+      named(&["x_1", "x1"]),
+      "`x1` would name both field `x_1` of type `Message` and field `x1` of type `Message`",
+    ),
+    (
+      named(&["a__b", "a_b"]),
+      "`aB` would name both field `a__b` of type `Message` and field `a_b` of type `Message`",
+    ),
+    (
+      inline(&["sent_at", "sentAt"]),
+      "`sentAt` would name both field `sent_at` of server method of service `chat` `post` and field `sentAt` of server \
+       method of service `chat` `post`",
+    ),
+    (
+      payload(&["max_len", "maxLen"]),
+      "`maxLen` would name both field `max_len` of type `Failure` and field `maxLen` of type `Failure`",
+    ),
+    (
+      server,
+      "`sendMsg` would name both server method `send_msg` of service `chat` and server method `sendMsg` of service `chat`",
+    ),
+    (
+      client,
+      "`systemNotice` would name both client method `system_notice` of service `chat` and client method `systemNotice` \
+       of service `chat`",
+    ),
+    (
+      params,
+      "`roomId` would name both param `room_id` of server method of service `chat` `post` and param `roomId` of server \
+       method of service `chat` `post`",
+    ),
+  ] {
+    assert!(generate(&manifest).is_ok(), "{message}");
+    match camel(&manifest) {
+      Err(error @ GenerateError::Collision { .. }) => assert_eq!(error.to_string(), message),
+      other => panic!("expected `{message}`, got {other:?}"),
+    }
+  }
+}
+
+#[test]
+fn keeps_leading_underscores_so_a_name_and_its_underscored_form_stay_apart() {
+  let code = camel(&with_types(vec![("T", Definition::Struct(struct_of(&["_x", "x", "x_"])))])).unwrap();
+  has(&code, "  _x: number;");
+  has(&code, "  x: number;");
+  has(&code, "  x_: number;");
+}
+
+#[test]
+fn refuses_a_camel_case_name_typescript_reserves_and_names_its_manifest_name() {
+  let field = |name: &str| with_types(vec![("T", Definition::Struct(struct_of(&[name])))]);
+  let method = |name: &str| service_manifest(Service::new("s").server_method(Method::notify(name)));
+  let handler = |name: &str| service_manifest(Service::new("s").client_method(Method::notify(name)));
+  let param = |name: &str| {
+    service_manifest(Service::new("chat").server_method(Method::notify("n").param(Param::new(name, prim(Primitive::U8)))))
+      .types(BTreeMap::from([(
+        "RoomId".into(),
+        Definition::Alias(prim(Primitive::String)),
+      )]))
+  };
+  for (manifest, message) in [
+    (
+      field("to_string"),
+      "field of type `T` (`to_string` in the manifest) `toString` is a name TypeScript code reserves",
+    ),
+    (
+      field("value_of"),
+      "field of type `T` (`value_of` in the manifest) `valueOf` is a name TypeScript code reserves",
+    ),
+    (
+      field("has_own_property"),
+      "field of type `T` (`has_own_property` in the manifest) `hasOwnProperty` is a name TypeScript code reserves",
+    ),
+    (
+      method("to_string"),
+      "server method of service `s` (`to_string` in the manifest) `toString` is a name TypeScript code reserves",
+    ),
+    (
+      handler("value_of"),
+      "client method of service `s` (`value_of` in the manifest) `valueOf` is a name TypeScript code reserves",
+    ),
+    (
+      param("Uint8_array"),
+      "param of server method of service `chat` `n` (`Uint8_array` in the manifest) `Uint8Array` is a name TypeScript \
+       code reserves",
+    ),
+    (
+      param("Room_id"),
+      "param of server method of service `chat` `n` (`Room_id` in the manifest) `RoomId` is a name TypeScript code \
+       reserves",
+    ),
+    (
+      param("Chat_client"),
+      "param of server method of service `chat` `n` (`Chat_client` in the manifest) `ChatClient` is a name TypeScript \
+       code reserves",
+    ),
+  ] {
+    assert!(generate(&manifest).is_ok(), "{message}");
+    match camel(&manifest) {
+      Err(error @ GenerateError::Reserved { .. }) => assert_eq!(error.to_string(), message),
+      other => panic!("expected `{message}`, got {other:?}"),
+    }
+  }
+}
+
+fn snake_case_chat() -> Manifest {
+  let body = Type::Struct(Struct::new(vec![
+    Field::new("sent_at", prim(Primitive::Timestamp)),
+    Field::new("reply_to", Type::Option(Box::new(prim(Primitive::U64)))).optional(),
+  ]));
+  let service = Service::new("chat")
+    .server_method(
+      Method::call(
+        "send_message",
+        Call::unary(reference("MessageId")).error(reference("Failure")),
+      )
+      .param(Param::new("room_id", reference("RoomId")))
+      .param(Param::new("body", body)),
+    )
+    .server_method(Method::notify("mark_read").param(Param::new("message_id", reference("MessageId"))))
+    .server_method(
+      Method::call("watch_room", Call::server_stream(reference("Message"))).param(Param::new("room_id", reference("RoomId"))),
+    )
+    .client_method(Method::notify("system_notice").param(Param::new("notice_text", prim(Primitive::String))))
+    .client_method(Method::call("confirm_exit", Call::unary(prim(Primitive::Bool))));
+  Manifest::new("app").service(service).types(BTreeMap::from([
+    ("RoomId".into(), Definition::Alias(prim(Primitive::String))),
+    ("MessageId".into(), Definition::Alias(prim(Primitive::Uuid))),
+    (
+      "Message".into(),
+      Definition::Struct(Struct::new(vec![
+        Field::new("message_id", reference("MessageId")),
+        Field::new("sent_at", prim(Primitive::Timestamp)),
+      ])),
+    ),
+    (
+      "Failure".into(),
+      Definition::Enum(Enum::new(vec![
+        Variant::new("TooLong", Type::Struct(struct_of(&["max_len"]))),
+        Variant::unit("Room_gone"),
+      ])),
+    ),
+    (
+      "Seen".into(),
+      Definition::Alias(Type::Map(Box::new(Type::Struct(Struct::new(vec![Field::new(
+        "last_seen",
+        prim(Primitive::Timestamp),
+      )]))))),
+    ),
+  ]))
+}
+
+#[test]
+fn camel_cases_fields_params_and_methods_and_keeps_the_wire_names_in_the_signatures() {
+  let code = camel(&snake_case_chat()).unwrap();
+  for line in [
+    "// Generated by `pavia codegen ts --names camel`. Do not edit.",
+    "  messageId: MessageId;",
+    "  sentAt: Date;",
+    "export type Failure = { kind: \"TooLong\"; value: { maxLen: number } } | { kind: \"Room_gone\" };",
+    "export type Seen = Map<string, { lastSeen: Date }>;",
+    "  \"Message\": {\"struct\":{\"fields\":[{\"local\":\"messageId\",\"name\":\"message_id\",\"type\":{\"ref\":\"MessageId\"}},\
+     {\"local\":\"sentAt\",\"name\":\"sent_at\",\"type\":\"timestamp\"}]}},",
+    "  \"Failure\": {\"enum\":{\"variants\":[{\"name\":\"TooLong\",\"type\":{\"struct\":{\"fields\":[{\"local\":\"maxLen\",\
+     \"name\":\"max_len\",\"type\":\"u8\"}]}}},{\"name\":\"Room_gone\"}]}},",
+    "  \"Seen\": {\"alias\":{\"map\":{\"struct\":{\"fields\":[{\"local\":\"lastSeen\",\"name\":\"last_seen\",\"type\":\
+     \"timestamp\"}]}}}},",
+    "  \"chat/send_message\": {",
+    "    method: \"chat/send_message\",",
+    "    params: [{\"ref\":\"RoomId\"},{\"struct\":{\"fields\":[{\"local\":\"sentAt\",\"name\":\"sent_at\",\"type\":\
+     \"timestamp\"},{\"local\":\"replyTo\",\"name\":\"reply_to\",\"optional\":true,\"type\":{\"option\":\"u64\"}}]}}],",
+    "  async sendMessage(roomId: RoomId, body: { sentAt: Date; replyTo?: bigint | null }, options?: CallOptions): \
+     Promise<MessageId> {",
+    "      return await this.#connection.call<MessageId>(CALLS[\"chat/send_message\"], [roomId, body], options);",
+    "  markRead(messageId: MessageId, options?: NotifyOptions): void {",
+    "    this.#connection.notify(NOTIFICATIONS[\"chat/mark_read\"], [messageId], options);",
+    "  watchRoom(roomId: RoomId, options?: CallOptions): AsyncIterable<Message> {",
+    "    void [this.#connection, roomId, options];",
+    "    throw new Error(\"chat/watch_room: streaming is not implemented until M5\");",
+    "  systemNotice(noticeText: string): void | Promise<void>;",
+    "  confirmExit(): boolean | Promise<boolean>;",
+    "export class ChatSendMessageError extends StatusError {",
+  ] {
+    has(&code, line);
+  }
+}
+
+#[test]
+fn writes_manifest_names_as_they_are_under_the_identity_policy() {
+  let manifest = snake_case_chat();
+  let code = generate_with(&manifest, Naming::Identity).unwrap();
+  assert_eq!(code, generate(&manifest).unwrap());
+  assert_eq!(Naming::default(), Naming::Identity);
+  assert!(
+    code.starts_with("// Generated by `pavia codegen ts`. Do not edit.\n"),
+    "{code}"
+  );
+  assert!(!code.contains("\"local\""), "{code}");
+  for line in [
+    "  message_id: MessageId;",
+    "  sent_at: Date;",
+    "  async send_message(room_id: RoomId, body: { sent_at: Date; reply_to?: bigint | null }, options?: CallOptions): \
+     Promise<MessageId> {",
+    "  system_notice(notice_text: string): void | Promise<void>;",
+  ] {
+    has(&code, line);
+  }
 }

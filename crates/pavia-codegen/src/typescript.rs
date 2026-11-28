@@ -2,9 +2,15 @@
 //! fingerprint, a type per named type, a client class per service with server methods, a typed error
 //! class per method with an error type, and a handler interface per service with client methods.
 //!
-//! Names are the manifest's as they are; class names are derived from them (`chat` gives `ChatClient`,
-//! `chat/send` gives `ChatSendError`). A name the TypeScript code cannot carry, a keyword, a global the
-//! generated code uses, or a member every object has, fails generation instead of being renamed.
+//! Class names are derived from manifest names (`chat` gives `ChatClient`, `chat/send` gives
+//! `ChatSendError`). A [`Naming`] policy says what the code calls fields, params and methods: the
+//! manifest's names as they are, or their camelCase form. Type, service and variant names stay as they
+//! are under both, and so does every name on the wire (§12.3): the module's signatures carry the
+//! manifest names, with each renamed field's code name as its `local`, and the proxies send the
+//! manifest's method paths. A name the TypeScript code cannot carry, a keyword, a global the generated
+//! code uses, or a member every object has, fails generation instead of being renamed, and so do two
+//! names of one scope (the fields of a struct, the methods of one side of a service, the params of a
+//! method) that the policy makes one.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -15,7 +21,7 @@ use pavia_contract::schema::{Definition, Enum, Field, Primitive, Struct, Type};
 use serde_json::Value;
 
 use crate::GenerateError;
-use crate::front::{Body, Form, Front, Names, body, form, pascal, unsupported, walk};
+use crate::front::{Body, Form, Front, Names, body, camel, form, pascal, unsupported, walk};
 
 /// `writeln!` into a `String`, which cannot fail.
 macro_rules! emit {
@@ -164,7 +170,40 @@ const EMPTY: &str = "Record<string, never>";
 
 const LOCALS: &[&str] = &["arguments", "error", "eval", "items", "options"];
 
-/// The TypeScript module for `manifest`, for a file next to the application's code.
+/// What the generated code calls struct fields, method params and methods (§12.3: generators may
+/// expose idiomatic names, and map them back).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum Naming {
+  /// The manifest's names, byte for byte.
+  #[default]
+  Identity,
+  /// The camelCase form of each name: `sent_at` gives `sentAt`, `_x` stays `_x`. The CLI's
+  /// `--names camel`.
+  Camel,
+}
+
+impl Naming {
+  /// The name the generated code gives a field, a param or a method the manifest calls `name`.
+  fn local(self, name: &str) -> String {
+    match self {
+      Self::Identity => name.to_owned(),
+      Self::Camel => camel(name),
+    }
+  }
+}
+
+/// The TypeScript module for `manifest` under the [`Naming::Identity`] policy, for a file next to the
+/// application's code.
+///
+/// # Errors
+///
+/// As [`generate_with`].
+pub fn generate(manifest: &Manifest) -> Result<String, GenerateError> {
+  generate_with(manifest, Naming::Identity)
+}
+
+/// The TypeScript module for `manifest`, naming fields, params and methods by `naming`.
 ///
 /// # Errors
 ///
@@ -173,12 +212,12 @@ const LOCALS: &[&str] = &["arguments", "error", "eval", "items", "options"];
 /// [`GenerateError::OptionCycle`] for a named type that is an option of itself,
 /// [`GenerateError::Reserved`] for a name TypeScript or the generated code reserves, and
 /// [`GenerateError::Collision`] for two parts that would get one name.
-pub fn generate(manifest: &Manifest) -> Result<String, GenerateError> {
+pub fn generate_with(manifest: &Manifest, naming: Naming) -> Result<String, GenerateError> {
   let front = Front::new(manifest)?;
   check_option_cycles(manifest)?;
   let names = claim_names(&front)?;
-  check_members(manifest, &names)?;
-  Writer::new(&front).module()
+  check_members(manifest, &names, naming)?;
+  Writer::new(&front, naming).module()
 }
 
 fn reserved(what: impl Into<String>, name: &str) -> GenerateError {
@@ -186,6 +225,16 @@ fn reserved(what: impl Into<String>, name: &str) -> GenerateError {
     what: what.into(),
     name: name.to_owned(),
     target: TARGET,
+  }
+}
+
+/// [`reserved`] for `local`, the name a policy gave the manifest name `name`, which `what` then
+/// names too when the two differ.
+fn reserved_local(what: &str, name: &str, local: &str) -> GenerateError {
+  if name == local {
+    reserved(what, local)
+  } else {
+    reserved(format!("{what} (`{name}` in the manifest)"), local)
   }
 }
 
@@ -265,39 +314,52 @@ fn is_unit(ty: &Type) -> Result<bool, GenerateError> {
   Ok(matches!(form(ty)?, Form::Primitive(Primitive::Unit)))
 }
 
-fn check_fields(fields: &Struct, what: &str) -> Result<(), GenerateError> {
-  match fields.fields().iter().find(|field| MEMBERS.contains(&field.name())) {
-    Some(field) => Err(reserved(format!("field of {what}"), field.name())),
-    None => Ok(()),
+/// Checks the fields of one struct under `naming`: no field name every object has, and no two fields
+/// with one name.
+fn check_fields(fields: &Struct, what: &str, naming: Naming) -> Result<(), GenerateError> {
+  let mut scope = Names::default();
+  for field in fields.fields() {
+    let local = naming.local(field.name());
+    if MEMBERS.contains(&local.as_str()) {
+      return Err(reserved_local(&format!("field of {what}"), field.name(), &local));
+    }
+    scope.claim(&local, format!("field `{}` of {what}", field.name()))?;
   }
+  Ok(())
 }
 
 /// Checks the fields of every struct `ty` holds, named types' fields aside.
-fn check_inline_fields(ty: &Type, what: &str) -> Result<(), GenerateError> {
+fn check_inline_fields(ty: &Type, what: &str, naming: Naming) -> Result<(), GenerateError> {
   walk(ty, &mut |form| match form {
-    Form::Struct(fields) => check_fields(fields, what),
+    Form::Struct(fields) => check_fields(fields, what, naming),
     _ => Ok(()),
   })
 }
 
-fn check_members(manifest: &Manifest, names: &Names) -> Result<(), GenerateError> {
+fn check_members(manifest: &Manifest, names: &Names, naming: Naming) -> Result<(), GenerateError> {
   for (name, definition) in manifest.type_table() {
     let what = format!("type `{name}`");
     let body = body(definition)?;
     if let Body::Struct(fields) = body {
-      check_fields(fields, &what)?;
+      check_fields(fields, &what, naming)?;
     }
     for ty in body.types() {
-      check_inline_fields(ty, &what)?;
+      check_inline_fields(ty, &what, naming)?;
     }
   }
   for service in manifest.services() {
     for (side, methods) in [("server", service.server_methods()), ("client", service.client_methods())] {
+      let what = format!("{side} method of service `{}`", service.name());
+      let mut scope = Names::default();
       for method in methods {
-        let what = format!("{side} method of service `{}`", service.name());
-        if MEMBERS.contains(&method.name()) {
-          return Err(reserved(what, method.name()));
+        let local = naming.local(method.name());
+        if MEMBERS.contains(&local.as_str()) {
+          return Err(reserved_local(&what, method.name(), &local));
         }
+        scope.claim(
+          &local,
+          format!("{side} method `{}` of service `{}`", method.name(), service.name()),
+        )?;
         let place = format!("{what} `{}`", method.name());
         let call_types = method
           .as_call()
@@ -308,13 +370,15 @@ fn check_members(manifest: &Manifest, names: &Names) -> Result<(), GenerateError
           .map(Param::ty)
           .chain(call_types.into_iter().flatten().flatten())
         {
-          check_inline_fields(ty, &place)?;
+          check_inline_fields(ty, &place, naming)?;
         }
+        let mut params = Names::default();
         for param in method.params() {
-          let name = param.name();
-          if KEYWORDS.contains(&name) || LOCALS.contains(&name) || names.contains(name) {
-            return Err(reserved(format!("param of {what} `{}`", method.name()), name));
+          let local = naming.local(param.name());
+          if KEYWORDS.contains(&local.as_str()) || LOCALS.contains(&local.as_str()) || names.contains(&local) {
+            return Err(reserved_local(&format!("param of {place}"), param.name(), &local));
           }
+          params.claim(&local, format!("param `{}` of {place}", param.name()))?;
         }
       }
     }
@@ -368,12 +432,39 @@ fn identifier(name: String) -> String {
   }
 }
 
-/// The name of a handler method in its interface: `new` quoted, since `new(...)` there declares a
-/// construct signature.
-fn handler_member(method: &Method) -> String {
-  match method.name() {
-    "new" => quoted("new"),
-    name => name.to_owned(),
+/// The name of a handler method in its interface, from its `local` name: `new` quoted, since
+/// `new(...)` there declares a construct signature.
+fn handler_member(local: String) -> String {
+  if local == "new" { quoted(&local) } else { local }
+}
+
+/// `value`, the manifest JSON of a type or a definition, with `"local"` beside the `"name"` of each
+/// struct field, at every depth, whose name `naming` changes. The runtime codec reads a value's
+/// fields by `local` and writes them by `name`. Every key in such JSON is a key of the manifest
+/// format, never a name from the manifest, so the walk cannot mistake a user's name for a struct.
+fn localized(mut value: Value, naming: Naming) -> Value {
+  annotate(&mut value, naming);
+  value
+}
+
+fn annotate(value: &mut Value, naming: Naming) {
+  match value {
+    Value::Array(items) => items.iter_mut().for_each(|item| annotate(item, naming)),
+    Value::Object(object) => {
+      if let Some(Value::Array(fields)) = object.get_mut("struct").and_then(|body| body.get_mut("fields")) {
+        for field in fields.iter_mut().filter_map(Value::as_object_mut) {
+          let Some(name) = field.get("name").and_then(Value::as_str) else {
+            continue;
+          };
+          let local = naming.local(name);
+          if local != name {
+            field.insert("local".to_owned(), Value::from(local));
+          }
+        }
+      }
+      object.values_mut().for_each(|inner| annotate(inner, naming));
+    }
+    _ => {}
   }
 }
 
@@ -405,15 +496,22 @@ struct Invocation<'a> {
 
 struct Writer<'f, 'm> {
   front: &'f Front<'m>,
+  naming: Naming,
   out: String,
 }
 
 impl<'f, 'm> Writer<'f, 'm> {
-  const fn new(front: &'f Front<'m>) -> Self {
+  const fn new(front: &'f Front<'m>, naming: Naming) -> Self {
     Self {
       front,
+      naming,
       out: String::new(),
     }
+  }
+
+  /// The JSON text the module embeds for `value`, the manifest JSON of a type or a definition.
+  fn json(&self, value: Value) -> String {
+    jcs(&localized(value, self.naming))
   }
 
   fn manifest(&self) -> &'m Manifest {
@@ -442,7 +540,11 @@ impl<'f, 'm> Writer<'f, 'm> {
   }
 
   fn module(mut self) -> Result<String, GenerateError> {
-    self.out.push_str("// Generated by `pavia codegen ts`. Do not edit.\n");
+    let flag = match self.naming {
+      Naming::Identity => "",
+      Naming::Camel => " --names camel",
+    };
+    emit!(self.out, "// Generated by `pavia codegen ts{flag}`. Do not edit.");
     self.imports();
     self.out.push('\n');
     self.doc("", self.manifest().documentation());
@@ -558,7 +660,11 @@ impl<'f, 'm> Writer<'f, 'm> {
 
   fn field(&self, field: &Field, input: bool) -> Result<String, GenerateError> {
     let mark = if field.is_optional() { "?" } else { "" };
-    Ok(format!("{}{mark}: {}", field.name(), self.ty(field.ty(), input)?))
+    Ok(format!(
+      "{}{mark}: {}",
+      self.naming.local(field.name()),
+      self.ty(field.ty(), input)?
+    ))
   }
 
   fn variants(&self, variants: &Enum, input: bool) -> Result<String, GenerateError> {
@@ -641,7 +747,7 @@ impl<'f, 'm> Writer<'f, 'm> {
       .manifest()
       .type_table()
       .iter()
-      .map(|(name, definition)| format!("  {}: {},\n", quoted(name), jcs(&definition.to_json())))
+      .map(|(name, definition)| format!("  {}: {},\n", quoted(name), self.json(definition.to_json())))
       .collect();
     if entries.is_empty() {
       self.out.push_str("\nconst TYPES: Types = {};\n");
@@ -653,9 +759,9 @@ impl<'f, 'm> Writer<'f, 'm> {
       for (service, method, call) in unary {
         let returns = call.returns().expect("a unary call has a result type");
         self.signature_start(service, method);
-        emit!(self.out, "    returns: {},", jcs(&returns.to_json()));
+        emit!(self.out, "    returns: {},", self.json(returns.to_json()));
         if let Some(error) = call.error_type() {
-          emit!(self.out, "    error: {},", jcs(&error.to_json()));
+          emit!(self.out, "    error: {},", self.json(error.to_json()));
         }
         if call.is_idempotent() {
           self.out.push_str("    idempotent: true,\n");
@@ -680,7 +786,7 @@ impl<'f, 'm> Writer<'f, 'm> {
     emit!(
       self.out,
       "  {key}: {{\n    method: {key},\n    params: {},",
-      jcs(&Value::Array(params))
+      self.json(Value::Array(params))
     );
   }
 
@@ -703,7 +809,13 @@ impl<'f, 'm> Writer<'f, 'm> {
   fn params(&self, params: &[Param], input: bool) -> Result<Vec<String>, GenerateError> {
     params
       .iter()
-      .map(|param| Ok(format!("{}: {}", param.name(), self.ty(param.ty(), input)?)))
+      .map(|param| {
+        Ok(format!(
+          "{}: {}",
+          self.naming.local(param.name()),
+          self.ty(param.ty(), input)?
+        ))
+      })
       .collect()
   }
 
@@ -728,13 +840,14 @@ impl<'f, 'm> Writer<'f, 'm> {
     let path = method_path(service, method);
     let key = quoted(&path);
     let mut params = self.params(method.params(), true)?;
-    let args = method.params().iter().map(Param::name).collect::<Vec<_>>().join(", ");
+    let locals: Vec<String> = method.params().iter().map(|param| self.naming.local(param.name())).collect();
+    let args = locals.join(", ");
+    let name = self.naming.local(method.name());
     let Some(call) = method.as_call() else {
       params.push("options?: NotifyOptions".to_owned());
       emit!(
         self.out,
-        "  {}({}): void {{\n    this.#connection.notify(NOTIFICATIONS[{key}], [{args}], options);\n  }}",
-        method.name(),
+        "  {name}({}): void {{\n    this.#connection.notify(NOTIFICATIONS[{key}], [{args}], options);\n  }}",
         params.join(", ")
       );
       return Ok(());
@@ -744,10 +857,9 @@ impl<'f, 'm> Writer<'f, 'm> {
     }
     params.push("options?: CallOptions".to_owned());
     let params = params.join(", ");
-    let name = method.name();
     let stub = quoted(&format!("{path}: streaming is not implemented until M5"));
     let mut used = vec!["this.#connection"];
-    used.extend(method.params().iter().map(Param::name));
+    used.extend(locals.iter().map(String::as_str));
     if call.accepts().is_some() {
       used.push("items");
     }
@@ -759,7 +871,7 @@ impl<'f, 'm> Writer<'f, 'm> {
       args: &args,
     };
     match (call.shape(), call.returns()) {
-      (Shape::Unary, Some(returns)) => self.unary_proxy(service, method, call, returns, &invocation)?,
+      (Shape::Unary, Some(returns)) => self.unary_proxy(service, method, &name, call, returns, &invocation)?,
       (_, Some(returns)) => emit!(
         self.out,
         "  {name}({params}): Promise<{}> {{\n    void [{used}];\n    return Promise.reject(new Error({stub}));\n  }}",
@@ -780,6 +892,7 @@ impl<'f, 'm> Writer<'f, 'm> {
     &mut self,
     service: &Service,
     method: &Method,
+    name: &str,
     call: &Call,
     returns: &Type,
     invocation: &Invocation<'_>,
@@ -794,7 +907,7 @@ impl<'f, 'm> Writer<'f, 'm> {
     } else {
       format!("return this.#connection.call<{result}>(CALLS[{key}], [{args}], options);")
     };
-    emit!(self.out, "  async {}({params}): Promise<{result}> {{", method.name());
+    emit!(self.out, "  async {name}({params}): Promise<{result}> {{");
     if call.error_type().is_some() {
       let class = error_class(service, method);
       emit!(
@@ -838,7 +951,12 @@ impl<'f, 'm> Writer<'f, 'm> {
           }
         }
       };
-      emit!(self.out, "  {}({}): {returns};", handler_member(method), params.join(", "));
+      emit!(
+        self.out,
+        "  {}({}): {returns};",
+        handler_member(self.naming.local(method.name())),
+        params.join(", ")
+      );
     }
     self.out.push_str("}\n");
     Ok(())
