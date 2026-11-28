@@ -31,9 +31,17 @@ export type ContractType =
   | { readonly struct: { readonly fields: readonly Field[] } }
   | { readonly ref: string };
 
-/** A struct field. `optional` fields may be left out on the wire; their type is an `option`. */
+/**
+ * A struct field. `optional` fields may be left out on the wire; their type is an `option`.
+ *
+ * `name` is the field's name on the wire. `local`, when present, is the name the application's
+ * values use for it instead, as code generated with a naming policy declares them (spec 12.3):
+ * the codec reads and writes the value's field by `local` and the wire's by `name`. A manifest
+ * never has `local`; the generator adds it.
+ */
 export interface Field {
   readonly name: string;
+  readonly local?: string | undefined;
   readonly type: ContractType;
   readonly optional?: boolean | undefined;
   readonly docs?: string | undefined;

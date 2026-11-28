@@ -272,8 +272,8 @@ export type EncodeErrorKind =
 
 /**
  * A value this side was asked to send that has no valid encoding. Nothing is sent. For a data
- * value, `path` says where in it the problem is: `$` for the value itself, `$.sent_at`, `$[2]`,
- * `$["key"]`.
+ * value, `path` says where in it the problem is: `$` for the value itself, `$.sentAt`, `$[2]`,
+ * `$["key"]`, with each struct field by the name the value uses for it.
  */
 export class EncodeError extends Error {
   override readonly name = "EncodeError";
@@ -324,7 +324,8 @@ export type DataErrorReason =
 
 /**
  * A data section that does not decode as its contract type (spec 12.3). For a call it is answered
- * with INVALID_ARGUMENT; the session goes on. `path` says where: `$`, `$.sent_at`, `$[2]`.
+ * with INVALID_ARGUMENT; the session goes on. `path` says where: `$`, `$.sent_at`, `$[2]`, with
+ * each struct field by its name on the wire.
  */
 export class DataError extends Error {
   override readonly name = "DataError";
