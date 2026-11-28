@@ -438,15 +438,11 @@ fn handler_member(local: String) -> String {
   if local == "new" { quoted(&local) } else { local }
 }
 
-/// `value`, the manifest JSON of a type or a definition, with `"local"` beside the `"name"` of each
-/// struct field, at every depth, whose name `naming` changes. The runtime codec reads a value's
+/// Adds `"local"` beside the `"name"` of each struct field in `value`, the manifest JSON of a type or
+/// a definition, at every depth, whose name `naming` changes. The runtime codec reads a value's
 /// fields by `local` and writes them by `name`. Every key in such JSON is a key of the manifest
 /// format, never a name from the manifest, so the walk cannot mistake a user's name for a struct.
-fn localized(mut value: Value, naming: Naming) -> Value {
-  annotate(&mut value, naming);
-  value
-}
-
+/// It recurses as deep as the type nests, which validation bounds (§12.2).
 fn annotate(value: &mut Value, naming: Naming) {
   match value {
     Value::Array(items) => items.iter_mut().for_each(|item| annotate(item, naming)),
@@ -509,9 +505,11 @@ impl<'f, 'm> Writer<'f, 'm> {
     }
   }
 
-  /// The JSON text the module embeds for `value`, the manifest JSON of a type or a definition.
-  fn json(&self, value: Value) -> String {
-    jcs(&localized(value, self.naming))
+  /// The JSON text the module embeds for `value`, the manifest JSON of a type or a definition, with
+  /// each renamed field's code name as its `local` ([`annotate`]).
+  fn json(&self, mut value: Value) -> String {
+    annotate(&mut value, self.naming);
+    jcs(&value)
   }
 
   fn manifest(&self) -> &'m Manifest {

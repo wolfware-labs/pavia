@@ -6,7 +6,7 @@
 //! names as they are (`identity`, the default), or their camelCase form (`camel`), which the module
 //! maps back to the manifest's names on the wire (§12.3).
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
 use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
@@ -102,7 +102,7 @@ fn codegen_args(args: &[OsString]) -> Option<CodegenArgs> {
 }
 
 /// The naming policy a `--names` value names.
-fn naming_of(value: &OsString) -> Option<Naming> {
+fn naming_of(value: &OsStr) -> Option<Naming> {
   match value.to_str()? {
     "identity" => Some(Naming::Identity),
     "camel" => Some(Naming::Camel),
