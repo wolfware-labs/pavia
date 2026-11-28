@@ -748,6 +748,13 @@ fn snake_case_chat() -> Manifest {
       .param(Param::new("room_id", reference("RoomId")))
       .param(Param::new("body", body)),
     )
+    .server_method(
+      Method::call(
+        "edit_message",
+        Call::unary(Type::Struct(struct_of(&["edited_at"]))).error(Type::Struct(struct_of(&["retry_after"]))),
+      )
+      .param(Param::new("message_id", reference("MessageId"))),
+    )
     .server_method(Method::notify("mark_read").param(Param::new("message_id", reference("MessageId"))))
     .server_method(
       Method::call("watch_room", Call::server_stream(reference("Message"))).param(Param::new("room_id", reference("RoomId"))),
@@ -803,6 +810,8 @@ fn camel_cases_fields_params_and_methods_and_keeps_the_wire_names_in_the_signatu
     "  async sendMessage(roomId: RoomId, body: { sentAt: Date; replyTo?: bigint | null }, options?: CallOptions): \
      Promise<MessageId> {",
     "      return await this.#connection.call<MessageId>(CALLS[\"chat/send_message\"], [roomId, body], options);",
+    "    returns: {\"struct\":{\"fields\":[{\"local\":\"editedAt\",\"name\":\"edited_at\",\"type\":\"u8\"}]}},",
+    "    error: {\"struct\":{\"fields\":[{\"local\":\"retryAfter\",\"name\":\"retry_after\",\"type\":\"u8\"}]}},",
     "  markRead(messageId: MessageId, options?: NotifyOptions): void {",
     "    this.#connection.notify(NOTIFICATIONS[\"chat/mark_read\"], [messageId], options);",
     "  watchRoom(roomId: RoomId, options?: CallOptions): AsyncIterable<Message> {",
